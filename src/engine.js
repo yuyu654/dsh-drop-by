@@ -18,7 +18,7 @@ import { append, appendOnce } from "./logger.js";
 import { pruneOldRecords, recordDay } from "./retention.js";
 import { hhmm, agoSec, healthDay, dayKey } from "./time.js";
 import { inQuiet, inBusy } from "./schedule.js";
-import { sendQQRound } from "./send.js";
+import { sendQQPrivate, sendQQRound } from "./send.js";
 import { buildContext, selfMtime, lastHerMessage } from "./context.js";
 import { pickTopic, withForwardContent, fishStale, tierOfSlot, answerableOn } from "./topics.js";
 import { chitchatGate, chitchatTopic, noteChitchatSent, allowBareToday, chitchatYield, chitchatJudgeNo } from "./chitchat.js";
@@ -40,6 +40,7 @@ import { pollFishMail } from "./fishmail.js";
 import { pickNoReply, judgeAway } from "./noreply.js";
 import { readSignals, signalFacts, needL3 } from "./signals.js";
 import { readMemory } from "./memorysource.js";
+import { runQqContinuation } from "./qq-continuation.js";
 
 function freshDayState(st, day) {
   if (!st.day || st.day !== day) {
@@ -50,6 +51,59 @@ function freshDayState(st, day) {
   st.real ||= { todaySent: 0, lastSendAt: 0 };
   st.sim ||= { todaySent: 0, lastSendAt: 0 };
   return st;
+}
+
+export function qqContinuationEnabled(cfg) {
+  return cfg.enabled !== false && cfg.rules?.proactive !== false && cfg.rules?.qqContinuation === true &&
+    cfg.content?.enabled !== false && cfg.content?.mode !== 'fixed' &&
+    cfg.sources?.qq?.enabled !== false && cfg.channels?.qq?.enabled !== false &&
+    cfg.channels?.qq?.read !== false && cfg.channels?.qq?.send !== false &&
+    Boolean(cfg.channels?.qq?.peerId) && (cfg.dryRun !== false || cfg.send?.enabled === true);
+}
+
+export async function tickQqContinuation({ candidate, read, generate, active }) {
+  const to = candidate.incoming.peer;
+  const cfg = loadConfig();
+  const dryRun = cfg.dryRun !== false;
+  const bucketName = dryRun ? 'sim' : 'real';
+  const allowed = () => {
+    const fresh = loadConfig();
+    const now = Date.now();
+    if (!active() || now > candidate.expiresAt || !qqContinuationEnabled(fresh) ||
+        (fresh.dryRun !== false) !== dryRun || String(fresh.channels.qq.peerId) !== to ||
+        inQuiet(now, fresh.quietHours, fresh.timezone) || inBusy(now, fresh.busyHours, fresh.timezone)) return false;
+    const st = freshDayState(loadState(), recordDay(now, fresh.timezone, fresh));
+    const bucket = st[bucketName];
+    return (Number(bucket.lastSendAt) || 0) < candidate.outgoing.firstAt &&
+      (Number(bucket.todaySent) || 0) < (Number(fresh.rules.dailyCap) || 0);
+  };
+  if (!allowed()) return;
+  const r = await runQqContinuation({
+    candidate, read, allowed, generate, cfg, persona: loadPersona({ cfg }).text,
+    async deliver(text) {
+      const sent = dryRun ? null : await sendQQPrivate({ to, text, dryRun: false });
+      return { text, sent, reason: dryRun ? 'DRY_RUN' : sent.ok ? 'SEND' : 'SEND_FAILED' };
+    },
+  });
+  const now = Date.now();
+  const { reason, sent, text } = r;
+  if (text && (dryRun || sent?.ok)) {
+    const latest = loadConfig();
+    const st = freshDayState(loadState(), recordDay(now, latest.timezone, latest));
+    const bucket = st[bucketName];
+    bucket.todaySent = (Number(bucket.todaySent) || 0) + 1;
+    bucket.lastSendAt = now;
+    bucket.lastTrack = 'proactive';
+    st.content ||= {};
+    st.content.recentSends = [...(st.content.recentSends || []), text].slice(-6);
+    saveState(st);
+  }
+  append({
+    ts: now, decision: text && (dryRun || sent?.ok) ? 'send' : 'skip',
+    track: 'proactive', reason, topic: { slot: 'qqContinuation', label: 'QQ 热聊补一句' },
+    content: text ? { text, chars: text.length } : null,
+    delivery: sent ? { attempted: true, ok: sent.ok, to, messageId: sent.messageId, error: sent.error } : { attempted: false, reason },
+  }, now, cfg.timezone, cfg);
 }
 
 /** 回填：上一条 SEND 之后，她有没有在窗口内真的说话。 */

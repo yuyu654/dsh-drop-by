@@ -35,6 +35,27 @@ function mtimeOf(file) {
   }
 }
 
+/** Exact peer and file timestamp for the QQ continuation race check. */
+export function readBridgeDialogue({ dsh = dshHome() } = {}) {
+  const inFile = path.join(dsh, 'qq-bridge', 'last-in.json');
+  const outFile = path.join(dsh, 'qq-bridge', 'last-out.json');
+  const observedAt = mtimeOf(inFile);
+  const i = readJson(inFile);
+  const o = readJson(outFile);
+  return {
+    incoming: {
+      peer: String(i?.peer || ''), kind: i?.peerKind, ts: Number(i?.at) || 0,
+      observedAt: observedAt === mtimeOf(inFile) ? observedAt : 0,
+      text: String(i?.text || '').trim(),
+    },
+    outgoing: {
+      peer: String(o?.peer || ''), firstAt: Number(o?.firstAt) || 0,
+      lastAt: Number(o?.lastAt) || 0, count: o?.source === 'presence-gate' ? 0 : Number(o?.count) || 0,
+      text: String(o?.text || '').trim(),
+    },
+  };
+}
+
 /**
  * QQ 桥（qq-bridge）最后一次出站。
  * 桥自己会写 `<home>/qq-bridge/last-out.json`：

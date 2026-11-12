@@ -108,6 +108,7 @@ export async function sendQQRound({
   // 先写「这一轮开始发了」：firstAt 有、lastAt=0 → 别的地方看见就知道我在回。
   const round = {
     peer: String(to),
+    source: 'presence-gate',
     firstAt: now,
     lastAt: 0,
     count: parts.length,

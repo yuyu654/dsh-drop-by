@@ -44,6 +44,7 @@ const DEFAULTS = {
     // 阶段 4：shadow = 被护栏拦下的拍子也随机抽一部分交给模型预演（只记不发，不碰 feedback）。
     // shadowSampleRate 默认 0.25：一天被拦一百来拍，只烧二三十次调用。
     judge: { enabled: false, attempts: 2, shadow: false, shadowSampleRate: 0.25 },
+    qqContinuation: false,
     // 随口说话：没有由头时，也可以说一句。**默认关**——要 judge 也开着才生效，
     // 因为它靠 judge 判「这一拍要不要说」。生成只走模型：模板写不出自然的无由头话，
     // 写不出来就不发（绝不 fallback），废话比沉默差。

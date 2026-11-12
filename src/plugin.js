@@ -24,7 +24,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig, saveConfig, loadState, CONFIG_PATH, LOG_DIR } from './config.js';
-import { tick } from './engine.js';
+import { tick, tickQqContinuation, qqContinuationEnabled } from './engine.js';
+import { readBridgeDialogue } from './outbound.js';
+import { createQqContinuation } from './qq-continuation.js';
+import { inQuiet, inBusy } from './schedule.js';
 import { makeHostLlm } from './hostllm.js';
 import { listForUi, applyChange, saveSecret } from './settings.js';
 import { detectSources } from './detect.js';
@@ -184,6 +187,8 @@ export function apply(ctx, config = {}) {
   let disposed = false;
   let running = false;
   let timer = null;
+  let continuationTimer = null;
+  const continuation = createQqContinuation();
   let ticks = 0;
   let lastAt = 0;
   let nextAt = 0;
@@ -269,6 +274,38 @@ export function apply(ctx, config = {}) {
     }, Math.max(0, delayMs));
     // 不阻止宿主退出（Node 的 unref；Electron 里同样有效）
     timer.unref?.();
+  }
+
+  // 秒级只看 QQ 桥的两份标记，不重复跑邮件、感知和普通主动消息。
+  function scheduleContinuation() {
+    if (disposed) return;
+    continuationTimer = setTimeout(async () => {
+      try {
+        const cfg = loadConfig();
+        const now = Date.now();
+        if (opt.enabled === false || !qqContinuationEnabled(cfg) ||
+            inQuiet(now, cfg.quietHours, cfg.timezone) || inBusy(now, cfg.busyHours, cfg.timezone)) {
+          continuation.observe({ incoming: {}, outgoing: {} }, '', now);
+          return;
+        }
+        const due = continuation.observe(readBridgeDialogue(), String(cfg.channels.qq.peerId), now);
+        if (!due || running) return;
+        continuation.consume(due);
+        const host = llmNow(cfg);
+        if (!host.ready) return;
+        running = true;
+        try {
+          await tickQqContinuation({ candidate: due, read: readBridgeDialogue, generate: host.generate, active: () => !disposed });
+        } finally {
+          running = false;
+        }
+      } catch (e) {
+        log.warn(`QQ 热聊补话出错：${String(e?.message || e).slice(0, 160)}`);
+      } finally {
+        scheduleContinuation();
+      }
+    }, 2000);
+    continuationTimer.unref?.();
   }
 
   /** 状态快照：状态接口、工具、以及 --status 之外的自检都用它。 */
@@ -539,6 +576,7 @@ export function apply(ctx, config = {}) {
     stop() {
       disposed = true;
       if (timer) clearTimeout(timer);
+      if (continuationTimer) clearTimeout(continuationTimer);
       timer = null;
       nextAt = 0;
     },
@@ -546,6 +584,7 @@ export function apply(ctx, config = {}) {
 
   const firstDelay = Math.max(0, Number(opt.startupDelaySec) || 0) * 1000;
   schedule(firstDelay);
+  scheduleContinuation();
   log.info(
     `插件已激活：每 ${tickMinutes()} 分钟一拍，首拍 +${Math.round(firstDelay / 1000)}s，` +
       `dryRun=${loadConfig().dryRun !== false}${opt.hostLlm === false ? '，宿主模型已关（走 spawn）' : ''}`

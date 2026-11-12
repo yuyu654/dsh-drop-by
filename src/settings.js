@@ -113,6 +113,7 @@ export const SCHEMA = [
   { group: '节奏', path: 'send.split.minGapMs', label: '几条之间隔几秒', type: 'int', scale: 1000, min: 1, max: 5, unit: '秒', dep: dep('send.split.enabled', true), hint: '默认 1.2 秒（界面上填整数秒，填 1 就是 1 秒）。字数越多隔得越久，封顶 5 秒' },
   { group: '节奏', path: 'send.split.maxRoundMs', label: '一轮最多发多久', type: 'int', scale: 1000, min: 10, max: 300, unit: '秒', dep: dep('send.split.enabled', true), hint: '默认 90 秒。拆得太多、快超时了，剩下的几条并成一条发' },
   { group: '节奏', path: 'rules.proactive', label: '我会主动找你', type: 'bool', hint: '开（默认）：没人说话的时候也会按由头找你。关：只回你的话，不主动开口（安静模式）' },
+  { group: '节奏', path: 'rules.qqContinuation', label: 'QQ 热聊补一句', type: 'bool', hint: '刚来回聊了几轮，普通回复发完约 15 秒后，可以顺着话题再补一句。有新消息就取消；没内容或没回应就停。遵守静默、忙碌时段和每日上限。' },
   { group: '节奏', path: 'rules.autoReply', label: 'TA说话我自动回', type: 'bool', hint: '开（默认）：TA说完、隔了冷却时间就回。关：TA的话不自动回，只按「主动找TA」那条轨道走' },
   { group: '节奏', path: 'rules.feedback.enabled', label: '按TA的反应调由头', type: 'bool', hint: '开（默认）：记下哪一类发出去TA接住了、哪一类老没人应，老不接的先压几天；关：所有由头一视同仁' },
   { group: '节奏', path: 'rules.adaptiveGap', label: '没人应时自己少说点', type: 'bool', hint: '开（默认）：连着两条没回，之后两条之间自动多等一会儿（最多拖成三倍）；关：永远按上面那个固定间隔' },

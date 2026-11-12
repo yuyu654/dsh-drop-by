@@ -25,6 +25,20 @@ function fmtMin(min) {
   return m ? `${h} 小时 ${m} 分钟` : `${h} 小时`;
 }
 
+/** 这一对是哪天的事：今天 / 昨天 / N 天前 / 11-08。没有 ts 就返回空串。 */
+function dayTextOf(ts, now, tz) {
+  const t = Number(ts);
+  if (!Number.isFinite(t) || t <= 0) return '';
+  const a = dayKey(t, tz);
+  const b = dayKey(now, tz);
+  if (a === b) return '今天';
+  const diff = Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / DAY);
+  if (!Number.isFinite(diff)) return '';
+  if (diff === 1) return '昨天';
+  if (diff > 1 && diff <= 6) return `${diff} 天前`;
+  return a.slice(5);
+}
+
 /** 一天里的时段，给人看的。 */
 export function periodOf(now, tz) {
   const mins = minutesOfDayOf(now, tz);
@@ -212,7 +226,8 @@ export function buildSnapshot({ ctx = {}, topic = null, cfg = {}, st = {}, now =
         const kind = p.kind || (lat <= 45 ? 'hit' : lat <= 240 ? 'late' : 'stray');
         const tag = kind === 'hit' ? '（接住了）' : kind === 'stray' ? '（隔了很久才回）' : '';
         const reply = p.herReply ? `回「${p.herReply}」` : '（原文没读到）';
-        pairLines.push(`· ${SLOTS[slot]?.label || slot}：「${p.myDraft}」→ 她${latText}${reply}${tag}`);
+        const day = dayTextOf(p.ts, now, cfg?.timezone || 'Asia/Shanghai');
+        pairLines.push(`· ${day ? `${day} ` : ''}${SLOTS[slot]?.label || slot}：「${p.myDraft}」→ 她${latText}${reply}${tag}`);
       }
     }
     if (pairLines.length) blocks.push(['你最近的对话配对：', ...pairLines]);
