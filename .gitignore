@@ -1,0 +1,21 @@
+# 本地凭据与运行产物，别提交
+credentials.json
+config.json
+state.json
+data/
+logs/
+
+# 本机私有：人格、私有规则、私人笔记（这些不进包也不进仓库）
+persona.md
+local-style.json
+NOTES-private.md
+patch_judge.py
+headless-overlay.generated.yml
+data/headless-overlay.generated.yml
+
+# 编辑器/系统
+.DS_Store
+Thumbs.db
+node_modules/
+*.tmp
+*.bak

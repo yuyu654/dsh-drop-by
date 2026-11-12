@@ -1,0 +1,62 @@
+{
+  "name": "presence-gate",
+  "version": "0.18.0",
+  "private": false,
+  "type": "module",
+  "description": "主动开口的那道门：定时判断该不该主动说一句话，交给宿主模型写成一句人话再发出去（QQ / 抖音 / 主对话）",
+  "icon": "icon.svg",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "presence",
+    "proactive"
+  ],
+  "main": "src/plugin.js",
+  "exports": {
+    ".": "./src/plugin.js",
+    "./engine": "./src/engine.js",
+    "./video": "./src/video-host.js",
+    "./run": "./src/run.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json",
+    "./client": "./src/client.js"
+  },
+  "files": [
+    "src",
+    "tools",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md",
+    "LICENSE",
+    "config.example.json",
+    "local-style.example.json"
+  ],
+  "scripts": {
+    "once": "node src/run.js --once",
+    "status": "node src/run.js --status",
+    "windows": "node src/run.js --windows",
+    "loop": "node src/run.js --loop",
+    "mail": "node src/run.js --mail",
+    "mail-now": "node src/run.js --mail-now",
+    "test": "node --test tests/*.test.mjs",
+    "compose": "node src/run.js --compose",
+    "compose-llm": "node src/run.js --compose --llm",
+    "why": "node src/run.js --why",
+    "persona": "node src/run.js --persona"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  },
+  "license": "MIT"
+}

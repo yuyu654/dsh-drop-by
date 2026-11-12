@@ -1,0 +1,341 @@
+{
+  "enabled": true,
+  "dryRun": false,
+  "tickMinutes": 10,
+  "timezone": "Asia/Shanghai",
+  "quietHours": [
+    [
+      "22:30",
+      "07:30"
+    ]
+  ],
+  "quietHoursNote": "全局静默：这一段里所有功能都不读不发（含邮箱不联网）。可多段、可跨零点，[] 表示不静默",
+  "busyHours": [],
+  "busyHoursNote": "她忙的时候不主动开口（她先说话照常回），多段，空数组=不忙",
+  "idle": {
+    "onlineSec": 30,
+    "awaySec": 600
+  },
+  "rules": {
+    "replyCooldownMin": 1,
+    "minGapMin": 60,
+    "dailyCap": 6,
+    "backfillWindowMin": 30,
+    "douyinStaleMin": 10,
+    "replyGuard": true,
+    "autoReply": true,
+    "proactive": true,
+    "backfill": true,
+    "feedback": {
+      "enabled": true,
+      "coldAfter": 6,
+      "coldRate": 0.25,
+      "coldDays": 3,
+      "testMode": false
+    },
+    "adaptiveGap": true,
+    "judge": {
+      "enabled": true,
+      "attempts": 2,
+      "shadow": false,
+      "shadowSampleRate": 0.25
+    },
+    "chitchat": {
+      "enabled": true,
+      "perDay": 5,
+      "dayStart": 480,
+      "dayEnd": 1410,
+      "maxChars": 40,
+      "seedDays": 30,
+      "seedSkipPrivate": true
+    },
+    "naturalTriggers": {
+      "enabled": true,
+      "takeGap": true,
+      "floorMin": 20,
+      "courseWindowMin": 20,
+      "courseSplitMin": 720
+    },
+    "gapByTier": {
+      "enabled": false,
+      "replyMin": 5,
+      "eventMin": 60,
+      "chatMin": 240
+    },
+    "presenceSignal": {
+      "enabled": true
+    }
+  },
+  "channels": {
+    "qq": {
+      "enabled": true,
+      "read": true,
+      "send": true,
+      "peerId": "",
+      "activeHours": []
+    },
+    "main": {
+      "enabled": false,
+      "read": false,
+      "send": false,
+      "activeHours": []
+    },
+    "douyin": {
+      "enabled": true,
+      "read": true,
+      "send": false,
+      "activeHours": []
+    }
+  },
+  "sources": {
+    "phone": {
+      "enabled": true,
+      "staleHours": 18,
+      "staleGuard": true
+    },
+    "qq": {
+      "enabled": true
+    },
+    "douyin": {
+      "enabled": true
+    },
+    "memory": {
+      "enabled": true,
+      "plugin": "fish-memory",
+      "dir": "",
+      "session": "",
+      "max": 3,
+      "maxAgeDays": 120
+    }
+  },
+  "perception": {
+    "l2": {
+      "enabled": true,
+      "ideProcs": [
+        "code",
+        "devenv",
+        "idea64",
+        "pycharm64",
+        "webstorm64",
+        "goland64",
+        "clion64",
+        "rider64",
+        "studio64",
+        "cursor",
+        "sublime_text",
+        "notepad++",
+        "vim",
+        "emacs",
+        "workbuddy"
+      ],
+      "gameProcs": [
+        "steam",
+        "steamwebhelper",
+        "epicgameslauncher",
+        "battle.net",
+        "genshinimpact",
+        "yuanshen",
+        "starrail",
+        "cs2",
+        "valorant",
+        "leagueclient",
+        "league of legends",
+        "dota2",
+        "minecraft",
+        "wow",
+        "dnf",
+        "game"
+      ],
+      "mediaProcs": [
+        "potplayermini64",
+        "vlc",
+        "mpc-hc64",
+        "mpv",
+        "bilibili",
+        "cloudmusic",
+        "qqmusic",
+        "spotify",
+        "foobar2000",
+        "wmplayer"
+      ]
+    },
+    "l3": {
+      "enabled": true,
+      "everyMin": 30,
+      "skipFg": [
+        "lockapp",
+        "logonui",
+        "searchhost",
+        "shellexperiencehost"
+      ],
+      "note": "截图+OCR。默认关闭；开启后也不影响前台工作，规则见 README「L3 保护条件」"
+    },
+    "signals": {
+      "enabled": true,
+      "browser": true,
+      "port": 9223,
+      "timeoutMs": 600
+    },
+    "anticheat": {
+      "skip": true,
+      "procs": [
+        "wegame",
+        "tencentdl",
+        "tcls",
+        "crossproxy",
+        "leagueclient",
+        "lolex",
+        "dnf",
+        "cf",
+        "valorant",
+        "vgtray",
+        "gamecoach"
+      ]
+    }
+  },
+  "send": {
+    "enabled": true,
+    "requireConfirm": true,
+    "split": {
+      "enabled": true,
+      "maxParts": 4,
+      "minFirstMs": 6000,
+      "minGapMs": 1200,
+      "maxRoundMs": 90000,
+      "note": "空行分段 → 一句一条连着发。首条按她的字数晚几秒（6–60 秒），条间 1.2–5 秒，整轮超 90 秒就把剩下的并成一条。enabled=false 退回整段一条"
+    }
+  },
+  "logging": {
+    "keepDays": 8,
+    "dayStartHour": 7,
+    "mailUpdateMode": "merge",
+    "note": "记录只留最近 keepDays 天（2 = 今天+昨天），每天 dayStartHour(默认 07:00) 换日并清理更早的整文件；mailUpdateMode = 同一天又来新邮件时怎么办：merge 补充 / replace 替换 / append 追加"
+  },
+  "persona": {
+    "enabled": true,
+    "note": "优先读 dsh-agent-md 的全局人格（<DSH_HOME>/AGENT.md）；没有插件或插件关掉时读本目录 persona.md",
+    "dshHome": "",
+    "includeGlobal": true,
+    "includeProject": false,
+    "projectCwd": "",
+    "localFile": "persona.md"
+  },
+  "content": {
+    "enabled": true,
+    "mode": "auto",
+    "fixedText": "测试",
+    "maxChars": 60,
+    "prompt": {
+      "recentOutbound": true,
+      "slotStats": true
+    },
+    "llm": {
+      "electron": "",
+      "cli": "",
+      "profile": "headless",
+      "timeoutMs": 90000,
+      "attempts": 2
+    },
+    "forward": {
+      "enabled": true,
+      "fetchScript": "",
+      "asrUrl": "http://127.0.0.1:8000/v1/audio/transcriptions",
+      "asrModel": "whisper-small",
+      "asrAutostart": true,
+      "asrScript": "",
+      "asrWaitMs": 180000,
+      "timeoutMs": 240000,
+      "maxAgeDays": 30,
+      "edgePort": 9223,
+      "edgeScript": "",
+      "edgeAutostart": true,
+      "edgeWaitMs": 25000
+    },
+    "topics": {
+      "reply": true,
+      "forward": true,
+      "sleep": true,
+      "steps": true,
+      "stepsFromHour": 18,
+      "stepsLowMax": 2000,
+      "stepsHighMin": 8000,
+      "stepsMaxAgeMin": 120,
+      "screen": true,
+      "share": true,
+      "catchup": true,
+      "replyMaxAgeMin": 720,
+      "sleepShortMin": 420,
+      "sleepLongMin": 570,
+      "sleepFromHour": 7,
+      "sleepToHour": 10.5,
+      "sleepMaxAgeH": 14,
+      "screenHeavyMin": 120,
+      "screenFromHour": 21,
+      "shareGapH": 24,
+      "shareMinChars": 40,
+      "catchupDays": 1,
+      "lateUp": true,
+      "lateFromHour": 23,
+      "lateToHour": 2,
+      "longSit": true,
+      "longSitHours": 3,
+      "backHome": true,
+      "backAfterMin": 30,
+      "agenda": true,
+      "agendaTomorrowHour": 21,
+      "agendaEarlyBeforeHour": 9,
+      "agendaSoonMin": 20,
+      "examSoon": true,
+      "examSoonMin": 60,
+      "examReview": true,
+      "examReviewDays": 7,
+      "noReply": true,
+      "noReplyMin": 120,
+      "noReplyAfterHerMin": 120,
+      "noReplyAfterBusyMin": 20,
+      "noReplyDouyin": true,
+      "noReplyJudge": true,
+      "stress": true,
+      "sleepDeepShortMin": 120,
+      "sleepLateBed": "23:30",
+      "sleepDayStartHour": 7,
+      "stressHighMin": 59,
+      "stressFromHour": 9,
+      "stressToHour": 22,
+      "stressMaxAgeH": 12,
+      "stressDailyMax": 1,
+      "stressMinGapMin": 180
+    },
+    "agenda": {
+      "text": "",
+      "termStart": "2026-08-31",
+      "periods": "1-2 08:30-10:05\n3-4 10:25-12:00\n5-6 13:30-15:05\n7-8 15:25-17:00",
+      "off": []
+    },
+    "exams": {
+      "text": ""
+    }
+  },
+  "mail": {
+    "enabled": true,
+    "note": "需要手机 App「鱼鱼状态」配好邮箱并在采集后发信；本插件只读不发",
+    "user": "",
+    "host": "",
+    "port": 993,
+    "tls": true,
+    "mailbox": "INBOX",
+    "intervalMinutes": 30,
+    "activeHours": [],
+    "fetchCount": 5,
+    "subjectPattern": "^\\s*FISH",
+    "timeoutMs": 20000
+  },
+  "version": 1,
+  "_readme": [
+    "presence-gate 配置样例。第一次运行会在插件目录生成 config.json，改那份，不要改这份。",
+    "所有键都可以删：删掉的会回落到内置默认值。",
+    "channels.qq.peerId 是唯一必填的收件人（QQ 号或 openid，看 qq-bridge 的绑定）；空着发不出去。",
+    "content.llm.electron / cli 留空 = 自动找本机 DSH 安装位置；找不到再手填。",
+    "content.forward.* 是「看视频」用的：需要本机一个取播放地址的脚本 + ffmpeg + whisper，不用就整段留空。"
+  ]
+}
