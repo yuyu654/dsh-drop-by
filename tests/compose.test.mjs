@@ -511,7 +511,7 @@ test('prompt 不许报软件名（2026-11-08 她说「WorkBuddy 那个？」太�
 
 // —— 2026-11-10 QQ 事故：模型重写时只吐了两个字「那条」，被当成一条消息发了 ——
 
-test('guard：碎片「那条」拦（ECHO_TOPIC），短句「在吗」放行（2026-11-10 真奈：不必多于六字）', () => {
+test('guard：碎片「那条」拦（ECHO_TOPIC），短句「在吗」放行（2026-11-10 她：不必多于六字）', () => {
   const cfg = cfgOf();
   const r = guard('那条', cfg, null, { topicLabel: '那条还没回' });
   assert.equal(r.ok, false);

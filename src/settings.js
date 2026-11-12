@@ -317,7 +317,7 @@ export function coerce(path, raw) {
     case 'str': {
       const s = String(raw == null ? '' : raw);
       if (s.length > (spec.max || 200)) return bad(`最多 ${spec.max || 200} 个字`);
-      // 邮箱当场拦：写成 `3316765302@qq/com`（斜杠）不报错的话，要等下一拍联网
+      // 邮箱当场拦：写成 `12345678@qq/com`（斜杠）不报错的话，要等下一拍联网
       // 才炸成 `getaddrinfo ENOTFOUND imap.qq/com`，看不出是哪儿写错了。
       if (spec.path === 'mail.user') {
         const v = s.trim();

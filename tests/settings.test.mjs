@@ -59,10 +59,10 @@ test('bool：认真假值，也认 开/关', () => {
 });
 
 test('邮箱账号：写成 qq/com 这种当场拒，别等联网才 ENOTFOUND', () => {
-  assert.equal(coerce('mail.user', '3316765302@qq.com').value, '3316765302@qq.com');
-  assert.equal(coerce('mail.user', ' 3316765302@qq.com ').value, '3316765302@qq.com');
-  assert.equal(coerce('mail.user', '3316765302@qq/com').ok, false);
-  assert.equal(coerce('mail.user', '3316765302com').ok, false);
+  assert.equal(coerce('mail.user', '12345678@qq.com').value, '12345678@qq.com');
+  assert.equal(coerce('mail.user', ' 12345678@qq.com ').value, '12345678@qq.com');
+  assert.equal(coerce('mail.user', '12345678@qq/com').ok, false);
+  assert.equal(coerce('mail.user', '12345678com').ok, false);
   assert.equal(coerce('mail.user', 'a@b@c.com').ok, false);
   // 允许清空（等于关掉邮箱读取）
   assert.deepEqual(coerce('mail.user', ''), { ok: true, path: 'mail.user', value: '' });

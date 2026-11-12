@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { PRIVATE_MARK, isPrivate } from '../src/private.js';
 
 test('private：任何人的「不给 XX 看」都算', () => {
-  assert.equal(isPrivate('这条不给真奈看：我其实有点慌'), true);
+  assert.equal(isPrivate('这条不给她看：我其实有点慌'), true);
   assert.equal(isPrivate('这条不给小明看'), true);
   assert.equal(isPrivate('不能给室友看'), true);
 });
@@ -22,5 +22,5 @@ test('private：普通句子不误伤', () => {
 });
 
 test('private：正则不带具体人名', () => {
-  assert.equal(/真奈|小澪|sonetto/.test(String(PRIVATE_MARK)), false);
+  assert.equal(/张三|李四|某某/.test(String(PRIVATE_MARK)), false);
 });

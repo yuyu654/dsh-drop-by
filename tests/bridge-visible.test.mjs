@@ -1,4 +1,4 @@
-// bridge-visible.test.mjs —— 2026-11-09 真奈指出的洞：
+// bridge-visible.test.mjs —— 2026-11-09 她指出的洞：
 // driver 的 qqReply 关着，qq-history 永远是空的，qq-bridge 又不写它，
 // 于是 presence-gate 完全看不见桥发出去的话：桥刚回完，插件十秒后又补一句。
 // 现在桥写 ~/.dsh/qq-bridge/last-out.json，插件读它；多段发送中途也算「正在应」。

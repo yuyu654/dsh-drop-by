@@ -1,6 +1,6 @@
 // settings-units.test.mjs —— 设置页里的默认值要带单位。
 //
-// 真奈 2026-11-07：注释里「默认 30」看不出是 30 分钟还是 30 天；
+// 她 2026-11-07：注释里「默认 30」看不出是 30 分钟还是 30 天；
 // 凡是带 unit 的项，hint 里提到「默认 N」时就得把单位写在旁边。
 import test from 'node:test';
 import assert from 'node:assert/strict';

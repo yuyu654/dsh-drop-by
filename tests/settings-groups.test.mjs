@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { loadConfig } from '../src/config.js';
 import { listForUi, SCHEMA, GROUP_ORDER, FOLDABLE_GROUPS } from '../src/settings.js';
 
-const cfg = () => loadConfig({ env: { DSH_HOME: 'C:/Users/sonetto/.dsh', PG_NO_CREDENTIALS: '1' }, fresh: true });
+const cfg = () => loadConfig({ env: { DSH_HOME: 'C:/Users/you/.dsh', PG_NO_CREDENTIALS: '1' }, fresh: true });
 const flat = (c) => listForUi(c).flatMap((g) => g.items);
 const has = (c, p) => flat(c).some((i) => i.path === p);
 

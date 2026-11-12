@@ -1,4 +1,4 @@
-// perspective.test.mjs —— 2026-11-09 真奈指出：胃病、冰饮是我的事，不是她的。
+// perspective.test.mjs —— 2026-11-09 她指出：胃病、冰饮是我的事，不是她的。
 // QQ 上那句「……没偷偷买冰的吧」把人搞反了：管我的是她，偷喝的是我。
 import test from 'node:test';
 import assert from 'node:assert/strict';

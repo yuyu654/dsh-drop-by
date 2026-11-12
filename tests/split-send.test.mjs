@@ -1,4 +1,4 @@
-// split-send.test.mjs —— 2026-11-09 真奈：一句一条地发，别把两段塞进一个气泡。
+// split-send.test.mjs —— 2026-11-09 她：一句一条地发，别把两段塞进一个气泡。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { splitOutgoing, firstDelayMs, partGapMs } from '../src/split.js';

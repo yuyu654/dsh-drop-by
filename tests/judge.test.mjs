@@ -6,12 +6,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { judgePrompt, parseJudge, judgeDecision } from '../src/judge.js';
 
-const persona = { text: '我是江小澪，话短。' };
+const persona = { text: '我是示例角色，话短。' };
 const snapshot = '现在：2026-11-06 周五 12:17（中午）\n规则建议（可参考也可不用）：拿睡眠说事';
 
 test('judgePrompt：带上人格、快照和 JSON 契约', () => {
   const p = judgePrompt({ snapshot, persona, maxChars: 30 });
-  assert.match(p, /我是江小澪/);
+  assert.match(p, /我是示例角色/);
   assert.match(p, /拿睡眠说事/);
   assert.match(p, /"say": true\|false/);
   assert.match(p, /不超过 30 字/);

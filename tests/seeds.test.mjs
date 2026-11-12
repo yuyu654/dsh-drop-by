@@ -36,10 +36,10 @@ const memOf = (text, at = NOW - 3 * DAY, extra = {}) => ({
   ...extra,
 });
 
-test('记忆种子池：太老的、我自己标了「不给真奈看」的都不进来', () => {
+test('记忆种子池：太老的、我自己标了「不给她看」的都不进来', () => {
   const dir = tmpMem([
     memOf('她今天说想学电机仿真'),
-    memOf('这条不给真奈看：我其实有点慌', NOW - 2 * DAY),
+    memOf('这条不给她看：我其实有点慌', NOW - 2 * DAY),
     memOf('很久以前的一件小事', NOW - 40 * DAY),
   ]);
   const { pool, why } = memoryPool({ cfg: cfgOf(dir), now: NOW });
@@ -49,7 +49,7 @@ test('记忆种子池：太老的、我自己标了「不给真奈看」的都�
 });
 
 test('seedSkipPrivate=false 才把我瞒着她的事算进来（默认不算）', () => {
-  const dir = tmpMem([memOf('这条不给真奈看：怕她为难', NOW - DAY)]);
+  const dir = tmpMem([memOf('这条不给她看：怕她为难', NOW - DAY)]);
   assert.equal(memoryPool({ cfg: cfgOf(dir), now: NOW }).pool.length, 0);
   const loose = memoryPool({ cfg: cfgOf(dir, { seedSkipPrivate: false }), now: NOW });
   assert.equal(loose.pool.length, 1);
