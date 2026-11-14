@@ -1,5 +1,5 @@
 {
-  "name": "presence-gate",
+  "name": "dsh-drop-by",
   "version": "0.18.0",
   "private": false,
   "type": "module",
@@ -18,6 +18,7 @@
     ".": "./src/plugin.js",
     "./engine": "./src/engine.js",
     "./video": "./src/video-host.js",
+    "./qq-reply": "./src/qq-reply.js",
     "./run": "./src/run.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json",
@@ -27,6 +28,7 @@
     "src",
     "tools",
     "cordis.patch.yml",
+    "headless-overlay.yml",
     "icon.svg",
     "README.md",
     "LICENSE",

@@ -10,6 +10,7 @@ import { coldSlots } from './feedback.js';
 import { parseAgenda, agendaSource, nextCourse, currentWeek } from './agenda.js';
 import { examsSource, parseExams, reviewDue, soonDue, dayDiff } from './exams.js';
 import { noReplyDue } from './noreply.js';
+import { wellnessCooldown } from './decide.js';
 
 // tier：阶段 1 的间隔分档（显式常量，不在运行时猜）。
 //   reply = 回她/接转发/追问（默认 5 分钟）
@@ -31,6 +32,7 @@ export const SLOTS = {
   noReply: { label: '那条还没回', why: '我主动找过她，隔了很久没动静——问一句，别在猜里待着', tier: 'reply' },
   share: { label: '抛个我自己的判断', why: '我有新想法，还没跟人说过', tier: 'event' },
   catchup: { label: '隔太久了', why: '好几天没说话，找个由头', tier: 'chat' },
+  projectCheckIn: { label: '聊聊最近在忙的项目', why: '只主动问一次，不催回复', tier: 'chat' },
   // 随口说话：没有由头本身就是要说的事。优先级永远最低（别的由头挑得出来就不上）。
   chitchat: { label: '随口说一句', why: '没什么事，就是想跟她说一句', tier: 'chat' },
 };
@@ -194,7 +196,7 @@ export function fishStale(fish, cfg, now) {
 function pickTopicRaw(ctx, cfg, now, st = {}) {
   const t = cfg?.content?.topics || {};
   const on = (k) => t[k] !== false;
-  // 手机端总闸：关掉时睡眠/压力/屏幕这三类数据一律不参与判定（数据只可能来自手机 App 发的邮件）。
+  // 手机端总闸关闭后，睡眠、压力、步数和屏幕数据都不参与选题。
   const phoneOn = cfg?.sources?.phone?.enabled !== false;
   const used = st?.content || {};
   // 这一拍明确不要的由头（engine 在「转发内容读不到」时会跳过 forward 再挑一次）
@@ -212,7 +214,7 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
   const gapMeMin = me.lastTs ? (now - me.lastTs) / 60000 : null;
   const unanswered = Boolean(her.lastTs) && (!me.lastTs || her.lastTs > me.lastTs);
 
-  // 人在不在电脑前：三类只看电脑的由头和「快上课了」都要它
+  // 部分电脑与课表由头要求人正好在电脑前。
   const pc = st?.pc || {};
   const awaySec = Number(cfg?.idle?.awaySec ?? 600);
   const idleNow = ctx?.presence?.idleSec;
@@ -313,7 +315,7 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
       // a) 明天早上有早课：今晚提一次，跨零点算同一晚
       const earlyHour = Number(t.agendaEarlyBeforeHour ?? 9);
       const fromHour = Number(t.agendaTomorrowHour ?? 21);
-      const inWindow = mins >= fromHour * 60 || mins < 120;
+      const inWindow = mins >= fromHour * 60 || mins < Number(t.agendaTomorrowUntilHour ?? 2) * 60;
       if (inWindow && nc && nc.inDays <= 1 && nc.fromMin < earlyHour * 60) {
         const night = nightKeyOf(now, tz);
         if (used.lastAgendaNight !== night) {
@@ -328,7 +330,7 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
         }
       }
       // b) 下一节课在 soonMin 分钟内开始：这时提才有用，晚了就是马后炮
-      if (nc && nc.inDays === 0 && nc.offsetMin - mins <= soonMin && nc.offsetMin - mins >= 5 && here) {
+      if (nc && nc.inDays === 0 && nc.offsetMin - mins <= soonMin && nc.offsetMin - mins >= Number(t.agendaSoonMinLead ?? 5) && here) {
         const key = `${dayKey(now, tz)}:${nc.fromMin}`;
         if (used.lastAgendaSoon !== key) {
           return {
@@ -341,6 +343,12 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
         }
       }
     }
+  }
+
+  // 有可核对的新发现时优先分享，先让她的话和紧急日程。
+  if (ctx.self?.discoveryId && !unanswered) {
+    const share = shareTopic(ctx, t, used, now, on, ok);
+    if (share) return share;
   }
 
   // 1.8) 追问：我主动发过去的那条，她一直没回。
@@ -400,8 +408,8 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
         ? healthDay(fish.fetchedAt, tz, dayStart)
         : null;
     const freshEnough = mailTs
-      ? now - mailTs <= 6 * 60 * 60_000
-      : fish.ageMin != null && fish.ageMin <= 360;
+      ? now - mailTs <= Number(t.sleepSameDayGraceMin ?? 360) * 60_000
+      : fish.ageMin != null && fish.ageMin <= Number(t.sleepSameDayGraceMin ?? 360);
     const dayOk = dataDay == null ? true : dataDay === sleepDay || freshEnough;
     const ageOk = fish.ageMin == null || fish.ageMin <= sleepMaxAgeH * H;
     // 只有总睡眠（含白天小睡）时不提「昨晚睡了多久」——总睡眠不是昨夜那一觉，
@@ -507,14 +515,65 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
     }
   }
 
-  // 4) 步数：18 点以后「新收到的那封邮件」里，今天一共走了多少。
-  //    两头都算由头：不到 lowMax（默认 2000）= 一整天几乎没动；超过 highMin（默认 8000）= 活动量好。
-  //    中间那一段（2000~8000）什么都不发——「今天走了四千步」不值得专门找她。
-  //    一天只发一次；数据必须是新到的（stepsMaxAgeMin，默认 120 分钟），
-  //    否则晚上 22 点拿中午 12 点的步数说事，等于把白天的话拖到晚上重播一遍。
+  // 本机探针提供的由头不依赖手机邮件。
+  // a) 深夜了还亮着：一个晚上只提一次（跨零点算同一晚）
+  const lateFrom = Number(t.lateFromHour ?? 23);
+  const lateTo = Number(t.lateToHour ?? 2);
+  if (on('lateUp') && ok('lateUp') && here && !unanswered && isLateNight(mins, lateFrom, lateTo)) {
+    const night = nightKeyOf(now, tz);
+    if (used.lastLateUpFor !== night) {
+      return {
+        slot: 'lateUp',
+        label: SLOTS.lateUp.label,
+        why: SLOTS.lateUp.why,
+        evidence: { at: ctx.clock || '', nightKey: night, fromHour: lateFrom },
+        brief: `现在 ${ctx.clock || '这个点'}，她那边屏幕还亮着、鼠标键盘还在动——今晚没打算早睡。`,
+      };
+    }
+  }
+
+  // c) 刚回来：离开够久，又回来了
+  //    她 2026-11-10 说「话题都太集中在我看电脑这件事上」：这一类最少隔 backCooldownMin（默认 2 小时）才再用一次，
+  //    brief 里也不再写「电脑前」——那是给模型递话头。
+  const backMin = Number(t.backAfterMin ?? 30);
+  const backCool = now - (Number(used.lastBackSendAt) || 0) >= Number(t.backCooldownMin ?? 120) * 60_000;
+  if (on('backHome') && ok('backHome') && backCool && pc.lastReturnAt && used.lastBackAt !== pc.lastReturnAt) {
+    const justBack = now - pc.lastReturnAt <= Number(t.backRecentMin ?? 20) * 60_000;
+    const awayLong = Number(pc.lastAwayMs) >= backMin * 60_000;
+    // 她刚说过话就别用「刚回来」再开一次场，那是自说自话
+    const herQuiet = gapHerMin == null || gapHerMin >= Number(t.backUserQuietMin ?? 120);
+    if (justBack && awayLong && herQuiet) {
+      const awayMin = Math.round(Number(pc.lastAwayMs) / 60_000);
+      return {
+        slot: 'backHome',
+        label: SLOTS.backHome.label,
+        why: SLOTS.backHome.why,
+        evidence: { returnAt: pc.lastReturnAt, awayMin, at: hhmm(pc.lastReturnAt, tz) },
+        brief: `她出去了 ${fmtMin(awayMin)}，${hhmm(pc.lastReturnAt, tz)} 刚回来。`,
+      };
+    }
+  }
+
+  const share = !unanswered && shareTopic(ctx, t, used, now, on, ok);
+  if (share) return share;
+
+  // 7) 好几天没说话：只在真断了的时候用
+  const idleDays = Number(t.catchupDays ?? 2);
+  if (on('catchup') && ok('catchup') && gapHerMin != null && gapHerMin >= idleDays * DAY_MIN * 1 && !unanswered) {
+    return {
+      slot: 'catchup',
+      label: SLOTS.catchup.label,
+      why: SLOTS.catchup.why,
+      evidence: { silentDays: +(gapHerMin / DAY_MIN).toFixed(1) },
+      brief: `上次她说话是 ${(gapHerMin / DAY_MIN).toFixed(1)} 天前。`,
+    };
+  }
+
+  // 步数、屏幕和久坐放在最后，只在明显超出日常时考虑。
+  if (unanswered || wellnessCooldown(st, now, tz, cfg)) return null;
   const stepsFrom = Number(t.stepsFromHour ?? 18);
-  const stepsLow = Number(t.stepsLowMax ?? 2000);
-  const stepsHigh = Number(t.stepsHighMin ?? 8000);
+  const stepsLow = Math.min(600, Number(t.stepsLowMax ?? 600));
+  const stepsHigh = Math.max(16000, Number(t.stepsHighMin ?? 16000));
   const stepsMaxAgeMin = Number(t.stepsMaxAgeMin ?? 120);
   const stepsVal = fish.steps == null ? null : Number(fish.steps);
   if (
@@ -524,7 +583,7 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
     Number.isFinite(stepsVal) &&
     stepsLow < stepsHigh &&
     mins >= stepsFrom * H &&
-    (fish.ageMin == null || fish.ageMin <= stepsMaxAgeMin)
+    fish.ageMin != null && fish.ageMin >= 0 && fish.ageMin <= stepsMaxAgeMin
   ) {
     const stepsDay = healthDay(now, tz, dayStart);
     const kind = stepsVal < stepsLow ? 'low' : stepsVal > stepsHigh ? 'high' : null;
@@ -542,15 +601,12 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
           day: stepsDay,
           agoMin: fish.ageMin ?? null,
         },
-        brief:
-          kind === 'low'
-            ? `鱼鱼读到她的步数只有 ${stepsVal}（不到 ${stepsLow} 步），今天几乎没怎么动。`
-            : `鱼鱼读到她的步数 ${stepsVal}（超过 ${stepsHigh} 步），今天活动量不错。`,
+        brief: kind === 'low' ? '邮件记录的步数偏少，可能有漏记。' : '邮件记录的步数明显比普通活动量多。',
       };
     }
   }
 
-  // 5) 屏幕时间：晚上提，白天提像查岗
+  // 屏幕时间只在晚上考虑。
   const screenFrom = Number(t.screenFromHour ?? 21);
   if (
     phoneData &&
@@ -559,8 +615,8 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
     fish.screenMin != null &&
     mins >= screenFrom * H &&
     fish.ageMin != null &&
-    fish.ageMin <= sleepMaxAgeH * H &&
-    fish.screenMin >= Number(t.screenHeavyMin ?? 480) &&
+    fish.ageMin >= 0 && fish.ageMin <= Number(t.screenMaxAgeH ?? sleepMaxAgeH) * H &&
+    fish.screenMin >= Number(t.screenHeavyMin ?? 720) &&
     used.lastScreenFor !== `${fish.date}:${dayRank(now, ctx.tz)}`
   ) {
     return {
@@ -568,98 +624,24 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
       label: SLOTS.screen.label,
       why: SLOTS.screen.why,
       evidence: { screenMin: fish.screenMin, date: fish.date },
-      brief: `她今天屏幕${coarseMin(fish.screenMin)}。`,
+      brief: '邮件记录的屏幕时间偏长，当作背景，别直接报数字。',
     };
   }
 
-  // 5.5) 只看电脑的三个由头。
-  //      睡眠/压力/步数/屏幕四类全靠手机 App 发的邮件，手机端一关就全灭；
-  //      这三类只吃本机探针，是「不接手机」时的主要来源，所以不跟 fish.ok 挂钩。
-  // a) 深夜了还亮着：一个晚上只提一次（跨零点算同一晚）
-  const lateFrom = Number(t.lateFromHour ?? 23);
-  const lateTo = Number(t.lateToHour ?? 2);
-  if (on('lateUp') && ok('lateUp') && here && !unanswered && isLateNight(mins, lateFrom, lateTo)) {
-    const night = nightKeyOf(now, tz);
-    if (used.lastLateUpFor !== night) {
-      return {
-        slot: 'lateUp',
-        label: SLOTS.lateUp.label,
-        why: SLOTS.lateUp.why,
-        evidence: { at: ctx.clock || '', nightKey: night, fromHour: lateFrom },
-        brief: `现在 ${ctx.clock || '这个点'}，她那边屏幕还亮着、鼠标键盘还在动——今晚没打算早睡。`,
-      };
-    }
-  }
-
-  // b) 坐太久了：连续在电脑前，中间没真正离开过
-  const longSitH = Number(t.longSitHours ?? 3);
+  // 连续活跃只代表探针有信号，不能断定用户一直坐着。
+  const longSitH = Number(t.longSitHours ?? 5);
   if (on('longSit') && ok('longSit') && here && pc.activeSince && now - pc.activeSince >= longSitH * 3_600_000) {
     const day = dayKey(now, tz);
     if (used.lastLongSitFor !== day) {
       const since = hhmm(pc.activeSince, tz);
-      const sat = fmtMin((now - pc.activeSince) / 60_000);
       return {
         slot: 'longSit',
         label: SLOTS.longSit.label,
         why: SLOTS.longSit.why,
         evidence: { since, day, satMin: Math.round((now - pc.activeSince) / 60_000) },
-        brief: `她从 ${since} 一直坐到 ${hhmm(now, tz)}，已经 ${sat}，中间几乎没离开过。`,
+        brief: '电脑连续活跃了较长时间，实际坐了多久未知。',
       };
     }
-  }
-
-  // c) 刚回来：离开够久，又回来了
-  //    她 2026-11-10 说「话题都太集中在我看电脑这件事上」：这一类最少隔 backCooldownMin（默认 2 小时）才再用一次，
-  //    brief 里也不再写「电脑前」——那是给模型递话头。
-  const backMin = Number(t.backAfterMin ?? 30);
-  const backCool = now - (Number(used.lastBackSendAt) || 0) >= Number(t.backCooldownMin ?? 120) * 60_000;
-  if (on('backHome') && ok('backHome') && backCool && pc.lastReturnAt && used.lastBackAt !== pc.lastReturnAt) {
-    const justBack = now - pc.lastReturnAt <= 20 * 60_000;
-    const awayLong = Number(pc.lastAwayMs) >= backMin * 60_000;
-    // 她刚说过话就别用「刚回来」再开一次场，那是自说自话
-    const herQuiet = gapHerMin == null || gapHerMin >= 120;
-    if (justBack && awayLong && herQuiet) {
-      const awayMin = Math.round(Number(pc.lastAwayMs) / 60_000);
-      return {
-        slot: 'backHome',
-        label: SLOTS.backHome.label,
-        why: SLOTS.backHome.why,
-        evidence: { returnAt: pc.lastReturnAt, awayMin, at: hhmm(pc.lastReturnAt, tz) },
-        brief: `她出去了 ${fmtMin(awayMin)}，${hhmm(pc.lastReturnAt, tz)} 刚回来。`,
-      };
-    }
-  }
-
-  // 6) 我自己的判断：self.md 最后一条，隔一天才复用
-  const shareGapH = Number(t.shareGapH ?? 24);
-  if (
-    on('share') && ok('share') &&
-    ctx.self &&
-    String(ctx.self.line || '').length >= Number(t.shareMinChars ?? 40) &&
-    (!used.lastShareAt || now - used.lastShareAt >= shareGapH * 3_600_000) &&
-    (!used.lastShareLine || used.lastShareLine !== ctx.self.line.slice(0, 80))
-  ) {
-    return {
-      slot: 'share',
-      label: SLOTS.share.label,
-      why: SLOTS.share.why,
-      evidence: { section: ctx.self.section, at: ctx.self.at, chars: ctx.self.chars },
-      // 别把原文整段塞进去：模型会照抄，而且这是我的内部判断。
-      // 只给 80 字、且明确要「落到具体」，否则模型会把它再抽象成一句格言。
-      brief: `我私下记过一条判断（${ctx.self.section || '想法'}）：「${ctx.self.line.slice(0, 80)}」。这是我的判断，只能说给她听，不能照搬原句、不能加引号、不能总结成一般道理。`,
-    };
-  }
-
-  // 7) 好几天没说话：只在真断了的时候用
-  const idleDays = Number(t.catchupDays ?? 2);
-  if (on('catchup') && ok('catchup') && gapHerMin != null && gapHerMin >= idleDays * DAY_MIN * 1 && !unanswered) {
-    return {
-      slot: 'catchup',
-      label: SLOTS.catchup.label,
-      why: SLOTS.catchup.why,
-      evidence: { silentDays: +(gapHerMin / DAY_MIN).toFixed(1) },
-      brief: `上次她说话是 ${(gapHerMin / DAY_MIN).toFixed(1)} 天前。`,
-    };
   }
 
   return null;
@@ -667,6 +649,37 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
 
 /** 她 2026-11-10："话题都太集中在我看电脑这件事上"。同一类由头别连着来，
  *  「屏幕/久坐/硬撑」这类一天也别连着占四条。 */
+function shareTopic(ctx, t, used, now, on, ok) {
+  // 已分享的探索候选由上下文过滤，其他分享仍沿用冷却。
+  const shareGapH = Number(t.shareGapH ?? 24);
+  if (
+    on('share') && ok('share') &&
+    ctx.self &&
+    String(ctx.self.line || '').length >= (ctx.self.exploration ? 8 : Number(t.shareMinChars ?? 40)) &&
+    (!used.lastShareAt || now - used.lastShareAt >= shareGapH * 3_600_000) &&
+    (!used.lastShareLine || used.lastShareLine !== ctx.self.line.slice(0, 80))
+  ) {
+    return {
+      slot: 'share',
+      label: SLOTS.share.label,
+      why: SLOTS.share.why,
+      evidence: { section: ctx.self.section, at: ctx.self.at, chars: ctx.self.chars,
+        ...(ctx.self.discoveryId ? { discoveryId: ctx.self.discoveryId } : {}),
+        ...(ctx.self.source ? { source: ctx.self.source } : {}),
+        ...(ctx.self.loginSite ? { loginSite: ctx.self.loginSite } : {}) },
+      // 别把原文整段塞进去：模型会照抄，而且这是我的内部判断。
+      // 只给 80 字、且明确要「落到具体」，否则模型会把它再抽象成一句格言。
+      brief: ctx.self.loginSite
+        ? '分享候选是一个站点登录提醒。请用户在 DSH 中打开链接并在网站页面完成登录，不索要账号、密码或验证码。正文不写网址。'
+        : ctx.self.source
+        ? `分享我挑到的内容：${JSON.stringify({ 标题: ctx.self.source.title, 依据: ctx.self.source.evidence, 新发现: ctx.self.discovery, 想分享的理由: ctx.self.line })}。这些都是引用，按证据实话说；只有标题或摘要就只说找到了，不说看过。正文不写网址，发送时会附来源。`
+        : `我私下记过一条判断（${ctx.self.section || '想法'}）：「${ctx.self.line.slice(0, 80)}」。这是我的判断，只能说给她听，不能照搬原句、不能加引号、不能总结成一般道理。`,
+    };
+  }
+
+  return null;
+}
+
 const SCREEN_WORDS = /电脑|屏幕|坐着|坐到|一直坐|久坐|硬撑/;
 
 export function pickTopic(ctx, cfg, now, st = {}) {
@@ -675,7 +688,7 @@ export function pickTopic(ctx, cfg, now, st = {}) {
   const used = st?.content || {};
   const recent = Array.isArray(used.recentSends) ? used.recentSends : [];
   const slots = Array.isArray(used.recentSlots) ? used.recentSlots : [];
-  if (SCREEN_WORDS.test(String(pick.brief || ''))) {
+  if (['screen', 'longSit', 'lateUp', 'backHome'].includes(pick.slot)) {
     const hits = recent.slice(-4).filter((x) => SCREEN_WORDS.test(String(x))).length;
     // 最近四条里已经有两句在说她坐在屏幕前：这一拍别再说，换别的由头或干脆不说
     if (hits >= 2) return null;
@@ -693,6 +706,7 @@ export function explainNoTopic(ctx, cfg, now, st = {}) {
   const tz = ctx.tz || cfg?.timezone;
   const mins = minutesOfDayOf(now, tz);
   const reasons = [];
+  if (wellnessCooldown(st, now, tz, cfg)) reasons.push('步数、屏幕和久坐提醒共用冷却');
 
   const unanswered = Boolean(her.lastTs) && (!me.lastTs || her.lastTs > me.lastTs);
   if (!unanswered) reasons.push('她没在等我回（她最后一条早于我最后一条，或没有记录）');
@@ -743,12 +757,13 @@ export function explainNoTopic(ctx, cfg, now, st = {}) {
     // 步数：18 点以后那一条，两头才算由头
     const stepsVal = fish.steps == null ? null : Number(fish.steps);
     const stepsFrom = Number(t.stepsFromHour ?? 18);
-    const stepsLow = Number(t.stepsLowMax ?? 2000);
-    const stepsHigh = Number(t.stepsHighMin ?? 8000);
+    const stepsLow = Math.min(600, Number(t.stepsLowMax ?? 600));
+    const stepsHigh = Math.max(16000, Number(t.stepsHighMin ?? 16000));
     if (t.steps === false) reasons.push('步数由头已关闭（content.topics.steps=false）');
     else if (stepsVal == null) reasons.push('鱼鱼摘要里没读到步数');
     else if (mins < stepsFrom * H) reasons.push(`步数要 ${stepsFrom} 点以后才看（现在还没到）`);
-    else if (fish.ageMin != null && fish.ageMin > Number(t.stepsMaxAgeMin ?? 120)) {
+    else if (fish.ageMin == null || fish.ageMin < 0) reasons.push('步数记录时间不明');
+    else if (fish.ageMin > Number(t.stepsMaxAgeMin ?? 120)) {
       reasons.push(`这封邮件是 ${fish.ageMin} 分钟前的，步数不当成「刚接到的」用`);
     } else if (stepsVal >= stepsLow && stepsVal <= stepsHigh) {
       reasons.push(`步数 ${stepsVal} 在 ${stepsLow}–${stepsHigh} 之间，今天这个由头不成立`);
@@ -770,7 +785,7 @@ export function explainNoTopic(ctx, cfg, now, st = {}) {
     if (t.longSit === false) reasons.push('「坐太久了」这一类关着');
     else if (!pc.activeSince) reasons.push('还没记到一段连续坐着的时间（刚回来或刚开机）');
     else if (st?.content?.lastLongSitFor === dayKey(now, tz)) reasons.push('今天已经说过坐太久了');
-    else reasons.push(`连续坐了 ${Math.round((now - pc.activeSince) / 60_000)} 分钟（到 ${Number(t.longSitHours ?? 3)} 小时才算）`);
+    else reasons.push(`连续坐了 ${Math.round((now - pc.activeSince) / 60_000)} 分钟（到 ${Number(t.longSitHours ?? 5)} 小时才算）`);
     if (t.backHome === false) reasons.push('「她刚回来」这一类关着');
     else if (!pc.lastReturnAt) reasons.push('还没记到她离开过又回来');
   }

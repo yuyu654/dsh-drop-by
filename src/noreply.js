@@ -17,6 +17,16 @@ import { hhmm, hmToMin, minutesOfDayOf } from './time.js';
 import { lastWindowEnd } from './schedule.js';
 
 const MIN = 60_000;
+const BACKGROUND_SLOTS = new Set(['steps', 'screen', 'longSit']);
+const CASUAL_SLOTS = new Set(['share', 'chitchat', 'catchup', 'backHome', 'qqContinuation']);
+
+function lastFollowUpTime(st) {
+  // 旧状态只有被追问那条的 key。反馈还能排除那次追问前积压的消息。
+  const prior = /^(?:qq|douyin):(\d+)$/.exec(st?.content?.lastNoReplyFor || '');
+  const pending = Array.isArray(st?.feedback?.pending) ? st.feedback.pending : [];
+  return Math.max(Number(prior?.[1]) || 0, Number(st?.feedback?.slots?.noReply?.lastSentAt) || 0,
+    ...pending.filter((p) => p?.slot === 'noReply').map((p) => Number(p.ts) || 0));
+}
 
 function num(v, dflt) {
   const n = Number(v);
@@ -36,19 +46,22 @@ export function hmStrictNext(hm, now, tz) {
   return target > cur ? midnight + target * MIN : midnight + (target + 1440) * MIN;
 }
 
-/** QQ 侧：feedback.pending 里最老、够久、且她之后没说话的那条 */
-export function pendingFromFeedback(st, cfg, now) {
+/** QQ 侧：挑最新一条够久、尚未被回应的候选。 */
+export function pendingFromFeedback(st, cfg, now, herTs = null) {
   const pend = Array.isArray(st?.feedback?.pending) ? st.feedback.pending : [];
   // expect === false 的是「回她 / 接转发」：我回完一句、她看完就走，不叫「没回」，
   // 更不能拿它当追问的由头——不然最后一句是我也要追一句。
-  const ready = pend.filter((p) => p?.expect !== false && Number(p?.ts) > 0 && now - Number(p.ts) >= thresholdMin(cfg) * MIN);
-  if (!ready.length) return null;
-  const p = ready[ready.length - 1];
+  const cutoff = Math.max(Number(herTs) || 0, lastFollowUpTime(st));
+  const p = pend.filter((entry) => entry?.expect !== false && entry?.slot && entry.slot !== 'noReply' && !BACKGROUND_SLOTS.has(entry.slot) &&
+    (cfg?.content?.topics?.followCasualSilence === true || !CASUAL_SLOTS.has(entry.slot)) &&
+    Number(entry.ts) > cutoff && now - Number(entry.ts) >= thresholdMin(cfg) * MIN)
+    .sort((a, b) => Number(b.ts) - Number(a.ts))[0];
+  if (!p) return null;
   return {
     channel: 'qq',
     at: Number(p.ts),
     slot: String(p.slot || ''),
-    text: String(p.text || ''),
+    text: String(p.draft || p.text || ''),
     silenceMin: Math.round((now - Number(p.ts)) / MIN),
     key: `qq:${Number(p.ts)}`,
   };
@@ -85,10 +98,12 @@ export function pendingFromDouyin({ cfg, now, herTs, lastOut = null, herOnDouyin
 
 /** 两条来源里挑最近的一条（离现在越近越值得问） */
 export function pickNoReply({ st, cfg, now, herTs = null, douyinOut = null, herOnDouyin = 0 }) {
+  const cutoff = lastFollowUpTime(st);
   const list = [
-    pendingFromFeedback(st, cfg, now),
-    pendingFromDouyin({ cfg, now, herTs, lastOut: douyinOut, herOnDouyin }),
-  ].filter(Boolean);
+    pendingFromFeedback(st, cfg, now, herTs),
+    cfg?.content?.topics?.followCasualSilence === true
+      ? pendingFromDouyin({ cfg, now, herTs, lastOut: douyinOut, herOnDouyin }) : null,
+  ].filter((candidate) => candidate && candidate.at > cutoff);
   if (!list.length) return null;
   return list.sort((a, b) => b.at - a.at)[0];
 }
@@ -190,7 +205,7 @@ export async function judgeAway({ cand, ctx, cfg, now, tz, generate, llmReady = 
     return { away: false, untilHm: null, why: '', judge: 'off' };
   }
   try {
-    const r = await generate({ prompt: judgePrompt({ cand, ctx, cfg, now, tz }), cfg, timeoutMs: 90_000 });
+    const r = await generate({ prompt: judgePrompt({ cand, ctx, cfg, now, tz }), cfg, timeoutMs: cfg?.content?.topics?.noReplyJudgeTimeoutMs ?? 90_000 });
     if (!r?.ok) return { away: false, untilHm: null, why: '', judge: 'error', reason: String(r?.reason || '') };
     const m = /\{[\s\S]*\}/.exec(String(r.text || ''));
     if (!m) return { away: false, untilHm: null, why: '', judge: 'bad', reason: 'NOT_JSON' };

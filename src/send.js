@@ -92,12 +92,13 @@ export async function sendQQRound({
   herAt = 0,
   herChars = 0,
   split = {},
+  timeoutMs,
 } = {}) {
   const cfg = {
     enabled: split.enabled !== false,
     maxParts: Math.max(1, Math.min(4, Number(split.maxParts) || 4)),
-    minFirstMs: Number(split.firstDelayMs) || 6000,
-    minGapMs: Number(split.minGapMs) || 1200,
+    minFirstMs: Number(split.minFirstMs ?? split.firstDelayMs ?? 6000),
+    minGapMs: Number(split.minGapMs ?? 1200),
     maxRoundMs: Number(split.maxRoundMs) || 90000,
   };
   const raw = String(text ?? '');
@@ -108,7 +109,7 @@ export async function sendQQRound({
   // 先写「这一轮开始发了」：firstAt 有、lastAt=0 → 别的地方看见就知道我在回。
   const round = {
     peer: String(to),
-    source: 'presence-gate',
+    source: 'dsh-drop-by',
     firstAt: now,
     lastAt: 0,
     count: parts.length,
@@ -120,13 +121,16 @@ export async function sendQQRound({
   let sent = 0;
   let messageId = null;
   try {
-    await sleep(firstDelayMs({ herAt, herChars, now: round.firstAt, minMs: cfg.minFirstMs }));
+    if (cfg.enabled) await sleep(Math.min(cfg.maxRoundMs, firstDelayMs({
+      herAt, herChars, now: round.firstAt, minMs: cfg.minFirstMs, maxMs: split.maxFirstMs,
+      jitterMs: split.firstJitterMs, perCharMs: split.firstPerCharMs,
+    })));
     for (let i = 0; i < parts.length; i += 1) {
       if (i > 0) {
-        const gap = partGapMs(parts[i].length, { minGapMs: cfg.minGapMs });
+        const gap = partGapMs(parts[i].length, { minGapMs: cfg.minGapMs, maxMs: split.maxGapMs, jitterMs: split.gapJitterMs, perCharMs: split.gapPerCharMs });
         if (Date.now() - startedAt + gap > cfg.maxRoundMs) {
           const rest = parts.slice(i).join(' ');
-          const r = await sendQQPrivate({ to, text: rest, dryRun: false });
+          const r = await sendQQPrivate({ to, text: rest, dryRun: false, timeoutMs });
           if (!r.ok) throw new Error(r.error || '发送失败');
           messageId = messageId ?? r.messageId ?? null;
           sent = parts.length;
@@ -134,7 +138,7 @@ export async function sendQQRound({
         }
         await sleep(gap);
       }
-      const r = await sendQQPrivate({ to, text: parts[i], dryRun: false });
+      const r = await sendQQPrivate({ to, text: parts[i], dryRun: false, timeoutMs });
       if (!r.ok) throw new Error(r.error || '发送失败');
       messageId = messageId ?? r.messageId ?? null;
       sent += 1;

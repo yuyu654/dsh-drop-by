@@ -25,7 +25,9 @@ const DEFAULTS = {
   enabled: true,
   dryRun: true,
   tickMinutes: 10,
+
   timezone: 'Asia/Shanghai',
+  exploration: { auto: false, offerShare: false, mood: false, portrait: false, web: false, video: false, leisureEvery: 3, interest: '', intervalMinutes: 180, recentDays: 3, moodHours: 2, portraitHours: 2, planTimeoutMs: 30000, roundTimeoutMs: 45000, toolTimeoutMs: 18000, storyboardTimeoutMs: 65000, storyboardSeconds: 60, moodReplyAgeMin: 30, moodDraftTimeoutMs: 15000, portraitTimeoutMs: 12000 },
   // 全局静默：这一段里所有功能都不读不发（含邮箱不联网）。多段、可跨零点。
   quietHours: [['22:30', '07:30']],
   quietHoursNote: '全局静默，多段，空数组=不静默',
@@ -36,15 +38,18 @@ const DEFAULTS = {
   idle: { onlineSec: 30, awaySec: 600 },
   // replyGuard：开口前再翻一遍最新的出站记录（QQ history / qq-reply.out.txt / 抖音 dm 记忆），
   // 只要发现「我最后一次说话已经晚于她那条消息」，这一拍就不回——插件可能已经替我们回过了。
-  rules: { replyCooldownMin: 5, minGapMin: 240, dailyCap: 3, backfillWindowMin: 30, douyinStaleMin: 10, replyGuard: true, autoReply: true, proactive: true, backfill: true, feedback: { enabled: true, coldAfter: 6, coldRate: 0.25, coldDays: 3, testMode: false }, adaptiveGap: true,
+  rules: { gapMaxX: 3, replyCooldownMin: 5, minGapMin: 240, dailyCap: 3, backfillWindowMin: 30, douyinStaleMin: 10, replyGuard: true, autoReply: true, proactive: true, backfill: true, feedback: { enabled: true, coldAfter: 6, coldRate: 0.25, coldDays: 3, testMode: false, replyMatchSec: 60, hitMin: 45, windowMin: 240, keepHours: 24, dayStartMin: 510, dayEndMin: 1410 }, adaptiveGap: true,
     // judge：护栏放行之后，再让模型看一眼整份处境，自己决定这一拍说不说、说什么。
     // 默认关 = 完全按规则链走（pickTopic 挑到由头就写）；开着也只是「多问一次」——
     // 静默/间隔/上限/guard 全在外面，模型说不说都越不过它们；判断失败一律退回规则链。
     // attempts：模型把「判断」写成一句回话时（角色人格大概三成会这样），再问一次；默认 2 次就够了。
     // 阶段 4：shadow = 被护栏拦下的拍子也随机抽一部分交给模型预演（只记不发，不碰 feedback）。
     // shadowSampleRate 默认 0.25：一天被拦一百来拍，只烧二三十次调用。
-    judge: { enabled: false, attempts: 2, shadow: false, shadowSampleRate: 0.25 },
+    judge: { enabled: false, attempts: 2, shadow: false, shadowSampleRate: 0.25, timeoutMs: 90000 },
+    askProjectOnce: false,
     qqContinuation: false,
+    qqTiming: { pollSec: 2, windowSec: 180, pauseSec: 15, expireSec: 55, inFlightSec: 180, generationTimeoutMs: 20000 },
+    projectTiming: { memoryDays: 14, updateMin: 30, generationTimeoutMs: 20000 },
     // 随口说话：没有由头时，也可以说一句。**默认关**——要 judge 也开着才生效，
     // 因为它靠 judge 判「这一拍要不要说」。生成只走模型：模板写不出自然的无由头话，
     // 写不出来就不发（绝不 fallback），废话比沉默差。
@@ -57,6 +62,13 @@ const DEFAULTS = {
       dayEnd: 1410,
       maxChars: 40,
       seedDays: 30,
+      densityDays: 7,
+      strandHours: 12,
+      pauseHours: 48,
+      restHistoryDays: 7,
+      restPaddingMin: 30,
+      restFallbackStartMin: 1380,
+      restFallbackEndMin: 420,
       // 记忆种子要不要跳过我自己标了「不给对方看」的条目。
       // 注意方向：那是**我**瞒着对方的东西（self.md 里的 PRIVATE_MARK），不是对方瞒着我；
       // 默认跳过——瞒着她的事不能反过来拿去当搭话的素材。
@@ -75,7 +87,7 @@ const DEFAULTS = {
     gapByTier: { enabled: false, replyMin: 5, eventMin: 60, chatMin: 240 },
     // 阶段 1（0.14）：「人不在」从硬拦截降级成快照里的一个信号，交给 judge 判断。
     // 只在 judge 也开着时生效——没有软决策层就不许放开硬闸（防止规则裸奔）。
-    presenceSignal: { enabled: false } },
+    presenceSignal: { enabled: false, recentChatMin: 30, recentReturnMin: 30, justActiveSec: 120 } },
   channels: {
     // activeHours 空数组 = 全天；多段、可跨零点。与 quietHours 冲突会在 --windows 里报。
     qq: { enabled: true, read: true, send: true, peerId: '', activeHours: [] },
@@ -90,9 +102,9 @@ const DEFAULTS = {
     // staleHours：鱼鱼数据超过这么多小时没更新，睡眠/压力/步数/屏幕四类由头停用（拿旧数据问「昨晚睡得好吗」比不说更伤）。
     // dateTs 缺失或为 0 时视为新鲜——宁可照旧，也别因为读不到邮件头就把四类全停。
     // staleGuard：数据过期检查本身的总闸。关掉 = 不管邮件多旧都照旧用（阈值仍留着，方便只关不删）。
-    phone: { enabled: true, staleHours: 36, staleGuard: true },
+    phone: { enabled: true, staleHours: 36, staleGuard: true, replyContextMaxAgeMin: 240 },
     qq: { enabled: true },
-    douyin: { enabled: false },
+    douyin: { enabled: false, detectCacheMin: 10 },
     // 别的记忆插件：只读它记下来的长期记忆，当「我本来就知道的事」用。
     // plugin 目前只有 fish-memory；session 留空 = 最近改过的那份会话，填 id 前缀就锁一份，填 all 全合并。
     // 想接别的记忆插件：在 memorysource.js 的 MEMORY_PLUGINS 里加一项（告诉你的大肥鱼就行）。
@@ -102,7 +114,9 @@ const DEFAULTS = {
   // 比 L3 的 OCR 准：读的是程序本来就有的字，不是认出来的。默认开，但只在真要发的那一拍读。
   perception: {
     l2: { enabled: true },
-    l3: { enabled: false, everyMin: 30, skipFg: ['lockapp', 'logonui'] },
+    probeCacheMs: 5000,
+    probeTimeoutMs: 4000,
+    l3: { enabled: false, everyMin: 30, timeoutMs: 12000, skipFg: ['lockapp', 'logonui'] },
     signals: { enabled: true, browser: true, port: 9223, timeoutMs: 600 },
     // 反作弊保护：WeGame / 腾讯系游戏在跑时，这一拍不读窗口标题、不读浏览器标签、不截屏，
     // 只留「键鼠多久没动」（GetLastInputInfo，跟游戏无关）。读窗口/截屏在带反作弊的游戏旁边有风险。
@@ -111,7 +125,9 @@ const DEFAULTS = {
       procs: ['wegame', 'tencentdl', 'tcls', 'crossproxy', 'leagueclient', 'lolex', 'dnf', 'cf', 'valorant', 'vgtray', 'gamecoach'],
     },
   },
-  send: { enabled: false, requireConfirm: true },
+  send: { enabled: false, requireConfirm: true, timeoutMs: 8000, split: { enabled: true, maxParts: 4,
+    minFirstMs: 6000, minGapMs: 1200, maxRoundMs: 90000, maxFirstMs: 60000, maxGapMs: 5000,
+    firstJitterMs: 12000, gapJitterMs: 2200, firstPerCharMs: 60, gapPerCharMs: 90 } },
   logging: { keepDays: 2, dayStartHour: 7, mailUpdateMode: 'merge' },
   // 本机私有规则：禁用词、只有这台机器成立的事实。文件不在就是空的（= 通用插件）。
   // 格式见 src/local.js 顶部注释；也可以用 content.local 直接塞。
@@ -153,12 +169,21 @@ const DEFAULTS = {
       asrScript: '', // 空 = ~/.dsh/start-asr.ps1
       asrWaitMs: 180000, // 从拉起等到端口能连（模型加载慢）
       timeoutMs: 600000, // 一条 3 分钟的口播：下载 + 转写 + 摘要合计
+      failTtlHours: 6,
       maxAgeDays: 30, // 同一条视频只认真看一次
       // 调试口没开时按脚本起一个独立 profile 的 Edge（默认 ~/.dsh/start-edge-debug.ps1）。
       edgePort: 9223,
       edgeScript: '', // 空 = ~/.dsh/start-edge-debug.ps1
       edgeAutostart: true, // 关掉就只在口子本来开着时下载
       edgeWaitMs: 25000,
+      visionInfoTimeoutMs: 10000,
+      serviceConnectMs: 800,
+      asrPollMs: 1500,
+      edgePollMs: 500,
+      serviceLaunchMs: 60000,
+      asrLookupMs: 20000,
+      asrStopMs: 15000,
+      extractAudioMs: 120000,
     },
     topics: {
       reply: true,
@@ -175,12 +200,22 @@ const DEFAULTS = {
       share: true,
       catchup: true,
       replyMaxAgeMin: 720,
+      stressMinGapMin: 180,
+      stressMaxAgeH: 12,
+      stressFromHour: 9,
+      stressToHour: 22,
       sleepShortMin: 390,
       sleepLongMin: 570,
       sleepFromHour: 7,
       sleepToHour: 10.5,
       sleepMaxAgeH: 14,
-      screenHeavyMin: 480,
+      sleepSameDayGraceMin: 360,
+      sleepDayStartHour: 7,
+      sleepDeepShortMin: 120,
+      sleepLateBed: '00:30',
+      screenHeavyMin: 720,
+      screenMaxAgeH: 14,
+      wellnessCooldownHours: 96,
       screenFromHour: 21,
       shareGapH: 24,
       shareMinChars: 40,
@@ -190,13 +225,18 @@ const DEFAULTS = {
       lateFromHour: 23,
       lateToHour: 2, // 23:00–02:00
       longSit: true, // 连续坐在电脑前不动
-      longSitHours: 3,
+      longSitHours: 5,
       backHome: true, // 离开一阵又回来
+      backCooldownMin: 120,
+      backRecentMin: 20,
+      backUserQuietMin: 120,
       backAfterMin: 30, // 离开超过这么久才算「出去过」，不是去倒杯水
       // 课表：唯一往前看的由头（设置页多行框，或 data/agenda.txt）
       agenda: true,
       agendaTomorrowHour: 21,
       agendaEarlyBeforeHour: 9,
+      agendaSoonMinLead: 5,
+      agendaTomorrowUntilHour: 2,
       agendaSoonMin: 20, // 提前多少分钟提「快上课了」（按分钟算）
       // 考试：也只吃设置页那份表（或 data/exams.txt）
       examSoon: true,
@@ -208,8 +248,10 @@ const DEFAULTS = {
       noReplyMin: 120, // 距我那条至少这么多分钟没动静
       noReplyAfterHerMin: 120, // 她最后一次说话之后至少隔这么久才追（别她刚说完就问）
       noReplyAfterBusyMin: 20, // 模型判「她在忙/睡了」：等她忙完 / 忙碌时段结束后再等这么久
-      noReplyDouyin: true, // 抖音分享的那条也算（要装了抖音插件并启用；没装就自动不参与）
-      noReplyJudge: true, // 先让模型判一句「是去忙了」还是「在回避」
+      followCasualSilence: false,
+      noReplyDouyin: true, // 仅在允许追问闲聊或分享时参与。
+      noReplyJudge: true,
+      noReplyJudgeTimeoutMs: 90000, // 先让模型判一句「是去忙了」还是「在回避」
     },
     // 课表正文：一行一节，比如「周一 08:00-09:40 电机学 @教三201」
     // termStart = 开学第一周的周一（YYYY-MM-DD）；填了才按「第几周」过滤带周次的课
@@ -256,7 +298,19 @@ export function loadConfig() {
   } catch {
     raw = {};
   }
-  return merge(DEFAULTS, raw);
+  const cfg = merge(DEFAULTS, raw);
+  // 老版本会钳制这两个门槛。第一次加载显示过去实际生效的数值。
+  if (cfg.timingVersion !== 1) {
+    cfg.content = { ...cfg.content, topics: { ...cfg.content.topics } };
+    const topics = cfg.content.topics;
+    topics.screenHeavyMin = Math.max(720, Number(topics.screenHeavyMin) || 0);
+    topics.longSitHours = Math.max(5, Number(topics.longSitHours) || 0);
+    if (!Object.hasOwn(raw?.content?.topics || {}, 'screenMaxAgeH')) topics.screenMaxAgeH = topics.sleepMaxAgeH;
+    const legacyFirst = Number(raw?.send?.split?.firstDelayMs);
+    if (legacyFirst > 0) cfg.send = { ...cfg.send, split: { ...cfg.send.split, minFirstMs: legacyFirst } };
+    cfg.timingVersion = 1;
+  }
+  return cfg;
 }
 
 export function saveConfig(cfg) {

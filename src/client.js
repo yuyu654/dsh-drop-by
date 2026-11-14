@@ -1,5 +1,5 @@
 /**
- * presence-gate —— 浏览器半侧（手写的 __ModuleLoader__ bundle，不需要构建工具）。
+ * dsh-drop-by —— 浏览器半侧（手写的 __ModuleLoader__ bundle，不需要构建工具）。
  *
  * 注册一个「陪伴」设置页（slot: settings.section）。这一页只干两件事：
  *   1. 让人**看得见**它现在什么状态：开没开、演练还是真发、上一拍判了什么、今天发了几条、
@@ -12,13 +12,13 @@
  *     而且界面上永远不会出现凭据、CLI 路径这些不该暴露的键。
  *   · **不自己糊弹层**：走 settings.section，跟别的插件一样出现在设置左侧导航里。
  *
- * 与宿主只走同源 HTTP（/api/presence-gate/*），不用 RPC —— 少一条可能断的链路。
+ * 与宿主只走同源 HTTP（/api/dsh-drop-by/*），不用 RPC —— 少一条可能断的链路。
  * 修改后 `node --check src/client.js` 验语法（它是脚本，check 只解析不执行）。
  */
 
 if (typeof window !== 'undefined' && window.__ModuleLoader__) {
   window.__ModuleLoader__.load({
-    id: 'presence-gate',
+    id: 'dsh-drop-by',
     factory: function (require) {
       var module = { exports: {} };
       var React = require('react');
@@ -28,8 +28,8 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
       var useCallback = React.useCallback;
       var useRef = React.useRef;
 
-      var API = '/api/presence-gate';
-      var NS = 'presence-gate';
+      var API = '/api/dsh-drop-by';
+      var NS = 'dsh-drop-by';
 
       // ------------------------------------------------------------ 取数
 
@@ -147,7 +147,8 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           value: draft,
           min: item.min === undefined ? undefined : item.min,
           max: item.max === undefined ? undefined : item.max,
-          inputMode: item.type === 'int' || item.type === 'num' ? 'numeric' : undefined,
+          step: item.type === 'num' ? 'any' : undefined,
+          inputMode: item.type === 'num' ? 'decimal' : item.type === 'int' ? 'numeric' : undefined,
           placeholder: item.type === 'secret' ? (item.set ? '已设置，留空不改' : '还没有，填一次就好') : item.type === 'windows' ? '22:30-07:30,12:00-13:00' : item.type === 'hm' ? '00:30' : '',
           autoComplete: item.type === 'secret' ? 'off' : undefined,
           disabled: props.busy,
@@ -307,6 +308,12 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
 
       function Group(props) {
         var g = props.group;
+        var timing = g.name === '时间间隔';
+        var [query, setQuery] = useState('');
+        var keyword = query.trim().toLowerCase();
+        var visible = timing && keyword ? g.items.filter(function (item) {
+          return (item.label + ' ' + (item.hint || '')).toLowerCase().includes(keyword);
+        }) : g.items;
         // 注释排在板块**上面**（她要求的：日常板块头上先提醒一句），不混进标题行
         var note = g.note ? h('div', { className: 'pg-note' }, g.note) : null;
         var wrap = function (card) {
@@ -315,7 +322,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         var rows = h(
           'div',
           { className: 'pg-rows' },
-          g.items.map(function (item) {
+          visible.map(function (item) {
             return h(Row, { key: item.path, item: item, busy: props.busy, onSave: props.onSave });
           })
         );
@@ -332,7 +339,15 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
               h('span', null, g.name),
               g.summary ? h('span', { className: 'pg-card-sub' }, g.summary) : null
             ),
-            rows
+            timing ? h('input', {
+              className: 'pg-input pg-timing-search',
+              type: 'search',
+              'aria-label': '搜索时间间隔',
+              placeholder: '搜索，比如 冷却、探索、QQ',
+              value: query,
+              onChange: function (e) { setQuery(e.target.value); }
+            }) : null,
+            visible.length ? rows : h('div', { className: 'pg-note' }, '没有匹配的设置')
           )
         );
       }
@@ -456,6 +471,9 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         var [error, setError] = useState('');
         var [toast, setToast] = useState(null);
         var [busy, setBusy] = useState(false);
+        var [explorePending, setExplorePending] = useState(false);
+        var [exploreResult, setExploreResult] = useState(null);
+        var [showExplorationDetails, setShowExplorationDetails] = useState(false);
         var [loading, setLoading] = useState(true);
         var mounted = useRef(true);
         var toastTimer = useRef(null);
@@ -560,7 +578,49 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           [flash, load]
         );
 
+        function onExplore() {
+          setExplorePending(true);
+          setExploreResult(null);
+          apiPost('/explore').then(function (r) {
+            if (!mounted.current) return;
+            setState(r.state);
+            var labels = {
+              NO_PERSONA: '请先配置角色人设',
+              QUIET_OR_BUSY: '当前是静默时段，本轮未运行',
+              DISABLED: '插件已关闭',
+              UNAVAILABLE: '探索暂不可用，可能已有一轮在运行',
+              HOST_LLM_MISSING: '宿主模型服务不可用',
+              HOST_LLM_NO_MODEL: 'DSH 尚未配置可用的模型',
+              HOST_LLM_TIMEOUT: '模型响应超时',
+              HOST_LLM_ERROR: '模型请求失败',
+              HOST_LLM_EMPTY: '模型没有返回内容',
+              INVALID_OUTPUT: '重试后模型仍未返回完整的探索 JSON，上轮进展已保留',
+              INVALID_FIELDS: '重试后探索结果仍缺少有效的主题、进展或下一步，上轮进展已保留',
+              CANCELLED: '探索已取消，结果未保存'
+            };
+            var message = r.ok
+              ? (r.action === 'skip' ? '本轮已结束，角色选择跳过' : '本轮已结束，探索进展已保存')
+              : (labels[r.reason] || r.reason || '探索失败');
+            setExploreResult({ text: message, error: !r.ok });
+            if (r.ok && r.action !== 'skip') setShowExplorationDetails(true);
+          }).catch(function (e) {
+            if (mounted.current) setExploreResult({ text: e.message || '探索请求失败', error: true });
+          }).finally(function () {
+            if (mounted.current) setExplorePending(false);
+          });
+        }
+
         if (loading && !state) return h('div', { className: 'pg-root' }, h('div', { className: 'pg-loading' }, '读状态…'));
+        var exploration = state && state.exploration;
+        var exploring = explorePending || Boolean(exploration && exploration.running);
+        var thread = exploration && exploration.thread;
+        var leisure = exploration && exploration.leisure;
+        function sourceLinks(entry) {
+          return (entry && entry.sources || []).filter(function (s) { return /^https?:\/\//i.test(s.url); }).map(function (s) {
+            return h('div', { className: 'pg-quote-note', key: s.url },
+              s.evidence + ' · ', h('a', { href: s.url, target: '_blank', rel: 'noopener noreferrer' }, s.title));
+          });
+        }
 
         return h(
           'div',
@@ -569,6 +629,39 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           error ? h('div', { className: 'pg-error' }, '取不到状态：' + error) : null,
           state ? h(Facts, { state: state }) : null,
           state ? h(LastWords, { state: state }) : null,
+          exploration ? h('div', { className: 'pg-quote' },
+            h('div', { className: 'pg-quote-k' }, '自主探索（试用）'),
+            exploration.lastRun ? h('div', { className: 'pg-quote-note' },
+              (exploration.lastRun.mode === 'leisure' ? '休闲' : '研究') + ' · ' + exploration.lastRun.outcome +
+              (exploration.lastRun.calls?.length ? ' · ' + exploration.lastRun.calls.join(' → ') : ' · 文字探索')) : null,
+            exploration.candidate?.loginSite ? h('div', { className: 'pg-quote-note' },
+              '待登录 · ', h('a', { href: exploration.candidate.source.url, target: '_blank', rel: 'noopener noreferrer' }, exploration.candidate.loginSite),
+              '。请在网站页面完成登录；公开网页工具可能仍无法读取登录后的页面。') : null,
+            h('div', { className: 'pg-quote-note' }, '遇到待确认的本地事实，可在「日常 → 最近对什么好奇」补充你知道的信息，保存后点「试跑一轮」。当前版本需要在这里补充。'),
+            thread || leisure ? h('details', {
+              open: showExplorationDetails,
+              onToggle: function (event) { setShowExplorationDetails(event.currentTarget.open); }
+            },
+              h('summary', null, '最近的探索进展'),
+              ...[thread, leisure].filter(Boolean).flatMap(function (entry, index) {
+                var prefix = entry === leisure ? '休闲' : '研究';
+                return [['进度', entry.checkpoint], ['新发现', entry.discovery], ['待确认', entry.waitingFor]]
+                  .filter(function (item) { return item[1]; }).map(function (item) {
+                    return h('div', { key: index + item[0], className: 'pg-quote-note' }, prefix + ' · ' + item[0] + '：' + item[1]);
+                  });
+              }),
+              thread ? h('div', { className: 'pg-quote-v' }, thread.topic + '：' + thread.progress) : null,
+              thread ? h('div', { className: 'pg-quote-note' }, '下一步：' + thread.next) : null,
+              ...sourceLinks(thread),
+              leisure ? h('div', { className: 'pg-quote-v' }, '随便逛逛 · ' + leisure.topic + '：' + leisure.progress) : null,
+              ...sourceLinks(leisure),
+              exploration.candidate ? h('div', { className: 'pg-quote-note' }, '可分享：' + exploration.candidate.line) : null,
+              exploration.mood ? h('div', { className: 'pg-quote-note' }, '探索感受：' + exploration.mood.text) : null
+            ) : null,
+            h('button', { className: 'pg-btn', type: 'button', disabled: busy || exploring || !state.enabled, onClick: onExplore },
+              exploring ? '探索进行中…' : '试跑一轮（不发送）'),
+            exploreResult ? h('div', { role: 'status', className: 'pg-toast' + (exploreResult.error ? ' pg-toast-err' : '') }, exploreResult.text) : null
+          ) : null,
           toast
             ? h('div', { className: 'pg-toast' + (toast.kind === 'err' ? ' pg-toast-err' : '') }, toast.text)
             : null,
@@ -659,6 +752,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         '.pg-card-fold[open] .pg-card-sum::before{content:"▾";}',
         '.pg-card-sub{font-size:11px;font-weight:400;letter-spacing:0;color:var(--pg-faint);opacity:.92;}',
         '.pg-rows{display:flex;flex-direction:column;}',
+        '.pg-timing-search{width:100%;margin:8px 0;}',
         '.pg-row{display:flex;align-items:flex-start;gap:12px;padding:9px 0;border-bottom:1px solid var(--pg-line-soft);}',
         '.pg-row:last-child{border-bottom:0;}',
         '.pg-row-text{flex:1 1 auto;min-width:0;}',
@@ -699,7 +793,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
 
       function apply(ctx) {
         ctx.effect(function () {
-          var id = 'presence-gate-styles';
+          var id = 'dsh-drop-by-styles';
           if (document.getElementById(id) === null) {
             var style = document.createElement('style');
             style.id = id;
@@ -710,13 +804,13 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
             var el = document.getElementById(id);
             if (el !== null && el.parentNode !== null) el.parentNode.removeChild(el);
           };
-        }, 'presence-gate: styles');
+        }, 'dsh-drop-by: styles');
 
         var slots = typeof ctx.get === 'function' ? ctx.get('slots') : null;
         if (!slots) return;
         var off = slots.inject('settings.section', function () {
           return slots.register(
-            { name: 'settings.section', id: 'presence-gate', order: 34, label: '陪伴' },
+            { name: 'settings.section', id: 'dsh-drop-by', order: 34, label: '陪伴' },
             function (props) {
               var p = props || {};
               return h(ErrorBoundary, { sessionId: p.sessionId }, h(Panel, p));
@@ -726,7 +820,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         if (typeof off === 'function') ctx.effect(function () { return off; });
       }
 
-      module.exports = { name: 'presence-gate', inject: ['slots'], apply: apply };
+      module.exports = { name: 'dsh-drop-by', inject: ['slots'], apply: apply };
       return module.exports;
     },
   });

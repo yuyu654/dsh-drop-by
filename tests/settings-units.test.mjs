@@ -7,7 +7,28 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SCHEMA, courseItems, coerce, listForUi } from '../src/settings.js';
+import { SCHEMA, applyChange, courseItems, coerce, listForUi } from '../src/settings.js';
+
+import { wellnessCooldown } from '../src/decide.js';
+import { firstDelayMs } from '../src/split.js';
+import { recentExploration } from '../src/explore.js';
+
+test('保存的时间设置直接改变冷却、探索有效期和首条等待', () => {
+  const now = Date.parse('2026-11-14T12:00:00+08:00');
+  const st = { content: { lastWellnessAt: now - 13 * 3_600_000 } };
+  assert.equal(wellnessCooldown(st, now, 'Asia/Shanghai', {}), true);
+  const cooldown = applyChange({}, 'content.topics.wellnessCooldownHours', 12);
+  assert.equal(wellnessCooldown(st, now, 'Asia/Shanghai', cooldown.cfg), false);
+
+  const exp = applyChange({}, 'exploration.recentDays', 1);
+  const entry = { at: now - 2 * 86_400_000 };
+  assert.equal(recentExploration(entry, now), true);
+  assert.equal(recentExploration(entry, now, exp.cfg.exploration), false);
+
+  const first = applyChange({}, 'send.split.minFirstMs', 0);
+  assert.equal(firstDelayMs({ now, herAt: now, herChars: 100, minMs: first.cfg.send.split.minFirstMs }), 0);
+  assert.equal(firstDelayMs({ now, herAt: now, rand: () => 0, minMs: 1000, maxMs: 3000 }), 1000);
+});
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -68,11 +89,11 @@ test('分段发送的间隔在设置页按秒填，存回去还是毫秒', () =>
   const cfg = { send: { split: { enabled: true, minFirstMs: 6000, minGapMs: 1200, maxRoundMs: 90000 } } };
   const items = new Map(listForUi(cfg).flatMap((g) => g.items).map((i) => [i.path, i]));
   assert.equal(items.get('send.split.minFirstMs').value, 6);
-  assert.equal(items.get('send.split.minGapMs').value, 1);
+  assert.equal(items.get('send.split.minGapMs').value, 1.2);
   assert.equal(items.get('send.split.maxRoundMs').value, 90);
   assert.equal(items.get('send.split.minFirstMs').unit, '秒');
   assert.equal(coerce('send.split.minFirstMs', 6).value, 6000);
   assert.equal(coerce('send.split.minGapMs', 1).value, 1000);
-  assert.equal(coerce('send.split.minGapMs', 9).ok, false);
+  assert.equal(coerce('send.split.minGapMs', 1.2).value, 1200);
   assert.equal(coerce('send.split.maxParts', 5).ok, false);
 });

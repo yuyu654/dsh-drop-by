@@ -19,11 +19,17 @@ test('分组：日常在最前，高级在最后；高级折起来并写明「�
   assert.match(adv.summary, /平时不用动/);
 });
 
-test('首屏（不含两个折起来的组）不超过 50 行', () => {
+test('首屏日常组保持精简清爽（其余组分类折叠）', () => {
   const groups = listForUi(cfg());
-  const first = groups.filter((g) => !g.foldable).flatMap((g) => g.items);
-  assert.ok(first.length <= 50, `首屏 ${first.length} 行，太多了`);
-  assert.ok(first.length >= 35, `首屏只剩 ${first.length} 行，常用的被藏掉了`);
+  const daily = groups.find((g) => g.name === '日常');
+  assert.ok(daily && !daily.foldable, '日常组常驻展开');
+  assert.ok(daily.items.length <= 15, `日常首屏 ${daily.items.length} 行，保持清爽`);
+  for (const name of ['节奏', '说什么', '数据从哪来', '课表与考试', '高级']) {
+    assert.ok(FOLDABLE_GROUPS.has(name), `${name} 组默认折叠`);
+    const g = groups.find((x) => x.name === name);
+    assert.ok(g.foldable, `${name} 应该是折叠卡片`);
+    assert.ok(g.summary, `${name} 应该带概括人话摘要`);
+  }
 });
 
 test('父开关关着：judge 关了，它的子项不显示；开回来就回来', () => {

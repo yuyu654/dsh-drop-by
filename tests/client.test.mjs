@@ -98,7 +98,7 @@ function load() {
 test('client：自注册一个 id = 包名的模块', () => {
   const { loaded } = load();
   assert.equal(loaded.length, 1, '文件应该调一次 __ModuleLoader__.load');
-  assert.equal(loaded[0].id, 'presence-gate');
+  assert.equal(loaded[0].id, 'dsh-drop-by');
   assert.equal(typeof loaded[0].factory, 'function');
 });
 
@@ -108,13 +108,13 @@ test('client：模块导出 name/inject/apply', () => {
     if (name === 'react') return fakeReact();
     throw new Error('不该 require ' + name);
   });
-  assert.equal(mod.name, 'presence-gate');
+  assert.equal(mod.name, 'dsh-drop-by');
   // 跨 vm 边界的数组原型不同，deepEqual 会判「结构相同但不是同一个东西」→ 转一下
   assert.deepEqual(Array.from(mod.inject), ['slots']);
   assert.equal(typeof mod.apply, 'function');
 });
 
-test('client：apply 会注册 settings.section（左侧导航出现「陪伴」）', () => {
+test('client：apply 会注册 settings.section（左侧导航出现 dsh-drop-by）', () => {
   const { loaded, styles } = load();
   const mod = loaded[0].factory(() => fakeReact());
 
@@ -145,7 +145,7 @@ test('client：apply 会注册 settings.section（左侧导航出现「陪伴」
   assert.ok(captured, 'slots.inject 应该被调用');
   assert.equal(captured.name, 'settings.section');
   assert.equal(captured.def.name, 'settings.section');
-  assert.equal(captured.def.id, 'presence-gate');
+  assert.equal(captured.def.id, 'dsh-drop-by');
   assert.equal(captured.def.label, '陪伴');
   assert.equal(typeof captured.def.order, 'number');
 

@@ -11,13 +11,13 @@ import { spawn } from 'node:child_process';
 import { ROOT } from './config.js';
 
 // 这两个路径跟着安装位置走，不该成为代码的一部分：
-// 优先环境变量（DSH_ELECTRON / DSH_CLI），没有才用这台机器上见过的默认值。
+// 可显式配置或由环境提供；市场安装不猜测 DSH 安装目录。
 const ENV_ELECTRON = String(process.env.DSH_ELECTRON || '').trim();
 const ENV_CLI = String(process.env.DSH_CLI || '').trim();
 
 const DEFAULTS = {
-  electron: ENV_ELECTRON || 'D:\\DeepSeek Harness\\DeepSeek Harness.exe',
-  cli: ENV_CLI || 'D:\\DeepSeek Harness\\resources\\app.asar\\dsh\\node_modules\\@deepseek-ai\\dsh-desktop-host\\lib\\cli.js',
+  electron: ENV_ELECTRON,
+  cli: ENV_CLI,
   profile: 'headless',
   // 不带 --patch 走的是 deepseek-official 路由，要求环境里有 DEEPSEEK_API_KEY，
   // 而这台机器上只有桌面端登录态的 deepseek-account。overlay 负责把路由换过去。
@@ -57,7 +57,7 @@ function llmCfg(cfg) {
     cli: String(l.cli || DEFAULTS.cli),
     profile: String(l.profile || DEFAULTS.profile),
     patch: String(l.patch === undefined ? DEFAULTS.patch : l.patch),
-    timeoutMs: Math.max(15_000, Number(l.timeoutMs) || 90_000),
+    timeoutMs: Math.max(1000, Number(l.timeoutMs) || 90_000),
   };
 }
 
@@ -125,7 +125,7 @@ export async function generate({ prompt, cfg, timeoutMs } = {}) {
       } catch {
         /* 已经没了 */
       }
-    }, Math.max(15_000, Number(timeoutMs) || avail.timeoutMs));
+    }, Math.max(1000, Number(timeoutMs) || avail.timeoutMs));
 
     child.stdout?.on('data', (b) => {
       out += String(b);
@@ -155,7 +155,7 @@ export async function generate({ prompt, cfg, timeoutMs } = {}) {
           : '';
         resolve({
           ok: false,
-          reason: /MISSING_CREDENTIAL/i.test(out) ? 'LLM_NO_CREDENTIAL' : timeoutGuard(out, t0, avail.timeoutMs) ? 'LLM_TIMEOUT' : 'LLM_NO_OUTPUT',
+          reason: /MISSING_CREDENTIAL/i.test(out) ? 'LLM_NO_CREDENTIAL' : timeoutGuard(out, t0, Number(timeoutMs) || avail.timeoutMs) ? 'LLM_TIMEOUT' : 'LLM_NO_OUTPUT',
           ms: Date.now() - t0,
           code,
           hint,

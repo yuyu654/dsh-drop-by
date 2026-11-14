@@ -12,6 +12,7 @@ import { generate, llmAvailable } from './llm.js';
 import { SLOTS } from './topics.js';
 import { signalFacts } from './signals.js';
 import { memoryFacts } from './memorysource.js';
+import { explorationToneHint } from './explore.js';
 import { recentOutbound } from './outbound.js';
 import { slotStats } from './feedback.js';
 import { localStyle } from './local.js';
@@ -427,6 +428,9 @@ export function buildPrompt({ ctx, topic, persona, cfg, feedback, st = {} }) {
   }
   // 别的记忆插件记的事（鱼的记忆）：只当「我本来就知道的事」，不是这一拍的新消息。
   for (const x of memoryFacts(ctx.memory)) facts.push(x);
+  if (ctx.projectMemory?.answer) facts.push(`用户之前亲口说的项目背景：「${ctx.projectMemory.answer}」。只是背景，不表示现在需要排查或有新进展。`);
+  const tone = explorationToneHint(ctx);
+  if (tone) facts.push(tone);
 
   const maxChars = Math.max(10, Number(cfg?.content?.maxChars) || 60);
   const samples = styleSamples(ctx, 2, cfg);
@@ -457,7 +461,9 @@ export function buildPrompt({ ctx, topic, persona, cfg, feedback, st = {} }) {
 
   const slotRules = {
     share: [
-      '- 这是我自己琢磨出来的一条判断，别说成道理，落到今天具体看见的一件小事上。',
+      topic.evidence?.source
+        ? '- 只说这个内容为什么吸引我，措辞严格符合实际读到的依据，不写网址。'
+        : '- 这是我自己琢磨出来的一条判断，别说成道理，落到今天具体看见的一件小事上。',
       '- 不许出现「人」「大家」，只能说「你」或者具体的事。',
       '- 不许照搬原句、不许加引号、不许提「我记过」「来源」。',
     ],
@@ -637,6 +643,7 @@ export function buildChitchatPrompt({ ctx, topic, persona, cfg, feedback, st = {
     recentOutBlock,
     '',
     '【这一条要写成什么样】',
+    explorationToneHint(ctx),
     `1. 一到两句，总共不超过 ${maxChars} 字。短是这条的全部。想分成两条说，两段中间空一行（每条各自不超过 ${maxChars} 字，最多两条）。`,
     '2. 必须落在一个具体的东西上：一件小事、一个念头、一个她身上的细节、一个时间点。「想你了」这种空句不算。',
     '3. 不要总结、不要讲道理、不要提问轰炸；最多一个轻问，或者干脆只是陈述。',

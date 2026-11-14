@@ -29,7 +29,7 @@ function fakeCtx(services = {}) {
 }
 
 test('插件声明：裸包名 + 不声明任何硬依赖', () => {
-  assert.equal(name, 'presence-gate');
+  assert.equal(name, 'dsh-drop-by');
   assert.deepEqual(inject, []);
 });
 
@@ -40,7 +40,7 @@ test('apply：返回 api，起钟后 nextAt 有值，stop 后清掉', () => {
     assert.equal(typeof api.runOnce, 'function');
     assert.equal(typeof api.snapshot, 'function');
     const s = api.snapshot();
-    assert.equal(s.plugin, 'presence-gate');
+    assert.equal(s.plugin, 'dsh-drop-by');
     assert.equal(s.enabled, false);
     assert.ok(s.nextAt, '应该已经排了第一拍');
     assert.equal(s.ticks, 0);
@@ -63,14 +63,14 @@ test('runOnce：enabled=false 直接跳过，不去跑判定', async () => {
   }
 });
 
-test('状态接口：挂在 /api/presence-gate，GET /state 返回 JSON', async () => {
+test('状态接口：挂在 /api/dsh-drop-by，GET /state 返回 JSON', async () => {
   let route = null;
   const ctx = fakeCtx({ webServer: { register: (r) => ((route = r), () => {}) } });
   const api = apply(ctx, { enabled: false, startupDelaySec: 3600, tool: false });
   try {
     assert.ok(route, 'webServer.register 应该被调用');
     assert.equal(route.kind, 'prefix');
-    assert.equal(route.path, '/api/presence-gate');
+    assert.equal(route.path, '/api/dsh-drop-by');
 
     let body = '';
     const res = {
@@ -83,18 +83,18 @@ test('状态接口：挂在 /api/presence-gate，GET /state 返回 JSON', async 
         body = s;
       },
     };
-    await route.handler({ url: '/api/presence-gate/state', method: 'GET', headers: {} }, res);
+    await route.handler({ url: '/api/dsh-drop-by/state', method: 'GET', headers: {} }, res);
     assert.equal(res.statusCode, 200);
     const json = JSON.parse(body);
-    assert.equal(json.plugin, 'presence-gate');
+    assert.equal(json.plugin, 'dsh-drop-by');
     assert.equal(json.tickMinutes > 0, true);
     assert.ok('dryRun' in json);
 
     // 不认识的路径要 404，而不是抛
-    await route.handler({ url: '/api/presence-gate/nope', method: 'GET', headers: {} }, res);
+    await route.handler({ url: '/api/dsh-drop-by/nope', method: 'GET', headers: {} }, res);
     assert.equal(res.statusCode, 404);
     // tick 只认 POST
-    await route.handler({ url: '/api/presence-gate/tick', method: 'GET', headers: {} }, res);
+    await route.handler({ url: '/api/dsh-drop-by/tick', method: 'GET', headers: {} }, res);
     assert.equal(res.statusCode, 404);
   } finally {
     api.stop();
@@ -158,7 +158,7 @@ test('状态接口：webServer 晚一步就绪也能挂上（ctx.inject 延迟�
     let route = null;
     pending.cb(fakeCtx({ webServer: { register: (r) => ((route = r), () => {}) } }));
     assert.ok(route, '服务就绪后回调里要真的注册路由');
-    assert.equal(route.path, '/api/presence-gate');
+    assert.equal(route.path, '/api/dsh-drop-by');
   } finally {
     api.stop();
   }

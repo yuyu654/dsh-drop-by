@@ -50,7 +50,7 @@ export function readBridgeDialogue({ dsh = dshHome() } = {}) {
     },
     outgoing: {
       peer: String(o?.peer || ''), firstAt: Number(o?.firstAt) || 0,
-      lastAt: Number(o?.lastAt) || 0, count: o?.source === 'presence-gate' ? 0 : Number(o?.count) || 0,
+      lastAt: Number(o?.lastAt) || 0, count: ['presence-gate', 'dsh-drop-by'].includes(o?.source) ? 0 : Number(o?.count) || 0,
       text: String(o?.text || '').trim(),
     },
   };

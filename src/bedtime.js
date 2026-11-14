@@ -93,17 +93,19 @@ export function readNights({ dir = FISH_ARCHIVE_DIR, days = 7 } = {}) {
  * 推导睡着时段：入睡中位数往前 30 分钟、起床中位数往后 30 分钟。
  * 返回 { from:'history'|'fallback', nights, bedMin, wakeMin, startMin, endMin, why }。
  */
-export function deriveRest({ dir = FISH_ARCHIVE_DIR, days = 7 } = {}) {
+export function deriveRest({ dir = FISH_ARCHIVE_DIR, days = 7, paddingMin = 30, fallbackStartMin = 1380, fallbackEndMin = 420 } = {}) {
   const nights = readNights({ dir, days });
   const beds = nights.map((n) => n.bed).filter((n) => Number.isFinite(n));
   const wakes = nights.map((n) => n.wake).filter((n) => Number.isFinite(n));
   if (beds.length < MIN_NIGHTS || wakes.length < MIN_NIGHTS) {
-    return { ...FALLBACK_REST, nights: nights.length, why: `有效天数 ${Math.min(beds.length, wakes.length)} < ${MIN_NIGHTS}，先按 23:00–07:00` };
+    return { ...FALLBACK_REST, nights: nights.length, bedMin: fallbackStartMin, wakeMin: fallbackEndMin,
+      startMin: fallbackStartMin, endMin: fallbackEndMin,
+      why: `有效天数 ${Math.min(beds.length, wakes.length)} < ${MIN_NIGHTS}，先按 ${clockOf(fallbackStartMin)}–${clockOf(fallbackEndMin)}` };
   }
   const bedMin = median(beds);
   const wakeMin = median(wakes);
-  const startMin = ((bedMin - 30) % 1440 + 1440) % 1440;
-  const endMin = ((wakeMin + 30) % 1440 + 1440) % 1440;
+  const startMin = ((bedMin - paddingMin) % 1440 + 1440) % 1440;
+  const endMin = ((wakeMin + paddingMin) % 1440 + 1440) % 1440;
   return { from: 'history', nights: Math.min(beds.length, wakes.length), bedMin, wakeMin, startMin, endMin, why: null };
 }
 
@@ -126,9 +128,13 @@ export function inRest(mins, rest) {
  */
 export function restFor({ cfg, now = Date.now(), tz = 'Asia/Shanghai', st = null, dir = FISH_ARCHIVE_DIR } = {}) {
   const day = dayKey(now, tz);
-  if (st?.rest?.day === day && st.rest.v === 2) return st.rest;
-  const r = deriveRest({ dir, days: 7 });
-  const out = { v: 2, day, ...r, at: now };
+  const c = cfg?.rules?.chitchat || {};
+  const timing = { days: c.restHistoryDays ?? 7, paddingMin: c.restPaddingMin ?? 30,
+    fallbackStartMin: c.restFallbackStartMin ?? 1380, fallbackEndMin: c.restFallbackEndMin ?? 420 };
+  const timingKey = JSON.stringify(timing);
+  if (st?.rest?.day === day && st.rest.timingKey === timingKey) return st.rest;
+  const r = deriveRest({ dir, ...timing });
+  const out = { v: 2, day, timingKey, ...r, at: now };
   if (st && typeof st === 'object') st.rest = out;
   return out;
 }

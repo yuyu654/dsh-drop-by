@@ -49,9 +49,9 @@ export function chitchatToday(st, now, tz) {
  * 样本不足 5 条就按基线走，不拿两三条猜她的脾气。
  * 返回 { perDay, rate, sent, why }。
  */
-export function densityTarget(st, now = Date.now(), tz = 'Asia/Shanghai') {
+export function densityTarget(st, now = Date.now(), tz = 'Asia/Shanghai', cfg) {
   const days = st?.chitchat?.days && typeof st.chitchat.days === 'object' ? st.chitchat.days : {};
-  const cutoff = dayKey(now - 6 * 86_400_000, tz);
+  const cutoff = dayKey(now - (Number(cfg?.rules?.chitchat?.densityDays ?? 7) - 1) * 86_400_000, tz);
   let sent = 0;
   let replied = 0;
   for (const [d, v] of Object.entries(days)) {
@@ -93,7 +93,7 @@ export function chitchatGate({ cfg, now = Date.now(), st = {}, ctx = {}, tz = 'A
     return { ok: false, reason: 'NO_CHITCHAT_WINDOW', why: '全局静默时段，随口话也不说' };
   }
   // 设置里的 perDay 是天花板，真正一天几条由密度定（基线 1，接得好才 2）。
-  const dens = densityTarget(st, now, tz);
+  const dens = densityTarget(st, now, tz, cfg);
   const perDay = Math.max(0, Math.min(10, Math.min(Number(c.perDay ?? 3), dens.perDay)));
   if ((Number(sc.count) || 0) >= perDay) {
     return { ok: false, reason: 'NO_CHITCHAT_BUDGET', why: `今天随口说过 ${sc.count} 条，上限 ${perDay}（${dens.why}）` };

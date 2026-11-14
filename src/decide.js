@@ -9,6 +9,27 @@
 //
 // 返回值里 content 恒为 null：内容生成是下一步的事，这里只给判定和理由。
 
+import { dayKey } from './time.js';
+
+const WELLNESS_SLOTS = ['steps', 'screen', 'longSit'];
+
+// 三类共用冷却。只有旧日期时，按本地日历保守处理。
+export function wellnessCooldown(st, now, tz, cfg) {
+  const hours = Math.max(0, Number(cfg?.content?.topics?.wellnessCooldownHours ?? 96));
+  if (!hours) return false;
+  const saved = st?.content || {};
+  const lastDays = [saved.lastStepsFor, String(saved.lastScreenFor || '').split(':').at(-1), saved.lastLongSitFor];
+  const cutoffDay = dayKey(now - Math.max(0, hours - 24) * 3_600_000, tz);
+  const recentDay = lastDays.some((day) => /^\d{4}-\d{2}-\d{2}$/.test(day || '') && day >= cutoffDay);
+  const latest = Math.max(
+    Number(saved.lastWellnessAt) || 0,
+    ...WELLNESS_SLOTS.map((slot) => Number(st?.feedback?.slots?.[slot]?.lastSentAt) || 0),
+    ...(Array.isArray(st?.feedback?.pending) ? st.feedback.pending : [])
+      .filter((p) => WELLNESS_SLOTS.includes(p?.slot)).map((p) => Number(p.ts) || 0),
+  );
+  return latest ? now - latest < hours * 3_600_000 : recentDay;
+}
+
 export const REASONS = {
   SEND: '该发了',
   PLUGIN_DISABLED: '插件总开关关着',
@@ -24,6 +45,8 @@ export const REASONS = {
   GAP_TOO_SHORT: '距上次主动太近',
   DAILY_CAP: '今日主动次数已满',
   NO_TOPIC: '时机到了，但这次没有由头（不硬凑）',
+  PROJECT_HELP_WITHOUT_REQUEST: '用户没有近期亲口说需要排查或有新进展',
+  PROJECT_QUESTION_OUTSIDE_SLOT: '项目近况只由一次性问候发起',
   // 随口说话（rules.chitchat）：没由头时的最低优先级候选，以及它被拦下的原因
   CHITCHAT_NO_JUDGE: '随口说话要 judge 一起开（没有软决策层就不放开）',
   CHITCHAT_LOW_PRIORITY: '这一拍有真由头，随口话让位',

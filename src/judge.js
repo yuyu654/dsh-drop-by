@@ -39,7 +39,8 @@ ${p}
     '',
     '【怎么判断】',
     '· 有没有值得开口的事，你说了算——规则给的那条建议可以参考，也可以整个不用。',
-    '· 没有值得开口的事就写 "say": false。宁可这一拍不说，也别硬凑一句。',
+    '· 没有值得开口的事就写 "say": false。宁可这一拍不说，也别硬凑一句。只有规则明确选中「那条还没回」才考虑跟进；不能自行把没回的闲聊或分享当成由头。',
+    '· 电脑活动、窗口、旧项目记忆不代表她在求助。只有她近期亲口提到卡住、需要帮忙或给了同一项目的新进展，才顺势接；别主动要报错、追问进度或反复问她最近做什么项目。',
     '· 要说就具体：angle 是你想说的那件事（一句话），draft 是真正会发给她的那一句。',
     `· draft 一两句、不超过 ${limit} 字，口吻照人格来；不要罗列上面的事实，不要说「我注意到」「检测到」「根据你的数据」。`,
     '· 不要写括号里的动作，不要自称助手，不要解释这套判断。',
@@ -89,7 +90,7 @@ export function parseJudge(raw) {
  * 返回 { ok, say, angle, draft, why, ms } 或 { ok:false, reason }。
  * ok:false 的含义是「这一拍照旧按规则走」，不是「不说」。
  */
-export async function judgeDecision({ snapshot, persona, cfg, generate, llmReady = null, timeoutMs = 90_000 } = {}) {
+export async function judgeDecision({ snapshot, persona, cfg, generate, llmReady = null, timeoutMs = cfg?.rules?.judge?.timeoutMs ?? 90_000 } = {}) {
   if (typeof generate !== 'function') return { ok: false, reason: 'JUDGE_NO_LLM' };
   if (llmReady === false) return { ok: false, reason: 'JUDGE_LLM_NOT_READY' };
   const maxChars = Math.max(10, Number(cfg?.content?.maxChars) || DEFAULT_MAX_CHARS);

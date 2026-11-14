@@ -120,13 +120,14 @@ export function splitOutgoing(text, { maxParts = 4 } = {}) {
 }
 
 /** 首条等多久：她刚发的话，6 秒起、按字数加，封顶 60 秒；她等得越久这里越短。 */
-export function firstDelayMs({ herAt = 0, herChars = 0, now = Date.now(), rand = Math.random, minMs = 6000 } = {}) {
-  const base = Math.min(60000, Math.max(minMs, minMs + 60 * (Number(herChars) || 0) + rand() * 12000));
+export function firstDelayMs({ herAt = 0, herChars = 0, now = Date.now(), rand = Math.random, minMs = 6000, maxMs = 60000, jitterMs = 12000, perCharMs = 60 } = {}) {
+  if (minMs === 0 || maxMs === 0) return 0;
+  const base = Math.min(maxMs, minMs + perCharMs * (Number(herChars) || 0) + rand() * jitterMs);
   const target = (Number(herAt) || 0) + base;
   return Math.max(0, Math.round(target - now));
 }
 
 /** 两条之间的间隔：1.2 秒起，按字数加，封顶 5 秒。 */
-export function partGapMs(chars, { rand = Math.random, minGapMs = 1200 } = {}) {
-  return Math.min(5000, Math.max(minGapMs, minGapMs + 90 * (Number(chars) || 0) + rand() * 2200));
+export function partGapMs(chars, { rand = Math.random, minGapMs = 1200, maxMs = 5000, jitterMs = 2200, perCharMs = 90 } = {}) {
+  return Math.min(maxMs, minGapMs + perCharMs * (Number(chars) || 0) + rand() * jitterMs);
 }

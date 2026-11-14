@@ -8,6 +8,8 @@ import { LATEST_PATH } from './fishmail.js';
 import { dshHome } from './detect.js';
 import { recentTurns } from './outbound.js';
 import { agoSec } from './time.js';
+import { loadPersona } from './persona.js';
+import { explorationProgress, explorationShare, loadExploration } from './explore.js';
 // 解析逻辑搬到 fishparse.js：fishmail.js 归档时也要用它，放这里会和 LATEST_PATH 形成循环依赖
 export { minsOf, parseFishSummary } from './fishparse.js';
 import { parseFishSummary } from './fishparse.js';
@@ -198,6 +200,8 @@ export function buildContext({ cfg, now, st, ch, sys, tz }) {
   // 我在 QQ 里说过话，不代表我在抖音里回过她。
   const answeredOnOwnChannel = hasAnsweredOnOwnChannel(lastHer, meMsgs);
 
+  const exploration = loadExploration();
+  const persona = exploration ? loadPersona({ cfg }) : null;
   const lastSendTs = Math.max(Number(st?.real?.lastSendAt) || 0, Number(st?.sim?.lastSendAt) || 0) || null;
 
   return {
@@ -232,9 +236,17 @@ export function buildContext({ cfg, now, st, ch, sys, tz }) {
     // 阶段 3：最近 6 轮对话（双方原文，旧的在前）——模型得知道「我们刚才聊到哪」
     dialogueTurns: recentTurns({ limit: 6 }),
     fish,
+    myExploration: explorationProgress(exploration, persona, now, cfg?.exploration),
     ...(() => {
       const mem = readSelfMemory(tz);
-      const usable = mem?.items.find((x) => !x.private) || null;
+      const candidate = cfg?.exploration?.offerShare === true
+        ? explorationShare(exploration, persona, now, cfg?.exploration)
+        : null;
+      const loginSent = candidate?.loginSite && st?.content?.explorationLoginNotices?.includes(candidate.loginSite);
+      const discoverySent = candidate?.discoveryId && st?.content?.sharedExplorationIds?.includes(candidate.discoveryId);
+      const usable = candidate && !loginSent && !discoverySent && candidate.line.slice(0, 80) !== st?.content?.lastShareLine
+        ? { ...candidate, exploration: true }
+        : mem?.items.find((x) => !x.private) || null;
       return { self: usable, selfItems: mem?.items || [], selfPath: mem?.path || null };
     })(),
     send: { lastTs: lastSendTs, lastAgoSec: lastSendTs ? agoSec(now, lastSendTs) : null },

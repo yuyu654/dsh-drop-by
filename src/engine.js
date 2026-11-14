@@ -26,7 +26,7 @@ import { restFor } from "./bedtime.js";
 import { pickSeed, conversationLine } from "./seeds.js";
 import { detectTriggers } from "./triggers.js";
 import { summarizeVideo } from "./videosum.js";
-import { outboundFor, answeredAlready, recentOutbound, douyinLastInbound, bridgeInFlight } from "./outbound.js";
+import { outboundFor, answeredAlready, recentOutbound, douyinLastInbound, bridgeInFlight, readBridgeDialogue } from "./outbound.js";
 import { settle, sweep, noteSent, adaptiveExtraMin } from "./feedback.js";
 import { generate as llmGenerate } from "./llm.js";
 import { compose, composeDraft } from "./compose.js";
@@ -41,6 +41,10 @@ import { pickNoReply, judgeAway } from "./noreply.js";
 import { readSignals, signalFacts, needL3 } from "./signals.js";
 import { readMemory } from "./memorysource.js";
 import { runQqContinuation } from "./qq-continuation.js";
+import { explorationMood, loadExploration, styleApprovedDraft } from "./explore.js";
+import { portraitMood } from "./emotion-portrait.js";
+import { publicExplorationUrl } from "./explore-media.js";
+import { projectQuestion, recordProjectQuestion, captureProjectAnswer, projectMemory, proactiveProjectBlock, writeProjectQuestion } from "./project-chat.js";
 
 function freshDayState(st, day) {
   if (!st.day || st.day !== day) {
@@ -81,7 +85,7 @@ export async function tickQqContinuation({ candidate, read, generate, active }) 
   const r = await runQqContinuation({
     candidate, read, allowed, generate, cfg, persona: loadPersona({ cfg }).text,
     async deliver(text) {
-      const sent = dryRun ? null : await sendQQPrivate({ to, text, dryRun: false });
+      const sent = dryRun ? null : await sendQQPrivate({ to, text, dryRun: false, timeoutMs: cfg.send?.timeoutMs });
       return { text, sent, reason: dryRun ? 'DRY_RUN' : sent.ok ? 'SEND' : 'SEND_FAILED' };
     },
   });
@@ -177,7 +181,7 @@ export async function tick({
   // 幂等，跑多少遍结果一样，删的是整文件，不会把正在写的那个删掉（它属于今天）。
   const pruned = pruneOldRecords(cfg, now, { tz });
 
-  const sys = await probe();
+  const sys = await probe(false, cfg);
   const idleSec = typeof sys.idle_ms === 'number' && sys.idle_ms >= 0 ? Math.round(sys.idle_ms / 1000) : -1;
   const quiet = inQuiet(now, cfg.quietHours, tz);
   // 忙碌时段：只压「我先开口」，不压回复（她先说话就该回）
@@ -219,12 +223,16 @@ export async function tick({
   // 阶段 2：顺手把她这一句的原文带上，配对时一起存（读不到就留空，不编）。
   const herLine = lastHerMessage();
   const herSayTs = Number(herLine?.ts) || 0;
-  const herSay = herSayTs && Math.abs(herSayTs - (Number(ch.lastUserTs) || 0)) <= 60_000 ? herLine.text : '';
-  const repliedCount = settle(st, ch.lastUserTs, now, herSay, { tz });
+  const herSay = herSayTs && Math.abs(herSayTs - (Number(ch.lastUserTs) || 0)) <= Number(cfg.rules?.feedback?.replyMatchSec ?? 60) * 1000 ? herLine.text : '';
+  const repliedCount = settle(st, ch.lastUserTs, now, herSay, { tz, cfg });
 
   const useSim = cfg.dryRun !== false;
+  if (!quiet && !useSim && cfg.rules?.askProjectOnce === true && cfg.sources?.qq?.enabled !== false &&
+      cfg.channels?.qq?.enabled !== false && cfg.channels?.qq?.read !== false) {
+    captureProjectAnswer(cfg, st, readBridgeDialogue().incoming, now);
+  }
   // 窗口已过、她一句话都没有的：每拍补判一次。盲着的时段（静默/全断）不判，dryRun 不写。
-  if (!useSim) sweep(st, now, { tz, canJudge: !quiet && !ch.allDown });
+  if (!useSim) sweep(st, now, { tz, cfg, canJudge: !quiet && !ch.allDown });
   const bucket = useSim ? st.sim : st.real;
   const todaySent = Number(bucket.todaySent) || 0;
   const lastSendTs = Math.max(Number(bucket.lastSendAt) || 0, Number(ch.lastSendTs) || 0) || null;
@@ -276,6 +284,7 @@ export async function tick({
       content = { ok: true, text, source: 'fixed', slot: 'fixed', chars: text.length, violations: [] };
     } else {
       ctx = buildContext({ cfg, now, st, ch, sys, tz });
+      ctx.projectMemory = projectMemory(cfg, st, now);
       ctx.clock = hhmm(now, tz);
       // 别的记忆插件里记着的事：只读，读不到还是照常写；有它句子才有「以前」。
       ctx.memory = readMemory({ cfg, now });
@@ -353,6 +362,10 @@ export async function tick({
       if (signals) ctx.signals = signals;
       persona = loadPersona({ cfg });
       topic = pickTopic(ctx, cfg, now, st);
+      if (!topic && d.track === 'proactive' && !useSim && cfg.send?.enabled === true &&
+          ch.list?.some((c) => c.channel === 'qq' && c.ok && c.lastUserTs > 0)) {
+        topic = projectQuestion(cfg, st);
+      }
       // —— 哪来哪回：只有 QQ 这一条发送路。她在抖音/主会话说的话只当信号，
       //    「回她」的由头不能拿到 QQ 上发——她会以为我在答非所问。
       //    通道为空的旧记录照常放行（见 topics.answerableOn）。
@@ -422,7 +435,7 @@ export async function tick({
       //    （driver 是「生成 → sendQQ → 写 qq-history」，history 那步失败还只是静默 catch）。
       //    生成之前先翻一次最新落盘记录，已经应过就放弃这一拍——不花模型、不吃配额。
       if ((topic?.slot === 'reply' || topic?.slot === 'forward') && cfg.rules?.replyGuard !== false) {
-        const flight = bridgeInFlight({ now });
+        const flight = bridgeInFlight({ now, maxMs: Number(cfg.rules?.qqTiming?.inFlightSec ?? 180) * 1000 });
         if (flight) {
           d.decision = 'skip';
           d.reason = 'REPLY_IN_FLIGHT';
@@ -468,9 +481,13 @@ export async function tick({
       // —— 阶段 2：规则允许开口之后，先让模型看一眼整份处境，自己决定说不说。
       //    开关默认关；关着这一整段不执行，行为与加它之前完全一样。
       //    模型说「不说」→ 记 NO_TOPIC（这是它的决定，不是没由头）；判断失败 → 退回规则链。
-      if (cfg.rules?.judge?.enabled === true && d.decision === 'send') {
-        const snapshot = buildSnapshot({ ctx, topic, cfg, st, now, tz });
-        verdict = await judgeDecision({ snapshot, persona, cfg, generate: gen || llmGenerate, llmReady });
+      const mediaShare = topic?.slot === 'share' ? topic.evidence?.source : null;
+      if (cfg.rules?.judge?.enabled === true && d.decision === 'send' && topic?.slot !== 'projectCheckIn') {
+        const snapshot = buildSnapshot({ ctx, topic, cfg, st, now, tz, coarseDesktop: d.track === 'proactive' });
+        const judgeInput = mediaShare
+          ? snapshot + '\n这条附有固定来源。如果想聊别的事就选择不发。批准时只写这条内容为什么值得分享，严格按来源类型表述，正文不写网址。'
+          : snapshot;
+        verdict = await judgeDecision({ snapshot: judgeInput, persona, cfg, generate: gen || llmGenerate, llmReady });
         // state 只存结论，不存快照（快照几百字，state 每拍落盘）
         st.judge = {
           at: now,
@@ -497,14 +514,41 @@ export async function tick({
       }
       // 被防重复拦下时 topic 已经置空、判定改成 skip，这里就不要再叫模型了。
       if (d.decision === 'send') {
+        const moodEligible = d.track === 'proactive' && !['projectCheckIn', 'noReply', 'examSoon', 'examReview', 'agenda'].includes(topic?.slot);
+        const explored = moodEligible && cfg.exploration?.mood === true ? explorationMood(loadExploration(), persona, now, cfg.exploration)?.text : '';
+        const portrait = moodEligible ? portraitMood(cfg, persona) : '';
+        const feeling = [explored, portrait].filter(Boolean).join('；');
+        const toneCtx = feeling ? { ...ctx, explorationMood: { text: feeling } } : ctx;
         // judge 说「说」→ 用它写好的草稿，只过 clean + guard；说不了或不发就退规则链。
         content =
-          verdict?.ok && verdict.say === true
+          topic?.slot === 'projectCheckIn'
+            ? await writeProjectQuestion({ ctx, cfg, topic, persona, generate: gen })
+            : verdict?.ok && verdict.say === true
             ? composeDraft({ ctx, draft: verdict.draft, cfg, topic })
-            : await compose({ ctx, topic, persona, cfg, now, st, generate: gen, llmReady });
+            : await compose({ ctx: d.track === 'proactive' ? { ...toneCtx, signals: null, screen: null } : ctx, topic, persona, cfg, now, st, generate: gen, llmReady });
+        if (moodEligible && verdict?.ok && verdict.say === true) {
+          content = await styleApprovedDraft({ draft: content, ctx: toneCtx, persona, generate: gen, timing: cfg.exploration,
+            validate: (draft) => composeDraft({ ctx, draft, cfg, topic }) });
+        }
         if (!content.ok) {
           d.decision = 'skip';
           d.reason = content.reason || 'NO_CONTENT';
+        } else if (d.track === 'proactive' && topic?.slot !== 'projectCheckIn') {
+          const blocked = proactiveProjectBlock(content.text, ctx, now, cfg);
+          if (blocked) {
+            d.decision = 'skip';
+            d.reason = blocked;
+          }
+        }
+        if (d.decision === 'send' && mediaShare) {
+          const url = publicExplorationUrl(mediaShare.url);
+          if (!url || /https?:\/\//i.test(content.text) ||
+              (topic.evidence?.loginSite && /密码|验证码|cookie|口令|账号/i.test(content.text))) {
+            d.decision = 'skip';
+            d.reason = 'GUARD_REJECTED';
+          } else {
+            content.text += '\n' + url.href;
+          }
         }
       }
     }
@@ -515,7 +559,7 @@ export async function tick({
   //    桥正发到一半（last-out.json firstAt 有、lastAt=0）也算「正在应」，别插进去。
   let guardHit = null;
   if (d.decision === 'send' && (topic?.slot === 'reply' || topic?.slot === 'forward') && cfg.rules?.replyGuard !== false) {
-    const flight = bridgeInFlight({ now });
+    const flight = bridgeInFlight({ now, maxMs: Number(cfg.rules?.qqTiming?.inFlightSec ?? 180) * 1000 });
     if (flight) {
       guardHit = { channel: 'qq', src: flight.src || 'qq-bridge', ts: flight.firstAt, inFlight: true, count: flight.count };
     } else {
@@ -550,6 +594,7 @@ export async function tick({
         herAt: Number(ctx?.her?.lastTs) || 0,
         herChars: String(ctx?.her?.lastText || '').length,
         split: cfg.send?.split ?? {},
+        timeoutMs: cfg.send?.timeoutMs,
       });
       delivery = {
         attempted: true,
@@ -566,7 +611,8 @@ export async function tick({
         d.reason = 'SEND_FAILED';
       }
       // 真发出去了才记待回：dryRun 与失败都不算，否则反馈会被假数据污染
-      if (r.ok && topic?.slot) {
+      if (r.ok && topic?.slot === 'projectCheckIn') recordProjectQuestion(cfg, st, Date.now());
+      if (r.ok && topic?.slot && topic.slot !== 'projectCheckIn') {
         // 测试期（rules.feedback.testMode）：记一条「发过」，但**不计入接住率**——
         // 插件没完工之前她的沉默不是「没接住」，是还没改好。
         noteSent(st, topic.slot, now, content.text, { test: cfg.rules?.feedback?.testMode === true });
@@ -751,6 +797,7 @@ export async function tick({
       st.content.lastStressAt = now;
       st.content.lastStressValue = Number(topic.evidence?.stress) || 0;
     }
+    if (['steps', 'screen', 'longSit'].includes(topic?.slot)) st.content.lastWellnessAt = now;
     if (topic?.slot === 'screen') st.content.lastScreenFor = `${ctx?.fish?.date || ''}:${day}`;
     if (topic?.slot === 'steps') st.content.lastStepsFor = topic.evidence?.day || healthDay(now, cfg.timezone);
     if (topic?.slot === 'lateUp') st.content.lastLateUpFor = topic.evidence?.nightKey || dayKey(now, tz);
@@ -762,6 +809,16 @@ export async function tick({
     if (topic?.slot === 'share') {
       st.content.lastShareAt = now;
       st.content.lastShareLine = String(ctx?.self?.line || '').slice(0, 80);
+      if (!useSim && delivery?.ok && topic.evidence?.discoveryId) {
+        st.content.sharedExplorationIds = [...new Set([
+          ...(st.content.sharedExplorationIds || []), topic.evidence.discoveryId,
+        ])].slice(-50);
+      }
+      if (!useSim && delivery?.ok && topic.evidence?.loginSite) {
+        st.content.explorationLoginNotices = [...new Set([
+          ...(st.content.explorationLoginNotices || []), topic.evidence.loginSite,
+        ])].slice(-50);
+      }
     }
     if (content?.ok && content.text) {
       const prev = Array.isArray(st.content.recentSends) ? st.content.recentSends : [];
@@ -775,7 +832,7 @@ export async function tick({
     const sentTier = d.tier || (topic ? tierOfSlot(topic.slot) : null);
     if (sentTier) bucket.lastSendByTier = { ...(bucket.lastSendByTier || {}), [sentTier]: now };
     bucket.lastTrack = d.track;
-    st.pending = { at: now, track: d.track, dryRun: useSim };
+    if (topic?.slot !== 'projectCheckIn') st.pending = { at: now, track: d.track, dryRun: useSim };
   }
 
   if (persist) {

@@ -37,7 +37,7 @@ function userMessage(text, images = []) {
     id: randomUUID(),
     role: 'user',
     content: [{ type: 'text', text: String(text ?? '') }, ...images],
-    source: { kind: 'plugin', plugin: 'presence-gate' },
+    source: { kind: 'plugin', plugin: 'dsh-drop-by' },
   };
 }
 
@@ -98,12 +98,12 @@ export function makeHostLlm(ctx, { cfg, log = () => {} } = {}) {
     : 0.85;
 
   // 一次尝试：失败就地返回结果，重试由下面的 generate() 统一做。
-  async function attemptOnce({ prompt, timeoutMs, images, modelTarget = target } = {}) {
+  async function attemptOnce({ prompt, timeoutMs, images, modelTarget = target, minOutputTokens = 0 } = {}) {
     const t0 = Date.now();
     let out = '';
     const ac = new AbortController();
     // 宿主没有超时保护的话，一句生成能把这一拍挂死。给个上限，别让 tick 叠在那儿。
-    const ms = Math.max(10_000, Number(timeoutMs) || Number(cfg?.content?.llm?.timeoutMs) || 60_000);
+    const ms = Math.max(1000, Number(timeoutMs) || Number(cfg?.content?.llm?.timeoutMs) || 60_000);
     const killer = setTimeout(() => ac.abort(new Error('HOST_LLM_TIMEOUT')), ms);
     killer.unref?.();
 
@@ -112,12 +112,14 @@ export function makeHostLlm(ctx, { cfg, log = () => {} } = {}) {
         provider: modelTarget.provider,
         model: modelTarget.model,
         messages: [userMessage(prompt, images)],
-        maxTokens,
+        maxTokens: Math.max(maxTokens, minOutputTokens),
         temperature,
         signal: ac.signal,
       });
+      let finishKind;
       for await (const chunk of stream) {
         if (!chunk) continue;
+        if (chunk.type === 'finish') finishKind = chunk.reason?.kind;
         if (chunk.type === 'text-delta' && typeof chunk.text === 'string') out += chunk.text;
         if (chunk.type === 'finish' && chunk.reason && chunk.reason.kind === 'error') {
           const f = chunk.reason.failure || {};
@@ -131,7 +133,8 @@ export function makeHostLlm(ctx, { cfg, log = () => {} } = {}) {
         }
       }
       const text = String(out || '').trim();
-      if (!text) return { ok: false, reason: 'HOST_LLM_EMPTY', provider: modelTarget.provider, model: modelTarget.model };
+      if (!text) return { ok: false, reason: 'HOST_LLM_EMPTY', note: finishKind ? `finish=${finishKind}` : '',
+        provider: modelTarget.provider, model: modelTarget.model };
       return { ok: true, text, ms: Date.now() - t0, provider: modelTarget.provider, model: modelTarget.model, via: 'host' };
     } catch (e) {
       const timeout = ac.signal.aborted;
@@ -171,7 +174,7 @@ export function makeHostLlm(ctx, { cfg, log = () => {} } = {}) {
   async function observeVideo({ prompt, images, timeoutMs }) {
     let info;
     try {
-      info = await llm.resolveModelInfo?.(visionTarget.provider, visionTarget.model, AbortSignal.timeout(10_000));
+      info = await llm.resolveModelInfo?.(visionTarget.provider, visionTarget.model, AbortSignal.timeout(forward.visionInfoTimeoutMs ?? 10_000));
     } catch {
       return { ok: false, reason: 'VIDEO_MODEL_UNVERIFIED' };
     }

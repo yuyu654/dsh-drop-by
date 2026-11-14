@@ -46,8 +46,8 @@ test('snapshot：处境该有的段都在，顺序从「现在」开始', () => 
   assert.match(s, /她在浏览器里看「bilibili 学习区」/);
   assert.match(s, /刚回到电脑前/);
   assert.match(s, /她的身体数据（2 小时前取回）/);
-  assert.match(s, /昨夜睡眠 8 小时 8 分钟（深睡 1 小时 32 分钟）/);
-  assert.match(s, /压力 42/);
+  assert.match(s, /夜间睡眠 8 小时 8 分钟（深睡 1 小时 32 分钟）/);
+  assert.doesNotMatch(s, /压力 42|3200/);
   assert.match(s, /今天有课：08:00-09:40「高数」/);
   assert.match(s, /下一节：/);
   assert.match(s, /考试：电机学 2026-11-09 09:00，还有 3 天/);
@@ -57,6 +57,20 @@ test('snapshot：处境该有的段都在，顺序从「现在」开始', () => 
   assert.match(s, /拿睡眠说事 2\/3（67%）/);
   assert.match(s, /毕设做电机结构仿真/);
   assert.match(s, /规则建议（可参考也可不用）：拿睡眠说事/);
+});
+
+test('snapshot：只把探索正文交给选中的分享或相关回复提示', () => {
+  const self = { section: '推理短篇', at: NOW, line: '很想聊这个反转', exploration: true };
+  const ctx = { ...fakeCtx(), self, myExploration: [
+    { mode: 'research', topic: '推理短篇', at: NOW, progress: '找到了一个反转', evidence: '仅标题或搜索摘要' },
+    { mode: 'leisure', topic: '周末看的漫画', at: NOW, progress: '想读第二卷', evidence: '文字推演' },
+  ] };
+  const snapshot = (topic) => buildSnapshot({ ctx, topic, now: NOW });
+  const share = snapshot({ slot: 'share', evidence: { section: self.section } });
+  assert.match(share, /【我这边的进展】.*找到了一个反转.*仅标题或搜索摘要/s);
+  assert.doesNotMatch(share, /想读第二卷|3200|压力 42/);
+  assert.match(snapshot({ slot: 'reply' }), /只有确实聊到相关内容.*想读第二卷/s);
+  assert.doesNotMatch(snapshot(null), /找到了一个反转|这个反转|3200|压力 42/);
 });
 
 test('snapshot：没有的数据整段省略，只剩「现在」和规则建议', () => {

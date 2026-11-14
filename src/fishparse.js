@@ -85,9 +85,22 @@ export function parseFishSummary(summary) {
       const v = Number(m[1]);
       return Number.isFinite(v) && v >= 0 && v <= 200000 ? v : null;
     })(),
-    // 压力：首页行「· 压力 36」，也认「压力 36 / 36 压力」。
+    // 压力：首页行「· 压力 36」，也认「压力 36 / 36 压力」；新版也可能给区间「45-62」。
+    // 区间只认「压力」附近的那一段（别把睡眠时间、步数区间当压力），取右端——
+    // 判断「压力高不高」看的是最高那一档。
     // 只认 0~100 的整数——超出范围的多半是抠错了（比如把年份、步数当压力）。
     stress: (() => {
+      const ranges = [
+        /(?:^|[·\s，,])压力\s*[：:]?\s*(\d{1,3})\s*[-–—~～至到]\s*(\d{1,3})/,
+        /压力[^0-9\n]{0,10}(\d{1,3})\s*[-–—~～至到]\s*(\d{1,3})/,
+      ];
+      for (const re of ranges) {
+        const m = re.exec(s);
+        if (!m) continue;
+        const lo = Number(m[1]);
+        const hi = Number(m[2]);
+        if ([lo, hi].every((v) => Number.isFinite(v) && v >= 0 && v <= 100)) return Math.max(lo, hi);
+      }
       const cands = [
         /(?:^|[·\s，,])压力\s*[：:]?\s*(\d{1,3})/,
         /压力[^0-9\n]{0,10}(\d{1,3})/,

@@ -91,7 +91,7 @@ export function readChannels(cfg, now, opts = {}) {
     if (!g) {
       if (ch.douyin?.read) {
         try {
-          list.push(readDouyin(now, cfg.rules?.douyinStaleMin || 10));
+          list.push(readDouyin(now, cfg.rules?.douyinStaleMin || 10, cfg.sources?.douyin?.detectCacheMin));
         } catch (e) {
           list.push({ channel: 'douyin', ok: false, reason: 'DOUYIN_READ_ERROR', note: String(e.message).slice(0, 120) });
         }

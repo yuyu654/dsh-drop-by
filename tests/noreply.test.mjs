@@ -29,6 +29,7 @@ const cfgOf = (o = {}) => ({
       noReplyAfterHerMin: 120,
       noReplyAfterBusyMin: 20,
       noReplyDouyin: true,
+      followCasualSilence: true,
       noReplyJudge: true,
       ...(o.topics || {}),
     },
@@ -140,6 +141,34 @@ test('两条都有时挑离现在更近的那条', () => {
   const douyinOut = { ts: now - 200 * 60_000 };
   const c = pickNoReply({ st, cfg: cfgOf(), now, herTs: null, douyinOut });
   assert.equal(c.channel, 'douyin');
+});
+
+test('默认忽略没有回复的分享、问候和 QQ 闲聊', () => {
+  const now = at(11, 5, 20);
+  const ts = now - 300 * 60_000;
+  const st = stateOf({ pending: ['share', 'chitchat', 'backHome', 'catchup', 'noReply']
+    .map((slot) => ({ slot, ts, text: '普通消息' })) });
+  const cfg = cfgOf({ topics: { followCasualSilence: false } });
+  assert.equal(pickNoReply({ st, cfg, now, douyinOut: { ts } }), null);
+  st.feedback.pending.push({ slot: 'agenda', ts: ts + 1, text: '课表提醒' });
+  assert.equal(pickNoReply({ st, cfg, now })?.slot, 'agenda');
+});
+
+test('只追问一次：先筛掉已追问的消息和更早的积压，再挑最新候选', () => {
+  const now = at(11, 5, 20);
+  const ts = now - 300 * 60_000;
+  const st = stateOf({ pending: [
+    { slot: 'agenda', ts: ts + 3, draft: '新的提醒' },
+    { slot: 'agenda', ts, draft: '更早的提醒' },
+    { slot: 'steps', ts: ts + 4, draft: '低步数提醒' },
+    { slot: 'noReply', ts: ts + 2, draft: '先前追问' },
+    { slot: 'agenda', ts: ts + 1, draft: '已经追过' },
+  ] });
+  st.content.lastNoReplyFor = 'qq:' + (ts + 1);
+  assert.equal(pickNoReply({ st, cfg: cfgOf(), now })?.text, '新的提醒');
+  assert.equal(pickNoReply({ st, cfg: cfgOf(), now, herTs: ts + 4 }), null);
+  st.feedback.pending.shift();
+  assert.equal(pickNoReply({ st, cfg: cfgOf(), now, douyinOut: { ts } }), null);
 });
 
 // ---------------------------------------------------------------- 时间规则

@@ -134,11 +134,11 @@ test('applyChange：非法值不产生半截配置', () => {
   assert.equal(r.cfg, undefined);
 });
 
-test('listForUi：六组都在，且带 value/display，凭据只给「已设置/未设置」', () => {
+test('listForUi：七组都在，且带 value/display，凭据只给「已设置/未设置」', () => {
   const groups = listForUi(cfg());
   assert.deepEqual(
     groups.map((g) => g.name),
-    ['日常', '节奏', '说什么', '数据从哪来', '课表与考试', '高级']
+    ['日常', '节奏', '说什么', '数据从哪来', '课表与考试', '时间间隔', '高级']
   );
   const flat = groups.flatMap((g) => g.items);
   const paths = flat.map((i) => i.path);

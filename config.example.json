@@ -1,6 +1,7 @@
 {
   "enabled": true,
-  "dryRun": false,
+  "dryRun": true,
+  "exploration": { "auto": false, "offerShare": false, "web": false, "video": false, "interest": "", "intervalMinutes": 180 },
   "tickMinutes": 10,
   "timezone": "Asia/Shanghai",
   "quietHours": [
@@ -269,7 +270,7 @@
       "sleepFromHour": 7,
       "sleepToHour": 10.5,
       "sleepMaxAgeH": 14,
-      "screenHeavyMin": 120,
+      "screenHeavyMin": 720,
       "screenFromHour": 21,
       "shareGapH": 24,
       "shareMinChars": 40,
@@ -278,7 +279,7 @@
       "lateFromHour": 23,
       "lateToHour": 2,
       "longSit": true,
-      "longSitHours": 3,
+      "longSitHours": 5,
       "backHome": true,
       "backAfterMin": 30,
       "agenda": true,

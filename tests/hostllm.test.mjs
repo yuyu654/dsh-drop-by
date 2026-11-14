@@ -65,7 +65,7 @@ test('hostllm：把 text-delta 拼起来，provider/model 用宿主默认', asyn
   assert.equal(seen.messages[0].role, 'user');
   assert.equal(seen.messages[0].content[0].type, 'text');
   assert.match(seen.messages[0].id, /[0-9a-f-]{8,}/);
-  assert.equal(seen.messages[0].source.plugin, 'presence-gate');
+  assert.equal(seen.messages[0].source.plugin, 'dsh-drop-by');
 });
 
 test('hostllm：配置里指定了 provider/model 就盖过宿主默认', async () => {

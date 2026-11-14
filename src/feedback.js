@@ -18,10 +18,8 @@ import { dayKey } from './time.js';
 
 const DAY = 86_400_000;
 const MIN = 60_000;
-const HIT_MIN = 45; // 45 分钟内算接住
-const LATE_MS = 4 * 3_600_000; // 回应的窗口
-const WAKE_START_MIN = 8 * 60 + 30; // 08:30
-const WAKE_END_MIN = 23 * 60 + 30; // 23:30，窗口碰到这里就截断
+const feedbackTiming = (cfg) => cfg?.rules?.feedback || {};
+const chitTiming = (cfg) => cfg?.rules?.chitchat || {};
 
 // 「回她」和「接转发」不是找她说话：我回完一句，她看着看着就去干别的了，
 // 这是常态，不是「没接住」。所以这两类**不进接住率、不进 streak、不变成追问的由头**，
@@ -54,29 +52,29 @@ function slotRec(f, slot) {
  * 这一条的回应窗口什么时候结束：发出后 4 小时，或者当天 23:30，先到者。
  * 深夜发的，窗口可能在发出前就结束了（那天已经没人看着）——调用方按 stray 处理。
  */
-export function windowEnd(ts, tz = 'Asia/Shanghai') {
+export function windowEnd(ts, tz = 'Asia/Shanghai', timing = {}) {
   const m = minutesOfDayOf(ts, tz);
-  return Math.min(Number(ts) + LATE_MS, Number(ts) + (WAKE_END_MIN - m) * MIN);
+  return Number(ts) + Math.min(Number(timing.windowMin ?? 240), Number(timing.dayEndMin ?? 1410) - m) * MIN;
 }
 
 /** 这段窗口是不是完整落在白天（08:30 之后发、19:30 之前发，4 小时全在白天）。 */
-function fairWindow(ts, tz) {
+function fairWindow(ts, tz, timing) {
   const m = minutesOfDayOf(ts, tz);
-  return m >= WAKE_START_MIN && m + LATE_MS / MIN <= WAKE_END_MIN;
+  return m >= Number(timing.dayStartMin ?? 510) && m + Number(timing.windowMin ?? 240) <= Number(timing.dayEndMin ?? 1410);
 }
 
 /**
  * 判一条 pending：herTs 是她下一句话的时间；没有回应就传 Infinity。
  * 返回 { kind: 'hit'|'late'|'stray'|'miss', latMin }。
  */
-export function classify(p, herTs, tz = 'Asia/Shanghai') {
+export function classify(p, herTs, tz = 'Asia/Shanghai', timing = {}) {
   const ts = Number(herTs);
   if (!Number.isFinite(ts)) {
-    return { kind: fairWindow(p.ts, tz) ? 'miss' : 'stray', latMin: null };
+    return { kind: fairWindow(p.ts, tz, timing) ? 'miss' : 'stray', latMin: null };
   }
   const latMin = Math.max(0, Math.round((ts - p.ts) / MIN));
-  if (latMin <= HIT_MIN) return { kind: 'hit', latMin };
-  if (ts <= windowEnd(p.ts, tz)) return { kind: 'late', latMin };
+  if (latMin <= Math.min(Number(timing.hitMin ?? 45), Number(timing.windowMin ?? 240))) return { kind: 'hit', latMin };
+  if (ts <= windowEnd(p.ts, tz, timing)) return { kind: 'late', latMin };
   // 她回了、只是隔了很久：算回过（stray）。miss 只在「一句都没回」时才判。
   return { kind: 'stray', latMin };
 }
@@ -137,8 +135,6 @@ function apply(f, p, r, herText, { pair = true } = {}) {
 
 
 // ---- 随口说话的阶段 4：密度与熔断（只认 chitchat 这一档） -------------------
-const CHIT_PAUSE_MS = 48 * 3600_000;
-const CHIT_STRAND_MS = 12 * 3600_000;
 const CHIT_TRIP = 3;
 
 function chitRec(st) {
@@ -149,17 +145,17 @@ function chitRec(st) {
 }
 
 /** 她回了 vs 被晾：接住就清零，连着 3 条晾满 12 小时就停 48 小时。 */
-function chitOutcome(st, p, now, missed, tz) {
+function chitOutcome(st, p, now, missed, timing) {
   if (p?.slot !== 'chitchat') return;
   const c = chitRec(st);
   if (!missed) {
     c.ignored = 0;
     return;
   }
-  if (Number(now) - Number(p.ts) < CHIT_STRAND_MS) return;
+  if (Number(now) - Number(p.ts) < Number(timing.strandHours ?? 12) * 3_600_000) return;
   c.ignored = (Number(c.ignored) || 0) + 1;
   if (c.ignored >= CHIT_TRIP) {
-    c.cooldownUntil = Number(now) + CHIT_PAUSE_MS;
+    c.cooldownUntil = Number(now) + Number(timing.pauseHours ?? 48) * 3_600_000;
     c.ignored = 0;
   }
 }
@@ -181,13 +177,16 @@ function chitReplied(st, ts, tz) {
 export function settle(st, herTs, now = Date.now(), herText = '', opts = {}) {
   const f = ensure(st);
   const tz = opts.tz || 'Asia/Shanghai';
+  const timing = feedbackTiming(opts.cfg);
+  const chit = chitTiming(opts.cfg);
+  const keepMs = Number(timing.keepHours ?? 24) * 3_600_000;
   const ts = Number(herTs) || 0;
   let replied = 0;
   const rest = [];
   for (const p of f.pending) {
     if (p.test === true) {
       // 测试期：她回了就配一对留着看，但不计入任何统计
-      if (ts > 0 && p.ts < ts && ts - p.ts <= DAY) {
+      if (ts > 0 && p.ts < ts && ts - p.ts <= keepMs) {
         const lat = Math.max(0, Math.round((ts - p.ts) / MIN));
         f.testPairs = [...(Array.isArray(f.testPairs) ? f.testPairs : []), { myDraft: String(p.draft || ''), herReply: String(herText || '').slice(0, DRAFT_MAX), latencyMin: lat, ts: p.ts + lat * MIN }].slice(-PAIRS_MAX);
       }
@@ -196,9 +195,9 @@ export function settle(st, herTs, now = Date.now(), herText = '', opts = {}) {
     if (p.expect === false) {
       // 回话/接转发：她后面说了话就配一对（留着回看「我说了什么、她怎么接的」），
       // 但不算接住、不算没接住、也不动 streak。
-      if (ts > 0 && p.ts < ts && ts - p.ts <= DAY && p.draft) {
+      if (ts > 0 && p.ts < ts && ts - p.ts <= keepMs && p.draft) {
         const s = slotRec(f, p.slot);
-        const r = classify(p, ts, tz);
+        const r = classify(p, ts, tz, timing);
         const lat = Math.max(0, Math.round((ts - p.ts) / MIN));
         s.pairs = [
           ...(Array.isArray(s.pairs) ? s.pairs : []),
@@ -215,18 +214,18 @@ export function settle(st, herTs, now = Date.now(), herText = '', opts = {}) {
     }
     if (ts > 0 && p.ts < ts) {
       // 隔了一天才回的不算这段对话的回应，也不进配对，分母里也去掉
-      if (ts - p.ts > DAY) {
+      if (ts - p.ts > keepMs) {
         const s = slotRec(f, p.slot);
         s.sent = Math.max(0, (Number(s.sent) || 0) - 1);
-        chitOutcome(st, p, now, true, tz);
+        chitOutcome(st, p, now, true, chit);
         continue;
       }
-      const r = classify(p, ts, tz);
+      const r = classify(p, ts, tz, timing);
       apply(f, p, r, herText);
       // 「被晾」不是「没回」：隔了 12 小时才回也是晾着——熔断只认这一条。
       const latMin = (ts - p.ts) / MIN;
-      const stranded = r.kind === 'miss' || latMin >= 720;
-      chitOutcome(st, p, now, stranded, tz);
+      const stranded = r.kind === 'miss' || latMin >= Number(chit.strandHours ?? 12) * 60;
+      chitOutcome(st, p, now, stranded, chit);
       if (r.kind !== 'miss') {
         replied += 1;
         if (p.slot === 'chitchat') chitReplied(st, p.ts, tz);
@@ -237,7 +236,7 @@ export function settle(st, herTs, now = Date.now(), herText = '', opts = {}) {
   }
   // 一天以上没人应的：从分母里去掉（不是没接住，是这段对话早结束了）
   f.pending = rest.filter((p) => {
-    if (now - p.ts < DAY) return true;
+    if (now - p.ts < keepMs) return true;
     const s = slotRec(f, p.slot);
     s.sent = Math.max(0, (Number(s.sent) || 0) - 1);
     return false;
@@ -253,13 +252,16 @@ export function settle(st, herTs, now = Date.now(), herText = '', opts = {}) {
 export function sweep(st, now = Date.now(), opts = {}) {
   const f = ensure(st);
   const tz = opts.tz || 'Asia/Shanghai';
+  const timing = feedbackTiming(opts.cfg);
+  const chit = chitTiming(opts.cfg);
+  const keepMs = Number(timing.keepHours ?? 24) * 3_600_000;
   const canJudge = opts.canJudge !== false;
   const keep = [];
   let judged = 0;
   for (const p of f.pending) {
     if (p.test === true) {
       // 测试期的不判、不进分母；挂满一天直接丢
-      if (now - p.ts >= DAY) judged += 1;
+      if (now - p.ts >= keepMs) judged += 1;
       else keep.push(p);
       continue;
     }
@@ -268,20 +270,20 @@ export function sweep(st, now = Date.now(), opts = {}) {
       judged += 1;
       continue;
     }
-    if (now - p.ts >= DAY) {
+    if (now - p.ts >= keepMs) {
       const s = slotRec(f, p.slot);
       s.sent = Math.max(0, (Number(s.sent) || 0) - 1);
       judged += 1;
       continue;
     }
-    if (now <= windowEnd(p.ts, tz) || !canJudge) {
+    if (now <= windowEnd(p.ts, tz, timing) || !canJudge) {
       keep.push(p);
       continue;
     }
-    const r = classify(p, Infinity, tz);
+    const r = classify(p, Infinity, tz, timing);
     if (r.kind === 'miss') {
       apply(f, p, r, '');
-      chitOutcome(st, p, now, true, tz);
+      chitOutcome(st, p, now, true, chit);
     } else {
       // 夜里发的、窗口本来就不成立：不进分母也不算没接住
       const s = slotRec(f, p.slot);
@@ -360,7 +362,7 @@ export function adaptiveExtraMin(st, cfg) {
   const f = ensure(st);
   const streak = Number(f.streak) || 0;
   if (streak < 2) return 0;
-  const base = Math.max(1, Number(cfg?.rules?.minGapMin ?? 240));
+  const base = Math.max(0, Number(cfg?.rules?.minGapMin ?? 240));
   const step = Math.min(Number(cfg?.rules?.gapMaxX ?? 3), 1 + 0.5 * (streak - 1));
   return Math.round(base * (step - 1));
 }

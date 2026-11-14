@@ -94,6 +94,21 @@ test('步数：首页那行「· 步数 6045」抠成数字', () => {
   assert.equal(r.stress, 36, '步数不能被压力那条正则抢走');
 });
 
+test('压力是区间时取右端（最大值），判断高不高只看最高档', () => {
+  const r = parseFishSummary('起床 07:57 · 睡眠 7.6h · 步数 6045 · 压力 45-62 · 心率 72 · 血氧 97%');
+  assert.equal(r.stress, 62);
+});
+
+test('压力没有区间时照旧只取那个数', () => {
+  const r = parseFishSummary('起床 07:57 · 睡眠 7.6h · 步数 6045 · 压力 36 · 心率 72 · 血氧 97%');
+  assert.equal(r.stress, 36);
+});
+
+test('压力区间不抢睡眠时间/步数：只有压力附近那段才算', () => {
+  const r = parseFishSummary('夜间睡眠 23:41-07:57 · 步数 2000-3000 · 压力 30');
+  assert.equal(r.stress, 30);
+});
+
 test('步数：一天里有多封邮件时取最新那封（摘要第一行）', () => {
   const r = parseFishSummary('起床 07:39 · 睡眠 8.8h · 步数 2984 · 压力 40\n睡眠详情：…\n起床 07:39 · 睡眠 8.8h · 步数 2159 · 压力 15');
   assert.equal(r.steps, 2984);

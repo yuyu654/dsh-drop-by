@@ -189,7 +189,7 @@ export function tcpUp(host, port, timeoutMs = 800) {
 
 export async function asrListening({ cfg, tcp = tcpUp } = {}) {
   const { host, port } = asrEndpoint(cfg);
-  return tcp(host, port);
+  return tcp(host, port, cfg?.content?.forward?.serviceConnectMs ?? 800);
 }
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -201,16 +201,16 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 export async function ensureAsr({ cfg, spawnRun = run, tcp = tcpUp, sleep = wait } = {}) {
   const o = videoCfg(cfg);
   const { host, port } = asrEndpoint(cfg);
-  if (await tcp(host, port)) return { ok: true, started: false, host, port };
+  if (await tcp(host, port, cfg?.content?.forward?.serviceConnectMs ?? 800)) return { ok: true, started: false, host, port };
   if (!o.asrAutostart) return { ok: false, reason: 'ASR_NOT_RUNNING', note: `端口 ${port} 没人听，且 asrAutostart 关着` };
   if (!fs.existsSync(o.asrScript)) return { ok: false, reason: 'ASR_NO_SCRIPT', note: o.asrScript };
 
-  const r = await spawnRun('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', o.asrScript], { timeoutMs: 60_000 });
+  const r = await spawnRun('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', o.asrScript], { timeoutMs: cfg?.content?.forward?.serviceLaunchMs ?? 60_000 });
   const t0 = Date.now();
   const deadline = t0 + o.asrWaitMs;
   while (Date.now() < deadline) {
-    if (await tcp(host, port)) return { ok: true, started: true, host, port, ms: Date.now() - t0 };
-    await sleep(1500);
+    if (await tcp(host, port, cfg?.content?.forward?.serviceConnectMs ?? 800)) return { ok: true, started: true, host, port, ms: Date.now() - t0 };
+    await sleep(cfg?.content?.forward?.asrPollMs ?? 1500);
   }
   return {
     ok: false,
@@ -231,14 +231,14 @@ export async function stopAsr({ cfg, spawnRun = run } = {}) {
     '-NoProfile',
     '-Command',
     `$p = Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess; if ($p) { $c = (Get-CimInstance Win32_Process -Filter "ProcessId=$p").CommandLine; "$p|$c" }`,
-  ], { timeoutMs: 20_000 });
+  ], { timeoutMs: cfg?.content?.forward?.asrLookupMs ?? 20_000 });
   const line = String(q?.stdout || '').trim().split(/\r?\n/).pop() || '';
   const [pidRaw, ...cmdParts] = line.split('|');
   const pid = Number(pidRaw);
   const cmdline = cmdParts.join('|');
   if (!pid) return { stopped: false, reason: 'NOT_LISTENING', port };
   if (!/asr_server/i.test(cmdline)) return { stopped: false, reason: 'NOT_OURS', port, pid, cmdline: cmdline.slice(0, 120) };
-  const k = await spawnRun('taskkill', ['/PID', String(pid), '/F'], { timeoutMs: 15_000 });
+  const k = await spawnRun('taskkill', ['/PID', String(pid), '/F'], { timeoutMs: cfg?.content?.forward?.asrStopMs ?? 15_000 });
   return { stopped: k?.ok !== false, pid, port, note: k?.ok === false ? String(k?.stderr || '').slice(-120) : undefined };
 }
 
@@ -253,17 +253,17 @@ export async function stopAsr({ cfg, spawnRun = run } = {}) {
 export async function ensureEdge({ cfg, tcp = tcpUp, spawnRun = run, sleep = wait } = {}) {
   const o = videoCfg(cfg);
   const port = o.edgePort;
-  if (await tcp('127.0.0.1', port)) return { ok: true, started: false, port };
+  if (await tcp('127.0.0.1', port, cfg?.content?.forward?.serviceConnectMs ?? 800)) return { ok: true, started: false, port };
   if (!o.edgeAutostart) return { ok: false, reason: 'EDGE_NOT_RUNNING', note: `调试口 ${port} 没人听，且 edgeAutostart 关着` };
   if (!fs.existsSync(o.edgeScript)) return { ok: false, reason: 'EDGE_NO_SCRIPT', note: o.edgeScript };
 
   await spawnRun('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', o.edgeScript, '-Port', String(port)], {
-    timeoutMs: 60_000,
+    timeoutMs: cfg?.content?.forward?.serviceLaunchMs ?? 60_000,
   });
   const t0 = Date.now();
   while (Date.now() - t0 < o.edgeWaitMs) {
-    if (await tcp('127.0.0.1', port)) return { ok: true, started: true, port, ms: Date.now() - t0 };
-    await sleep(500);
+    if (await tcp('127.0.0.1', port, cfg?.content?.forward?.serviceConnectMs ?? 800)) return { ok: true, started: true, port, ms: Date.now() - t0 };
+    await sleep(cfg?.content?.forward?.edgePollMs ?? 500);
   }
   return { ok: false, reason: 'EDGE_START_FAILED', note: `跑了 ${o.edgeScript}，${port} 还是没人听` };
 }
@@ -304,7 +304,7 @@ export async function downloadVideo(id, { cfg, timeoutMs, node, ensure = ensureE
 export async function extractAudio(mp4, wav, { cfg, timeoutMs } = {}) {
   const o = videoCfg(cfg);
   const r = await run(o.ffmpeg, ['-y', '-loglevel', 'error', '-i', mp4, '-vn', '-ac', '1', '-ar', '16000', '-f', 'wav', wav], {
-    timeoutMs: timeoutMs || 120_000,
+    timeoutMs: timeoutMs ?? cfg?.content?.forward?.extractAudioMs ?? 120_000,
   });
   if (!r.ok || !fs.existsSync(wav)) return { ok: false, reason: 'FFMPEG_FAILED', note: String(r.stderr || '').slice(-200) };
   const size = fs.statSync(wav).size;

@@ -19,6 +19,8 @@ fs.mkdirSync(process.env.PG_LOG_DIR, { recursive: true });
 
 const { loadConfig, saveConfig, loadState, saveState } = await import('../src/config.js');
 const { tick } = await import('../src/engine.js');
+const { loadPersona } = await import('../src/persona.js');
+const { exploreRound, saveExploration } = await import('../src/explore.js');
 
 /** 把「30 分钟后有一场考试」写进配置：这样 pickTopic 一定挑得出一个与当前时刻无关的由头。 */
 function examSoonText(minutes = 30) {
@@ -111,6 +113,69 @@ test('judge 说「不说」→ 记 NO_TOPIC，不写句子、不发送', async (
   const st = loadState();
   assert.equal(st.judge.say, false);
   assert.equal(st.judge.why, '她在写代码，这会儿不该插话');
+});
+
+test('judge cannot send the reported troubleshooting prompt without user evidence', async () => {
+  writeConfig();
+  const gen = fakeGen(JSON.stringify({ say: true, angle: '插件排查', draft: '刷抖音那个插件，卡在哪一步了？报错贴我。', why: '窗口上看见插件排查' }));
+  const r = await tick({ persist: true, generate: gen, llmReady: true });
+  assert.equal(r.record.reason, 'PROJECT_HELP_WITHOUT_REQUEST');
+  assert.equal(r.delivery, null);
+});
+
+test('an approved exploration share previews the original source URL and preserves judge context', async () => {
+  const personaPath = path.join(dir, 'share-persona.md');
+  fs.writeFileSync(personaPath, '喜欢推理短篇。');
+  const cfg = writeConfig({
+    exploration: { offerShare: true },
+    persona: { enabled: true, localFile: personaPath, dshHome: dir },
+    content: { ...loadConfig().content, mode: 'llm', exams: { text: '' } },
+  });
+  const source = { url: 'https://example.org/story', title: '推理短篇', evidence: '仅标题或搜索摘要' };
+  const persona = loadPersona({ cfg });
+  const round = await exploreRound({ persona, media: { web: true, collect: async () => [source] },
+    generate: async ({ prompt }) => ({ ok: true, text: JSON.stringify(prompt.includes('替角色选')
+      ? { mode: 'leisure', kind: 'web', query: '推理短篇' }
+      : { action: 'start', topic: '推理短篇', progress: '找到一个链接', next: '留着看', share: '找到一篇标题挺有意思的推理短篇。', sourceIndex: 0 }) }),
+  });
+  saveExploration(round.state);
+  const r = await tick({ persist: false, llmReady: true, generate: async ({ prompt }) => {
+    assert.match(prompt, /推理短篇/);
+    assert.match(prompt, /仅标题或搜索摘要/);
+    assert.doesNotMatch(prompt, /\[object Object\]/);
+    return { ok: true, text: '{"say":true,"angle":"分享短篇","draft":"我找到一篇标题挺有意思的推理短篇。","why":"适合分享"}' };
+  } });
+  assert.equal(r.delivery?.preview, '我找到一篇标题挺有意思的推理短篇。\n' + source.url);
+});
+
+test('exploration mood cannot affect the send decision, only an approved proactive draft', async () => {
+  const personaPath = path.join(dir, 'test-persona.md');
+  fs.writeFileSync(personaPath, '喜欢推理，擅长找反例。');
+  const cfg = writeConfig({
+    exploration: { mood: true },
+    persona: { enabled: true, localFile: personaPath, dshHome: dir },
+    content: { ...loadConfig().content, mode: 'llm', exams: { text: '' } },
+  });
+  const persona = loadPersona({ cfg });
+  const r = await exploreRound({ persona, includeMood: true, generate: async () => ({
+    ok: true, text: JSON.stringify({ action: 'start', topic: '推理', progress: '找到反例', next: '再检查', mood: '有点得意。' }),
+  }) });
+  assert.equal(r.ok, true);
+  saveExploration(r.state);
+  for (const say of [false, true]) {
+    let styled = 0;
+    const result = await tick({ persist: false, llmReady: true, generate: async ({ prompt }) => {
+      if (prompt.includes('只输出一个 JSON 对象')) {
+        assert.doesNotMatch(prompt, /有点得意/);
+        return { ok: true, text: JSON.stringify({ say, angle: '推理', draft: '我想到一个反例。', why: '有一处新发现' }) };
+      }
+      assert.match(prompt, /有点得意/);
+      styled++;
+      return { ok: true, text: '嘿，我刚想到一个反例。' };
+    } });
+    assert.equal(styled, say ? 1 : 0);
+    assert.equal(result.delivery?.reason ?? null, say ? 'DRY_RUN' : null);
+  }
 });
 
 test('judge 返回坏 JSON → 退回规则链，仍然按由头写出句子', async () => {

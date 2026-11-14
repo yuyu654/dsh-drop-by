@@ -312,17 +312,17 @@ test('睡眠：睡够了就不提', () => {
   assert.equal(pickTopic(ctx, cfgOf({ share: false, catchup: false }), now, {}), null);
 });
 
-test('屏幕：晚上 + 超过 8 小时 → screen', () => {
+test('屏幕：晚上 + 达到 12 小时 → screen', () => {
   const now = at(22);
-  const ctx = ctxOf({ fish: fishOf({ screenMin: 600 }) });
+  const ctx = ctxOf({ fish: fishOf({ screenMin: 720 }) });
   const t = pickTopic(ctx, cfgOf({ share: false }), now, {});
   assert.equal(t.slot, 'screen');
-  assert.equal(t.evidence.screenMin, 600);
+  assert.equal(t.evidence.screenMin, 720);
 });
 
 test('屏幕：白天不提（会像查岗）', () => {
   const now = at(14);
-  const ctx = ctxOf({ fish: fishOf({ screenMin: 600 }) });
+  const ctx = ctxOf({ fish: fishOf({ screenMin: 720 }) });
   assert.equal(pickTopic(ctx, cfgOf({ share: false, catchup: false }), now, {}), null);
 });
 
@@ -342,6 +342,18 @@ test('share：判断太短就不用（没东西可说）', () => {
   const now = at(16);
   const ctx = ctxOf({ self: { section: '', at: '11-04', line: '太短了', chars: 3 } });
   assert.equal(pickTopic(ctx, cfgOf(), now, {}), null);
+});
+
+test('有正文依据的新发现排在普通屏幕提醒前', () => {
+  const now = at(22);
+  const ctx = ctxOf({ fish: fishOf({ screenMin: 720 }), self: {
+    section: '推理短篇', line: '这个叙述视角有点意思。', exploration: true,
+    discoveryId: 'new-discovery', discovery: '两个角色看到的是同一幕',
+    source: { evidence: '网页正文', url: 'https://example.org/story' },
+  } });
+  const due = { key: 'qq:' + (now - 5 * HOUR), at: now - 5 * HOUR, channel: 'qq', silenceMin: 300, text: '上次的提醒' };
+  assert.equal(pickTopic({ ...ctx, noReply: due }, cfgOf(), now, {})?.evidence.discoveryId, 'new-discovery');
+  assert.equal(pickTopic(ctx, cfgOf({ share: false }), now, {})?.slot, 'screen');
 });
 
 test('catchup：几天没说话才用', () => {
@@ -473,7 +485,7 @@ test('压力：阈值和次数都能由配置改', () => {
 
 test('压力：优先于屏幕时间（身体信号比用多久电脑更要紧）', () => {
   const now = at(21, 30);
-  const ctx = ctxOf({ fish: fishOf({ stress: 75, screenMin: 600, date: '2026-11-04' }) });
+  const ctx = ctxOf({ fish: fishOf({ stress: 75, screenMin: 720, date: '2026-11-04' }) });
   assert.equal(pickTopic(ctx, cfgOf(), now, {}).slot, 'stress');
 });
 
@@ -510,29 +522,29 @@ test('转发有内容摘要时由头才说「看过了」', () => {
 const stepsCfg = (extra = {}) =>
   cfgOf({ sleep: false, stress: false, screen: false, share: false, catchup: false, ...extra });
 
-test('步数：19 点收到新邮件，只走了 1200 步 → 没怎么动', () => {
+test('步数：19 点收到新邮件，不到 600 步 → 少量活动记录', () => {
   const now = at(19, 0);
-  const ctx = ctxOf({ fish: fishOf({ steps: 1200, ageMin: 20 }) });
+  const ctx = ctxOf({ fish: fishOf({ steps: 500, ageMin: 20 }) });
   const t = pickTopic(ctx, stepsCfg(), now, {});
   assert.equal(t.slot, 'steps');
   assert.equal(t.evidence.kind, 'low');
-  assert.match(t.brief, /1200/);
-  assert.match(t.brief, /没怎么动|几乎没/);
+  assert.equal(t.evidence.steps, 500);
+  assert.match(t.brief, /可能有漏记/);
 });
 
-test('步数：19 点走了 9000 步 → 活动量好', () => {
+test('步数：19 点走了 17000 步 → 明显偏多', () => {
   const now = at(19, 0);
-  const ctx = ctxOf({ fish: fishOf({ steps: 9000, ageMin: 20 }) });
+  const ctx = ctxOf({ fish: fishOf({ steps: 17000, ageMin: 20 }) });
   const t = pickTopic(ctx, stepsCfg(), now, {});
   assert.equal(t.slot, 'steps');
   assert.equal(t.evidence.kind, 'high');
-  assert.match(t.brief, /9000/);
-  assert.match(t.brief, /活动量不错/);
+  assert.equal(t.evidence.steps, 17000);
+  assert.match(t.brief, /明显比普通活动量多/);
 });
 
-test('步数：中间那一段（2000–8000）不构成由头', () => {
+test('步数：中间那一段（600–16000）不构成由头', () => {
   const now = at(19, 0);
-  for (const steps of [2000, 4000, 8000]) {
+  for (const steps of [600, 1200, 9000, 16000]) {
     const ctx = ctxOf({ fish: fishOf({ steps, ageMin: 20 }) });
     assert.equal(pickTopic(ctx, stepsCfg(), now, {}), null, `${steps} 步不该发`);
   }
@@ -542,45 +554,46 @@ test('步数：中间那一段（2000–8000）不构成由头', () => {
 
 test('步数：18 点之前不看（白天还没走完）', () => {
   const now = at(16, 0);
-  const ctx = ctxOf({ fish: fishOf({ steps: 800, ageMin: 10 }) });
+  const ctx = ctxOf({ fish: fishOf({ steps: 500, ageMin: 10 }) });
   assert.equal(pickTopic(ctx, stepsCfg(), now, {}), null);
 });
 
 test('步数：邮件太旧（超过 stepsMaxAgeMin）不当新数据', () => {
   const now = at(21, 0);
-  const ctx = ctxOf({ fish: fishOf({ steps: 800, ageMin: 300 }) });
+  const ctx = ctxOf({ fish: fishOf({ steps: 500, ageMin: 300 }) });
   assert.equal(pickTopic(ctx, stepsCfg(), now, {}), null);
-  const fresh = ctxOf({ fish: fishOf({ steps: 800, ageMin: 30 }) });
+  const fresh = ctxOf({ fish: fishOf({ steps: 500, ageMin: 30 }) });
   assert.equal(pickTopic(fresh, stepsCfg(), now, {})?.slot, 'steps');
 });
 
 test('步数：一天只说一次', () => {
   const now = at(20, 0);
-  const ctx = ctxOf({ fish: fishOf({ steps: 900, ageMin: 10 }) });
+  const ctx = ctxOf({ fish: fishOf({ steps: 500, ageMin: 10 }) });
   const t = pickTopic(ctx, stepsCfg(), now, {});
   assert.equal(t.slot, 'steps');
   assert.equal(pickTopic(ctx, stepsCfg(), now, { content: { lastStepsFor: t.evidence.day } }), null);
 });
 
-test('步数：两个阈值都能改', () => {
+test('步数：可以收紧阈值，旧配置不能放宽新门槛', () => {
   const now = at(19, 0);
   const ctx = ctxOf({ fish: fishOf({ steps: 4000, ageMin: 20 }) });
   assert.equal(pickTopic(ctx, stepsCfg(), now, {}), null);
-  const t = pickTopic(ctx, stepsCfg({ stepsLowMax: 5000 }), now, {});
-  assert.equal(t?.evidence.kind, 'low');
-  const t2 = pickTopic(ctxOf({ fish: fishOf({ steps: 4000, ageMin: 20 }) }), stepsCfg({ stepsHighMin: 3000 }), now, {});
-  assert.equal(t2?.evidence.kind, 'high');
+  assert.equal(pickTopic(ctx, stepsCfg({ stepsLowMax: 5000, stepsHighMin: 3000 }), now, {}), null);
+  const low = ctxOf({ fish: fishOf({ steps: 500, ageMin: 20 }) });
+  const high = ctxOf({ fish: fishOf({ steps: 17000, ageMin: 20 }) });
+  assert.equal(pickTopic(low, stepsCfg({ stepsLowMax: 400 }), now, {}), null);
+  assert.equal(pickTopic(high, stepsCfg({ stepsHighMin: 18000 }), now, {}), null);
 });
 
 test('步数：关掉开关就不选', () => {
   const now = at(19, 0);
-  const ctx = ctxOf({ fish: fishOf({ steps: 900, ageMin: 10 }) });
+  const ctx = ctxOf({ fish: fishOf({ steps: 500, ageMin: 10 }) });
   assert.equal(pickTopic(ctx, stepsCfg({ steps: false }), now, {}), null);
 });
 
 test('步数：手机端总闸关掉时也不选', () => {
   const now = at(19, 0);
-  const ctx = ctxOf({ fish: fishOf({ steps: 900, ageMin: 10 }) });
+  const ctx = ctxOf({ fish: fishOf({ steps: 500, ageMin: 10 }) });
   const cfg = { ...stepsCfg(), sources: { phone: { enabled: false } } };
   assert.equal(pickTopic(ctx, cfg, now, {}), null);
 });
@@ -618,13 +631,26 @@ test('深夜但人不在（空闲太久）→ 不算', () => {
   assert.equal(pickTopic(ctx, cfgOf(), now, { pc: {} }), null);
 });
 
-test('连续坐了 4 小时 → longSit，带起始时间', () => {
+test('电脑连续活跃 5 小时 → longSit，记录起始时间', () => {
   const now = at(16);
   const ctx = pcCtx();
-  const st = { pc: { day: '2026-11-04', activeSince: at(12), awaySince: 0, lastReturnAt: 0, lastAwayMs: 0 } };
+  const st = { pc: { day: '2026-11-04', activeSince: at(11), awaySince: 0, lastReturnAt: 0, lastAwayMs: 0 } };
   const t = pickTopic(ctx, cfgOf(), now, st);
   assert.equal(t.slot, 'longSit');
-  assert.match(t.brief, /12:00/);
+  assert.equal(t.evidence.since, '11:00');
+  assert.match(t.brief, /实际坐了多久未知/);
+});
+
+test('步数、屏幕、久坐降为最后候选，并跨类型共用冷却', () => {
+  const now = at(22);
+  const ctx = ctxOf({ fish: fishOf({ screenMin: 720 }) });
+  const recentSteps = { feedback: { slots: { steps: { lastSentAt: now - 95 * HOUR } } } };
+  assert.equal(pickTopic(ctx, cfgOf(), now, recentSteps), null);
+  recentSteps.feedback.slots.steps.lastSentAt -= HOUR;
+  assert.equal(pickTopic(ctx, cfgOf(), now, recentSteps)?.slot, 'screen');
+  assert.equal(pickTopic(ctxOf({ fish: fishOf({ screenMin: 600 }) }), cfgOf(), now, {}), null);
+  const self = { section: '追漫画', line: '这个转场还挺有意思', chars: 10, exploration: true };
+  assert.equal(pickTopic({ ...ctx, self }, cfgOf(), now, {})?.slot, 'share');
 });
 
 test('坐太久今天说过一次就不再提', () => {
@@ -632,7 +658,7 @@ test('坐太久今天说过一次就不再提', () => {
   const ctx = pcCtx();
   const st = {
     content: { lastLongSitFor: '2026-11-04' },
-    pc: { day: '2026-11-04', activeSince: at(12), awaySince: 0, lastReturnAt: 0, lastAwayMs: 0 },
+    pc: { day: '2026-11-04', activeSince: at(11), awaySince: 0, lastReturnAt: 0, lastAwayMs: 0 },
   };
   assert.equal(pickTopic(ctx, cfgOf(), now, st), null);
 });
@@ -714,7 +740,7 @@ test('刚回来这一类：两小时内说过一次就不再提（她嫌话题�
 test('最近四条里两句都在说她坐屏幕前 → 这一拍换掉', () => {
   const now = at(16);
   const ctx = pcCtx();
-  const pc = { day: '2026-11-04', activeSince: at(12), awaySince: 0, lastReturnAt: 0, lastAwayMs: 0 };
+  const pc = { day: '2026-11-04', activeSince: at(11), awaySince: 0, lastReturnAt: 0, lastAwayMs: 0 };
   const base = { pc };
   assert.equal(pickTopic(ctx, cfgOf(), now, base)?.slot, 'longSit');
 
@@ -728,7 +754,7 @@ test('最近四条里两句都在说她坐屏幕前 → 这一拍换掉', () => 
 test('同一类由头连着两拍 → 第三拍不再来', () => {
   const now = at(16);
   const ctx = pcCtx();
-  const pc = { day: '2026-11-04', activeSince: at(12), awaySince: 0, lastReturnAt: 0, lastAwayMs: 0 };
+  const pc = { day: '2026-11-04', activeSince: at(11), awaySince: 0, lastReturnAt: 0, lastAwayMs: 0 };
   const st = { content: { recentSlots: ['longSit', 'longSit'] }, pc };
   assert.equal(pickTopic(ctx, cfgOf(), now, st), null);
 

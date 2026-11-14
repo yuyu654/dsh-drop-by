@@ -34,7 +34,7 @@ test('回她的话不会被当成「我发过去她一直没回」的追问由�
 test('主动由头照旧算账（别把整本账一起关掉）', () => {
   const st = {};
   noteSent(st, 'share', T0, '我想到一个事。');
-  assert.ok(pendingFromFeedback(st, cfg, T0 + 200 * MIN), '主动由头该能被追问');
+  assert.equal(pendingFromFeedback(st, cfg, T0 + 200 * MIN), null, '分享默认不追，但仍记录反馈');
   sweep(st, T0 + 5 * HOUR, { tz: 'Asia/Shanghai' });
   assert.equal(slotStats(st).share.sent, 1);
   assert.equal(slotStats(st).share.missed, 1);

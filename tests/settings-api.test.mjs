@@ -93,14 +93,14 @@ test('设置口：读、写、拒绝、以及不碰真配置', async (t) => {
 
   const route = routeOf();
   assert.ok(route, 'statusApi 默认开着，应该注册了路由');
-  assert.equal(route.path, '/api/presence-gate');
+  assert.equal(route.path, '/api/dsh-drop-by');
 
   // ---- 读
-  const got = await call(route, { url: '/api/presence-gate/config' });
+  const got = await call(route, { url: '/api/dsh-drop-by/config' });
   assert.equal(got.status, 200);
   assert.equal(got.json.ok, true);
   const groups = got.json.groups;
-  assert.equal(groups.length, 6); // 日常/节奏/说什么/数据从哪来/课表与考试/高级（后两组折成一个模块）
+  assert.equal(groups.length, 7);
   // 感知那三层的开关和间隔要能看能改
   const flat0 = groups.flatMap((g) => g.items);
   for (const p of ['idle.onlineSec', 'idle.awaySec', 'perception.l2.enabled', 'perception.l3.enabled']) {
@@ -108,7 +108,7 @@ test('设置口：读、写、拒绝、以及不碰真配置', async (t) => {
   }
   // L3 默认关着，它的「多久看一次」跟父开关走：关着不显示，开了才出来
   assert.ok(!flat0.some((i) => i.path === 'perception.l3.everyMin'));
-  const l3 = await call(route, { method: 'POST', url: '/api/presence-gate/config', body: { path: 'perception.l3.enabled', value: true } });
+  const l3 = await call(route, { method: 'POST', url: '/api/dsh-drop-by/config', body: { path: 'perception.l3.enabled', value: true } });
   assert.ok(l3.json.groups.flatMap((g) => g.items).some((i) => i.path === 'perception.l3.everyMin'), 'L3 开了以后间隔要出现');
   const flat = groups.flatMap((g) => g.items);
   const tick = flat.find((i) => i.path === 'tickMinutes');
@@ -123,7 +123,7 @@ test('设置口：读、写、拒绝、以及不碰真配置', async (t) => {
   // ---- 写：数字
   const saved = await call(route, {
     method: 'POST',
-    url: '/api/presence-gate/config',
+    url: '/api/dsh-drop-by/config',
     body: { path: 'tickMinutes', value: 15 },
   });
   assert.equal(saved.status, 200);
@@ -133,24 +133,28 @@ test('设置口：读、写、拒绝、以及不碰真配置', async (t) => {
   // 返回的新清单里也是 15（界面直接用它重渲染）
   assert.equal(saved.json.groups.flatMap((g) => g.items).find((i) => i.path === 'tickMinutes').value, 15);
   assert.equal(JSON.parse(fs.readFileSync(cfgPath, 'utf8')).tickMinutes, 15, '应该真的落盘了');
+  const cooldown = await call(route, { method: 'POST', url: '/api/dsh-drop-by/config', body: { path: 'content.topics.wellnessCooldownHours', value: 12 } });
+  assert.equal(cooldown.json.ok, true);
+  assert.equal(cooldown.json.groups.find((g) => g.name === '时间间隔').items.find((i) => i.path === 'content.topics.wellnessCooldownHours').value, 12);
+  assert.equal(JSON.parse(fs.readFileSync(cfgPath, 'utf8')).content.topics.wellnessCooldownHours, 12);
   // 别的键没被抹掉
   assert.equal(JSON.parse(fs.readFileSync(cfgPath, 'utf8')).rules.dailyCap, 3);
 
   // ---- 写：布尔 + 一句提醒
-  const send = await call(route, { method: 'POST', url: '/api/presence-gate/config', body: { path: 'send.enabled', value: true } });
+  const send = await call(route, { method: 'POST', url: '/api/dsh-drop-by/config', body: { path: 'send.enabled', value: true } });
   assert.equal(send.json.ok, true);
   assert.equal(send.json.notes.length, 1);
   assert.match(send.json.notes[0], /演练模式/);
 
   // ---- 写：时段（界面传的是文本）
-  const quiet = await call(route, { method: 'POST', url: '/api/presence-gate/config', body: { path: 'quietHours', value: '23:00-07:00' } });
+  const quiet = await call(route, { method: 'POST', url: '/api/dsh-drop-by/config', body: { path: 'quietHours', value: '23:00-07:00' } });
   assert.equal(quiet.json.ok, true);
   assert.deepEqual(JSON.parse(fs.readFileSync(cfgPath, 'utf8')).quietHours, [['23:00', '07:00']]);
 
   // ---- 写：凭据（进 credentials.json，不进 config.json，响应里也不回显）
   const cred = await call(route, {
     method: 'POST',
-    url: '/api/presence-gate/config',
+    url: '/api/dsh-drop-by/config',
     body: { path: 'mail.authCode', value: 'abcd1234efgh5678' },
   });
   assert.equal(cred.json.ok, true);
@@ -163,30 +167,30 @@ test('设置口：读、写、拒绝、以及不碰真配置', async (t) => {
   assert.equal(afterAuth.value, '');
 
   // ---- 写：邮箱账号（不是凭据，正常落 config.json）
-  const user = await call(route, { method: 'POST', url: '/api/presence-gate/config', body: { path: 'mail.user', value: '123456@qq.com' } });
+  const user = await call(route, { method: 'POST', url: '/api/dsh-drop-by/config', body: { path: 'mail.user', value: '123456@qq.com' } });
   assert.equal(user.json.ok, true);
   assert.equal(JSON.parse(fs.readFileSync(cfgPath, 'utf8')).mail.user, '123456@qq.com');
 
   // ---- 拒：不在白名单（IMAP 端口/加密这类不给界面动）
-  const denied = await call(route, { method: 'POST', url: '/api/presence-gate/config', body: { path: 'mail.tls', value: false } });
+  const denied = await call(route, { method: 'POST', url: '/api/dsh-drop-by/config', body: { path: 'mail.tls', value: false } });
   assert.equal(denied.json.ok, false);
   assert.match(denied.json.error, /不开放修改/);
   assert.equal(JSON.parse(fs.readFileSync(cfgPath, 'utf8')).mail.tls, true, '被拒的值绝不能写进文件（还该是默认的 true）');
 
   // ---- 拒：值越界
-  const tooBig = await call(route, { method: 'POST', url: '/api/presence-gate/config', body: { path: 'tickMinutes', value: 999 } });
+  const tooBig = await call(route, { method: 'POST', url: '/api/dsh-drop-by/config', body: { path: 'tickMinutes', value: 999 } });
   assert.equal(tooBig.json.ok, false);
   assert.equal(JSON.parse(fs.readFileSync(cfgPath, 'utf8')).tickMinutes, 15, '越界值不该覆盖旧值');
 
   // ---- 拒：请求体不是 JSON / 没 path
-  const badJson = await call(route, { method: 'POST', url: '/api/presence-gate/config', body: 'not json' });
+  const badJson = await call(route, { method: 'POST', url: '/api/dsh-drop-by/config', body: 'not json' });
   assert.equal(badJson.json.ok, false);
-  const noPath = await call(route, { method: 'POST', url: '/api/presence-gate/config', body: {} });
+  const noPath = await call(route, { method: 'POST', url: '/api/dsh-drop-by/config', body: {} });
   assert.equal(noPath.json.ok, false);
   assert.match(noPath.json.error, /缺 path/);
 
   // ---- 方法不对 → 404（不是 500）
-  const wrongMethod = await call(route, { method: 'GET', url: '/api/presence-gate/config2' });
+  const wrongMethod = await call(route, { method: 'GET', url: '/api/dsh-drop-by/config2' });
   assert.equal(wrongMethod.status, 404);
 
   // ---- 真配置没被动过

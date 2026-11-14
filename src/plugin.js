@@ -1,4 +1,4 @@
-// plugin.js —— presence-gate 的 dsh 插件壳（宿主半侧）。
+// plugin.js —— dsh-drop-by 的 dsh 插件壳（宿主半侧）。
 //
 // 它做的事和 `node src/run.js --loop` 一模一样，只是**不再另开进程**：
 //   · 定时器在宿主里每 tickMinutes 敲一拍，调 engine.tick()（和命令行共用同一份判定/生成/发送逻辑）；
@@ -28,23 +28,24 @@ import { tick, tickQqContinuation, qqContinuationEnabled } from './engine.js';
 import { readBridgeDialogue } from './outbound.js';
 import { createQqContinuation } from './qq-continuation.js';
 import { inQuiet, inBusy } from './schedule.js';
+import { loadPersona } from './persona.js';
+import { exploreRound, explorationStatus, explorationMood, loadExploration, saveExploration } from './explore.js';
 import { makeHostLlm } from './hostllm.js';
 import { listForUi, applyChange, saveSecret } from './settings.js';
 import { detectSources } from './detect.js';
 import { watchVideo } from './video-host.js';
+import { createExplorationMedia } from './explore-media.js';
 
-export const name = 'presence-gate';
+export const name = 'dsh-drop-by';
 
 /** 不声明任何必需服务（见文件头第 1 条）。 */
 export const inject = [];
 
 /** 状态接口前缀（浏览器/curl 都能看）。 */
-const API_PREFIX = '/api/presence-gate';
+const API_PREFIX = '/api/dsh-drop-by';
 
 const DEFAULTS = {
   enabled: true,
-  // 覆盖 config.json 的 tickMinutes（一般不用动，留在这里是为了调试时想快跑）
-  tickMinutes: 0,
   // 宿主刚起来那会儿会话/模型都还没热，先让一拍
   startupDelaySec: 60,
   // 每拍随机抖 0~jitterSec 秒：避免每次开机都在整点同一秒打模型
@@ -53,7 +54,7 @@ const DEFAULTS = {
   hostLlm: true,
   // 给模型一个 presence_status 工具
   tool: true,
-  // 注册 /api/presence-gate/state
+  // 注册 /api/dsh-drop-by/state
   statusApi: true,
 };
 
@@ -81,7 +82,7 @@ function serviceOf(ctx, key) {
  * ⚠️ 为什么必须有这个：`apply()` 是在插件**装载那一刻**跑的，而 `webServer` / `tools`
  * 这些服务由别的插件稍后 provide。那时 `ctx.get('webServer')` 还是 undefined，
  * 老写法（apply 里直接取一次，取不到就算了）就永远挂不上 —— 表现是设置页
- * `GET /api/presence-gate/state` 落到宿主鉴权层，浏览器只看到 HTTP 404。
+ * `GET /api/dsh-drop-by/state` 落到宿主鉴权层，浏览器只看到 HTTP 404。
  * `ctx.inject(deps, cb)` 是 cordis 官方的解法：服务一提供，cb 自己会被调起来。
  *
  * 没有 `ctx.inject`（老宿主 / 裸调用）就退回「当场试一次」，行为跟以前一样。
@@ -111,7 +112,7 @@ function noteMount(msg) {
 /** 打日志：宿主有 logger 就用它，没有就退 console（headless 调试时看得见）。 */
 function makeLog(ctx) {
   const logger = serviceOf(ctx, 'logger');
-  const tag = '[presence-gate]';
+  const tag = '[dsh-drop-by]';
   const emit = (level, msg) => {
     try {
       if (logger && typeof logger[level] === 'function') return logger[level](msg);
@@ -188,6 +189,9 @@ export function apply(ctx, config = {}) {
   let running = false;
   let timer = null;
   let continuationTimer = null;
+  let exploring = false;
+  let explorationToolsCtx = null;
+  let lastExploreAttempt = 0;
   const continuation = createQqContinuation();
   let ticks = 0;
   let lastAt = 0;
@@ -196,8 +200,6 @@ export function apply(ctx, config = {}) {
   let lastRun = null;
 
   const tickMinutes = () => {
-    const fromOpt = Number(opt.tickMinutes) || 0;
-    if (fromOpt > 0) return fromOpt;
     return Math.max(1, Number(loadConfig().tickMinutes) || 10);
   };
 
@@ -260,8 +262,48 @@ export function apply(ctx, config = {}) {
 
   function intervalMs() {
     const base = tickMinutes() * 60_000;
-    const jitter = Math.max(0, Number(opt.jitterSec) || 0) * 1000;
+    const jitter = Math.max(0, Number(loadConfig().tickJitterSec ?? opt.jitterSec) || 0) * 1000;
     return base + (jitter ? Math.floor(Math.random() * jitter) : 0);
+  }
+
+  async function runExploration(manual = false) {
+    if (disposed || opt.enabled === false || exploring) return { ok: false, reason: 'UNAVAILABLE' };
+    const cfg = loadConfig();
+    const now = Date.now();
+    if (cfg.enabled === false || (!manual && cfg.exploration.auto !== true)) return { ok: false, reason: 'DISABLED' };
+    if (inQuiet(now, cfg.quietHours, cfg.timezone) || (!manual && inBusy(now, cfg.busyHours, cfg.timezone))) {
+      return { ok: false, reason: 'QUIET_OR_BUSY' };
+    }
+    const persona = loadPersona({ cfg });
+    if (!persona.ok) return { ok: false, reason: 'NO_PERSONA' };
+    const previous = loadExploration();
+    const status = explorationStatus(previous, persona);
+    const interval = Math.max(30, Number(cfg.exploration.intervalMinutes) || 180) * 60_000;
+    if (!manual && now - Math.max(lastExploreAttempt, status.lastAt || 0) < interval) return { ok: false, reason: 'NOT_DUE' };
+    const host = llmNow(cfg);
+    if (!host.ready) return { ok: false, reason: host.reason || 'HOST_LLM_MISSING' };
+    exploring = true;
+    lastExploreAttempt = now;
+    try {
+      const media = createExplorationMedia({ timing: cfg.exploration,
+        tools: serviceOf(explorationToolsCtx || ctx, 'tools'), web: cfg.exploration.web === true, video: cfg.exploration.video === true,
+        observeVideo: host.observeVideo,
+        watchDouyin: (id) => watchVideo(id, { cfg, host, llm: host.generate, ctx: explorationToolsCtx || ctx }),
+      });
+      const r = await exploreRound({ persona, previous, interest: cfg.exploration.interest, now, generate: host.generate,
+        includeMood: cfg.exploration.mood === true, media, leisureEvery: cfg.exploration.leisureEvery, timing: cfg.exploration });
+      const fresh = loadConfig();
+      if (disposed || fresh.enabled === false || (!manual && fresh.exploration.auto !== true) ||
+          loadPersona({ cfg: fresh }).text !== persona.text) return { ok: false, reason: 'CANCELLED' };
+      if (!r.ok) return r;
+      saveExploration(r.state);
+      return { ok: true, action: r.action, ...explorationStatus(r.state, persona) };
+    } catch (e) {
+      log.warn(`自主探索失败：${String(e?.message || e).slice(0, 160)}`);
+      return { ok: false, reason: 'EXPLORATION_ERROR' };
+    } finally {
+      exploring = false;
+    }
   }
 
   function schedule(delayMs) {
@@ -271,6 +313,7 @@ export function apply(ctx, config = {}) {
       timer = null;
       await runOnce('timer');
       schedule(intervalMs());
+      await runExploration().catch((e) => log.warn(`自主探索失败：${String(e?.message || e).slice(0, 160)}`));
     }, Math.max(0, delayMs));
     // 不阻止宿主退出（Node 的 unref；Electron 里同样有效）
     timer.unref?.();
@@ -288,7 +331,7 @@ export function apply(ctx, config = {}) {
           continuation.observe({ incoming: {}, outgoing: {} }, '', now);
           return;
         }
-        const due = continuation.observe(readBridgeDialogue(), String(cfg.channels.qq.peerId), now);
+        const due = continuation.observe(readBridgeDialogue(), String(cfg.channels.qq.peerId), now, cfg.rules.qqTiming);
         if (!due || running) return;
         continuation.consume(due);
         const host = llmNow(cfg);
@@ -304,7 +347,7 @@ export function apply(ctx, config = {}) {
       } finally {
         scheduleContinuation();
       }
-    }, 2000);
+    }, Number(loadConfig().rules?.qqTiming?.pollSec ?? 2) * 1000);
     continuationTimer.unref?.();
   }
 
@@ -329,6 +372,12 @@ export function apply(ctx, config = {}) {
       nextAt: nextAt ? new Date(nextAt).toISOString() : null,
       lastError,
       last: lastRun,
+      exploration: (() => {
+        const state = loadExploration();
+        const persona = loadPersona({ cfg });
+        return { ...explorationStatus(state, persona), auto: cfg.exploration.auto, running: exploring,
+          mood: cfg.exploration.mood === true ? explorationMood(state, persona, Date.now(), cfg.exploration) : null };
+      })(),
       today: {
         real: Number(st?.real?.todaySent) || 0,
         sim: Number(st?.sim?.todaySent) || 0,
@@ -407,6 +456,10 @@ export function apply(ctx, config = {}) {
       notes.push('读邮箱开了：下一次到间隔就去收信（填了账号和授权码才会真连）');
     }
 
+    if (timer && ['tickMinutes', 'tickJitterSec'].includes(r.path) && !running) {
+      clearTimeout(timer);
+      schedule(intervalMs());
+    }
     return { ok: true, path: r.path, value: r.value, notes, groups: listForUi(loadConfig()), state: snapshot() };
   }
 
@@ -453,6 +506,10 @@ export function apply(ctx, config = {}) {
                   const r = await runOnce('api');
                   return json(200, { ...r, state: snapshot() });
                 }
+                if (route === '/explore' && req.method === 'POST') {
+                  const r = await runExploration(true);
+                  return json(200, { ...r, state: snapshot() });
+                }
                 return json(404, { ok: false, error: 'NOT_FOUND' });
               } catch (e) {
                 return json(500, { ok: false, error: String(e?.message || e).slice(0, 200) });
@@ -470,6 +527,15 @@ export function apply(ctx, config = {}) {
     };
     whenService(ctx, 'webServer', mountApi, log);
   }
+
+  // The scheduler and settings route also need the optional tools service.
+  if (opt.enabled !== false) whenService(ctx, 'tools', (c) => {
+    if (!serviceOf(c, 'tools')) return;
+    explorationToolsCtx = c;
+    if (typeof c?.effect === 'function') c.effect(() => () => {
+      if (explorationToolsCtx === c) explorationToolsCtx = null;
+    });
+  }, log);
 
   // ---------------------------------------------------------------- 可选：给模型的工具
   // 同样要等 tools 就绪（apply 那一刻 tools 服务通常还没 provide，直接取会静默跳过）。
@@ -497,20 +563,22 @@ export function apply(ctx, config = {}) {
           const tool = spec({
             name: 'presence_status',
             description:
-              '看 presence-gate（主动找她说话的那个插件）现在是什么状态：开着没有、演练还是真发、' +
+              '看 dsh-drop-by（主动找她说话的那个插件）现在是什么状态：开着没有、演练还是真发、' +
               '上一拍判了什么、今天已经发过几条、用的是哪个模型。' +
               'action="tick" 会在当前时刻立刻跑一拍（会真的生成一句话、dryRun 时不会发出去）。' +
+              'action="explore" 仅在用户明确要求试跑自主探索时使用：运行一轮文字探索并返回进展，不发消息。' +
               '只在用户问「你还在盯着我吗 / 刚才那条是你发的吗 / 今天发了几条」时调用；' +
               '不要用它去主动发消息——发不发由插件自己按由头判断。',
             parameters: {
               action: {
                 type: 'string',
-                enum: ['status', 'tick'],
-                description: 'status=只看状态（默认）；tick=立刻跑一拍',
+                enum: ['status', 'tick', 'explore'],
+                description: 'status=只看状态（默认）；tick=立刻跑一拍；explore=试跑一轮自主探索',
               },
             },
             async execute(args) {
               const action = String(args?.action || 'status');
+              if (action === 'explore') return runExploration(true);
               if (action === 'tick') {
                 const r = await runOnce('tool');
                 return { ok: Boolean(r?.ok), result: r, state: snapshot() };
@@ -582,7 +650,7 @@ export function apply(ctx, config = {}) {
     },
   };
 
-  const firstDelay = Math.max(0, Number(opt.startupDelaySec) || 0) * 1000;
+  const firstDelay = Math.max(0, Number(loadConfig().startupDelaySec ?? opt.startupDelaySec) || 0) * 1000;
   schedule(firstDelay);
   scheduleContinuation();
   log.info(

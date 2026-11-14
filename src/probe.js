@@ -4,7 +4,6 @@ import path from 'node:path';
 import { ROOT } from './config.js';
 
 const SCRIPT = path.join(ROOT, 'tools', 'winprobe.ps1');
-const TIMEOUT_MS = 4000;
 
 let cache = null; // { at, data }
 
@@ -13,13 +12,14 @@ export function probeCached(maxAgeMs = 5000) {
   return null;
 }
 
-export function probe(force = false) {
-  if (!force && cache && Date.now() - cache.at < 5000) return Promise.resolve(cache.data);
+export function probe(force = false, cfg) {
+  const cached = !force && probeCached(cfg?.perception?.probeCacheMs ?? 5000);
+  if (cached) return Promise.resolve(cached);
   return new Promise((resolve) => {
     execFile(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', SCRIPT],
-      { timeout: TIMEOUT_MS, windowsHide: true, maxBuffer: 4 * 1024 * 1024 },
+      { timeout: cfg?.perception?.probeTimeoutMs ?? 4000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 },
       (err, stdout) => {
         if (err) {
           resolve({

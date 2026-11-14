@@ -18,11 +18,11 @@ let pluginCache = null; // { at, value }
 /**
  * 插件是否装了：扫所有 profile 的 node_modules，比对 package.json 的 name。
  * 只读文件，不执行它的 CLI（那会启动无头浏览器，代价远大于收益）。
- * 结果缓存 10 分钟，按 package.json 的 mtime 失效。
+ * 结果按配置缓存，过期后重新读取。
  */
-export function detectPlugin() {
+export function detectPlugin(cacheMin = 10) {
   const now = Date.now();
-  if (pluginCache && now - pluginCache.at < 10 * 60_000) return pluginCache.value;
+  if (pluginCache && now - pluginCache.at < cacheMin * 60_000) return pluginCache.value;
 
   const hits = [];
   const tryDir = (dir) => {
@@ -102,7 +102,7 @@ function readDmMemory() {
  *   { channel:'douyin', ok, reason?, lastUserTs, lastSendTs, plugin, state }
  * ok=false 时 reason 就是降级原因，调用方据此决定「跳过这一项」而不是「整轮失败」。
  */
-export function readDouyin(now, staleMin) {
+export function readDouyin(now, staleMin, detectCacheMin) {
   const state = path.join(DATA_DIR, 'chat-watch-state.json');
   if (!fs.existsSync(DATA_DIR)) {
     return { channel: 'douyin', ok: false, reason: 'DOUYIN_NO_DATA', lastUserTs: null, lastSendTs: null };
@@ -113,7 +113,7 @@ export function readDouyin(now, staleMin) {
     return { channel: 'douyin', ok: false, reason: 'DOUYIN_NO_DATA', lastUserTs: null, lastSendTs: null };
   }
 
-  const plugin = detectPlugin();
+  const plugin = detectPlugin(detectCacheMin);
   if (!plugin.installed) {
     return {
       channel: 'douyin',

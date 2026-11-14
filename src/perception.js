@@ -18,7 +18,7 @@ const L3_SCRIPT = path.join(ROOT, 'tools', 'screen-ocr.ps1');
 const L3_TIMEOUT_MS = 12_000;
 
 /** L3：截前台窗口 + 系统 OCR。失败只返回原因，不重试。 */
-export function l3Screen(cfg, { timeoutMs = L3_TIMEOUT_MS } = {}) {
+export function l3Screen(cfg, { timeoutMs = cfg?.perception?.l3?.timeoutMs ?? L3_TIMEOUT_MS } = {}) {
   const l3 = cfg?.perception?.l3 || {};
   const skip = (l3.skipFg || []).map((s) => String(s).toLowerCase());
   return new Promise((resolve) => {

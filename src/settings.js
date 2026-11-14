@@ -47,21 +47,19 @@ function detectHint(specPath, cfg, detCache) {
 }
 
 /** 分组顺序 = 设置页从上到下的顺序：先日常，再具体，最后是平时别动的。 */
-export const GROUP_ORDER = ['日常', '节奏', '说什么', '数据从哪来', '课表与考试', '高级'];
+export const GROUP_ORDER = ['日常', '节奏', '说什么', '数据从哪来', '课表与考试', '时间间隔', '高级'];
 
 /**
  * 分组顶部的一条说明（灰底小字）。目前只有「日常」有：反作弊提醒。
  * 写在这里而不是写死在 client 里 —— 以后加别组的说明只改这张表。
  */
 export const GROUP_NOTES = {
+  时间间隔: '聊天、探索、提醒与数据保留的时间设置。常用总节奏在「节奏」组。',
   日常:
-    '玩带反作弊的游戏时，建议先关掉「高级」里的这几项：①「看屏幕（OCR）」——截屏最容易踩线，默认就关着；' +
-    '②「看窗口和网页（不截屏）」——读前台窗口标题、浏览器标签（要开 Edge 调试口）、编辑器文件名；' +
-    '③抖音视频的下载与转写（走 Edge 调试口 + 转码）。只读键鼠空闲不受影响。' +
-    'WeGame/腾讯系进程在跑时这些会自动跳过，但名单外的游戏认不出来。',
+    '带反作弊的游戏中：看屏幕（OCR）、看窗口和网页、抖音功能会自动避让或建议关闭；键鼠空闲不受影响。',
 };
-/** 这一组默认折起来：课表按内容折，高级是「平时不用动」的那一堆。 */
-export const FOLDABLE_GROUPS = new Set(['课表与考试', '高级']);
+/** 这一组默认折起来：除了日常主控展开，其余各组默认折叠并显示人话摘要。 */
+export const FOLDABLE_GROUPS = new Set(['节奏', '说什么', '数据从哪来', '课表与考试', '时间间隔', '高级']);
 
 /**
  * 子项跟着父开关走：父开关关着，这一行就不显示（值还留在 config.json 里，开回来就恢复）。
@@ -95,25 +93,127 @@ const onTopic = (k) => dep(`content.topics.${k}`, true);
  *   dep     父开关（见上面的 dep()）：父开关关着就不显示
  */
 export const SCHEMA = [
+  { group: '时间间隔', path: 'content.topics.agendaSoonMinLead', label: '临上课前少于多久就不再提醒', type: 'int', min: 0, max: 60, unit: '分钟' },
+  { group: '时间间隔', path: 'content.topics.agendaTomorrowUntilHour', label: '明日早课提醒跨零点截止时间', type: 'int', min: 0, max: 6, unit: '点' },
+  { group: '时间间隔', path: 'perception.probeCacheMs', label: '系统探针缓存时长', type: 'int', min: 0, max: 300, unit: '秒', scale: 1000 },
+  { group: '时间间隔', path: 'perception.probeTimeoutMs', label: '系统探针调用超时', type: 'int', min: 1, max: 120, unit: '秒', scale: 1000 },
+  { group: '时间间隔', path: 'sources.douyin.detectCacheMin', label: '抖音插件安装检测缓存时长', type: 'int', min: 0, max: 1440, unit: '分钟' },
+  { group: '时间间隔', path: 'content.forward.visionInfoTimeoutMs', label: '查询看图模型能力超时', type: 'int', min: 1, max: 120, unit: '秒', scale: 1000 },
+  { group: '时间间隔', path: 'content.forward.serviceConnectMs', label: '视频本地服务端口探测超时', type: 'int', min: 100, max: 30000, unit: '毫秒' },
+  { group: '时间间隔', path: 'content.forward.asrPollMs', label: '转写服务启动后检查间隔', type: 'int', min: 100, max: 30000, unit: '毫秒' },
+  { group: '时间间隔', path: 'content.forward.edgePollMs', label: 'Edge 启动后检查间隔', type: 'int', min: 100, max: 30000, unit: '毫秒' },
+  { group: '时间间隔', path: 'content.forward.serviceLaunchMs', label: '运行本地视频服务启动脚本超时', type: 'int', min: 1, max: 300, unit: '秒', scale: 1000 },
+  { group: '时间间隔', path: 'content.forward.asrLookupMs', label: '查询转写进程超时', type: 'int', min: 1, max: 120, unit: '秒', scale: 1000 },
+  { group: '时间间隔', path: 'content.forward.asrStopMs', label: '关闭本轮启动的转写进程超时', type: 'int', min: 1, max: 120, unit: '秒', scale: 1000 },
+  { group: '时间间隔', path: 'content.forward.extractAudioMs', label: '抽取视频音轨超时', type: 'int', min: 1, max: 900, unit: '秒', scale: 1000 },
+  { group: '时间间隔', path: 'startupDelaySec', default: 60, label: '启动后第一拍等待', type: 'int', min: 0, max: 3600, unit: '秒', hint: '下次启动 DSH 时使用。' },
+  { group: '时间间隔', path: 'tickJitterSec', default: 30, label: '每拍额外随机等待上限', type: 'int', min: 0, max: 300, unit: '秒', hint: '填 0 完全按每拍间隔运行。' },
+  { group: '时间间隔', path: 'mail.activeHours', label: '允许收邮件的时段', type: 'windows' },
+  { group: '时间间隔', path: 'channels.qq.activeHours', label: '允许读取 QQ 的时段', type: 'windows', dep: ON_QQ },
+  { group: '时间间隔', path: 'channels.douyin.activeHours', label: '允许读取抖音的时段', type: 'windows', dep: ON_DOUYIN },
+  { group: '时间间隔', path: 'channels.main.activeHours', label: '允许读取主会话的时段', type: 'windows' },
+  { group: '时间间隔', path: 'exploration.storyboardSeconds', label: '通用视频分镜取前多少秒', type: 'int', min: 1, max: 600, unit: '秒' },
+  { group: '时间间隔', path: 'exploration.moodReplyAgeMin', label: '调整心情语气最多参考多早的 QQ 消息', type: 'int', min: 0, max: 1440, unit: '分钟' },
+  { group: '时间间隔', path: 'exploration.planTimeoutMs', label: '探索选题生成超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒' },
+  { group: '时间间隔', path: 'exploration.roundTimeoutMs', label: '探索进展生成超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒' },
+  { group: '时间间隔', path: 'exploration.toolTimeoutMs', label: '探索搜索和读网页超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒' },
+  { group: '时间间隔', path: 'exploration.storyboardTimeoutMs', label: '探索视频分镜超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒' },
+  { group: '时间间隔', path: 'exploration.moodDraftTimeoutMs', label: '探索心情润色超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒' },
+  { group: '时间间隔', path: 'exploration.portraitTimeoutMs', label: 'QQ 心情判断超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒' },
+  { group: '时间间隔', path: 'rules.qqTiming.generationTimeoutMs', label: 'QQ 热聊补话生成超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒' },
+  { group: '时间间隔', path: 'rules.projectTiming.generationTimeoutMs', label: '项目问候生成超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒' },
+  { group: '时间间隔', path: 'rules.judge.timeoutMs', label: '主动开口判断超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒' },
+  { group: '时间间隔', path: 'content.topics.noReplyJudgeTimeoutMs', label: '追问前判断超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒' },
+  { group: '时间间隔', path: 'perception.l3.timeoutMs', label: '截图识别超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒' },
+  { group: '时间间隔', path: 'send.timeoutMs', label: '单条 QQ 消息发送超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒' },
+  { group: '时间间隔', path: 'content.topics.wellnessCooldownHours', label: '步数、屏幕与久坐共用冷却', type: 'int', min: 0, max: 720, unit: '小时', hint: '默认 96 小时。三类中任何一类发出后，其他两类也一起等。填 0 关闭跨类冷却，仍按各自规则去重。' },
+  { group: '时间间隔', path: 'exploration.recentDays', label: '探索进展能用多久', type: 'int', min: 0, max: 90, unit: '天', hint: '适用于主动分享和 QQ 回复中的研究、休闲进展。填 0 不引用。' },
+  { group: '时间间隔', path: 'exploration.moodHours', label: '探索心情保留多久', type: 'int', min: 0, max: 168, unit: '小时', hint: '默认 2 小时。填 0 不引用探索心情。' },
+  { group: '时间间隔', path: 'exploration.portraitHours', label: 'QQ 聊天心情保留多久', type: 'int', min: 0, max: 168, unit: '小时', hint: '默认 2 小时，同时控制情绪回落速度。填 0 不引用。' },
+  { group: '时间间隔', path: 'rules.qqTiming.pollSec', label: 'QQ 热聊检查间隔', type: 'int', min: 1, max: 60, unit: '秒', hint: '多久检查一次 QQ 桥的最新消息。' },
+  { group: '时间间隔', path: 'rules.qqTiming.windowSec', label: 'QQ 热聊回看窗口', type: 'int', min: 1, max: 1800, unit: '秒', hint: '在这段时间里至少有两轮对话才算热聊。' },
+  { group: '时间间隔', path: 'rules.qqTiming.pauseSec', label: 'QQ 热聊补话先等多久', type: 'int', min: 0, max: 300, unit: '秒', hint: '从正常回复发送完成开始计时。' },
+  { group: '时间间隔', path: 'rules.qqTiming.expireSec', label: 'QQ 热聊补话超过多久作废', type: 'int', min: 1, max: 600, unit: '秒', hint: '从正常回复发送完成开始计时，须大于补话等待时间，并留出一次检查和生成的时间。' },
+  { group: '时间间隔', path: 'rules.qqTiming.inFlightSec', label: 'QQ 另一边正在回复时等多久', type: 'int', min: 1, max: 1800, unit: '秒', hint: '用于避免和 QQ 桥同时回复。' },
+  { group: '时间间隔', path: 'rules.projectTiming.memoryDays', label: '项目回答保留为聊天背景多久', type: 'int', min: 0, max: 365, unit: '天', hint: '到期后不再带入聊天。' },
+  { group: '时间间隔', path: 'rules.projectTiming.updateMin', label: '项目新进展多久内算刚提到', type: 'int', min: 0, max: 1440, unit: '分钟', hint: '跟进项目问题时只参考这个时间内的用户原话。' },
+  { group: '时间间隔', path: 'rules.gapMaxX', label: '没回应时最多拉长间隔几倍', type: 'num', min: 1, max: 10 },
+  { group: '时间间隔', path: 'rules.feedback.replyMatchSec', label: '配对回应时间戳的容差', type: 'int', min: 0, max: 600, unit: '秒' },
+  { group: '时间间隔', path: 'rules.feedback.hitMin', label: '多久内回应算及时接住', type: 'int', min: 0, max: 720, unit: '分钟' },
+  { group: '时间间隔', path: 'rules.feedback.windowMin', label: '等回应的统计窗口', type: 'int', min: 1, max: 1440, unit: '分钟' },
+  { group: '时间间隔', path: 'rules.feedback.keepHours', label: '待配对消息保留多久', type: 'int', min: 1, max: 168, unit: '小时' },
+  { group: '时间间隔', path: 'rules.feedback.dayStartMin', label: '从几点开始统计无人回应', type: 'int', min: 0, max: 1439, unit: '分钟（从 0 点算）' },
+  { group: '时间间隔', path: 'rules.feedback.dayEndMin', label: '回应统计当天几点截止', type: 'int', min: 1, max: 1440, unit: '分钟（从 0 点算）' },
+  { group: '时间间隔', path: 'rules.feedback.coldDays', label: '接住率低的由头冷却多久', type: 'int', min: 1, max: 90, unit: '天' },
+  { group: '时间间隔', path: 'rules.chitchat.densityDays', label: '用几天的回应调整闲聊频率', type: 'int', min: 1, max: 90, unit: '天' },
+  { group: '时间间隔', path: 'rules.chitchat.strandHours', label: '多久未应算搁置闲聊', type: 'int', min: 0, max: 168, unit: '小时' },
+  { group: '时间间隔', path: 'rules.chitchat.pauseHours', label: '连续几次未应后暂停闲聊多久', type: 'int', min: 0, max: 336, unit: '小时' },
+  { group: '时间间隔', path: 'rules.chitchat.restHistoryDays', label: '推算休息时段回看几天', type: 'int', min: 3, max: 90, unit: '天' },
+  { group: '时间间隔', path: 'rules.chitchat.restPaddingMin', label: '推算休息时段前后多留多久', type: 'int', min: 0, max: 180, unit: '分钟' },
+  { group: '时间间隔', path: 'rules.chitchat.restFallbackStartMin', label: '休息记录不足时从几点起', type: 'int', min: 0, max: 1439, unit: '分钟（从 0 点算）' },
+  { group: '时间间隔', path: 'rules.chitchat.restFallbackEndMin', label: '休息记录不足时到几点止', type: 'int', min: 0, max: 1439, unit: '分钟（从 0 点算）' },
+  { group: '时间间隔', path: 'rules.presenceSignal.recentChatMin', label: '多久内说过话算可能在场', type: 'int', min: 0, max: 720, unit: '分钟' },
+  { group: '时间间隔', path: 'rules.presenceSignal.recentReturnMin', label: '离开后回来多久内算刚回来', type: 'int', min: 0, max: 720, unit: '分钟' },
+  { group: '时间间隔', path: 'rules.presenceSignal.justActiveSec', label: '电脑多久没动仍算刚活跃', type: 'int', min: 0, max: 3600, unit: '秒' },
+  { group: '时间间隔', path: 'rules.douyinStaleMin', label: '抖音数据多久无更新算过期', type: 'int', min: 1, max: 1440, unit: '分钟' },
+  { group: '时间间隔', path: 'sources.phone.replyContextMaxAgeMin', label: '普通回复最多参考多旧的手机数据', type: 'int', min: 0, max: 2880, unit: '分钟' },
+  { group: '时间间隔', path: 'sources.memory.maxAgeDays', label: '外部记忆最多回看', type: 'int', min: 1, max: 3650, unit: '天' },
+  { group: '时间间隔', path: 'logging.keepDays', label: '日志保留多久', type: 'int', min: 1, max: 365, unit: '天' },
+  { group: '时间间隔', path: 'logging.dayStartHour', label: '日志换日时间', type: 'int', min: 0, max: 23, unit: '点' },
+  { group: '时间间隔', path: 'content.topics.replyMaxAgeMin', label: '消息超过多久不自动补回', type: 'int', min: 0, max: 10080, unit: '分钟' },
+  { group: '时间间隔', path: 'content.topics.shareGapH', label: '两条主动分享至少隔多久', type: 'int', min: 0, max: 720, unit: '小时' },
+  { group: '时间间隔', path: 'content.topics.sleepFromHour', label: '睡眠提醒最早几点', type: 'num', min: 0, max: 23.99, unit: '点', hint: '支持小数，7.5 表示 07:30。' },
+  { group: '时间间隔', path: 'content.topics.sleepToHour', label: '睡眠提醒最晚几点', type: 'num', min: 0, max: 23.99, unit: '点', hint: '支持小数，10.5 表示 10:30。' },
+  { group: '时间间隔', path: 'content.topics.sleepDayStartHour', label: '睡眠、压力和步数从几点起算新一天', type: 'int', min: 0, max: 23, unit: '点' },
+  { group: '时间间隔', path: 'content.topics.sleepMaxAgeH', label: '睡眠数据最多多旧', type: 'int', min: 1, max: 168, unit: '小时' },
+  { group: '时间间隔', path: 'content.topics.sleepSameDayGraceMin', label: '跨换日的睡眠邮件允许回看多久', type: 'int', min: 0, max: 1440, unit: '分钟' },
+  { group: '时间间隔', path: 'content.topics.stressFromHour', label: '压力提醒最早几点', type: 'int', min: 0, max: 23, unit: '点' },
+  { group: '时间间隔', path: 'content.topics.stressToHour', label: '压力提醒最晚几点', type: 'int', min: 0, max: 23, unit: '点' },
+  { group: '时间间隔', path: 'content.topics.stressMaxAgeH', label: '压力数据最多多旧', type: 'int', min: 1, max: 168, unit: '小时' },
+  { group: '时间间隔', path: 'content.topics.stressMinGapMin', label: '两次压力提醒至少隔多久', type: 'int', min: 0, max: 1440, unit: '分钟' },
+  { group: '时间间隔', path: 'content.topics.stepsMaxAgeMin', label: '步数邮件最多多旧', type: 'int', min: 1, max: 1440, unit: '分钟' },
+  { group: '时间间隔', path: 'content.topics.screenFromHour', label: '屏幕提醒最早几点', type: 'int', min: 0, max: 23, unit: '点' },
+  { group: '时间间隔', path: 'content.topics.screenMaxAgeH', label: '屏幕数据最多多旧', type: 'int', min: 1, max: 168, unit: '小时' },
+  { group: '时间间隔', path: 'content.topics.backCooldownMin', label: '两次回来提醒至少隔多久', type: 'int', min: 0, max: 1440, unit: '分钟' },
+  { group: '时间间隔', path: 'content.topics.backRecentMin', label: '回来后多久还算刚回来', type: 'int', min: 1, max: 720, unit: '分钟' },
+  { group: '时间间隔', path: 'content.topics.backUserQuietMin', label: '对方说完话多久后才能提刚回来', type: 'int', min: 0, max: 1440, unit: '分钟' },
+  { group: '时间间隔', path: 'content.forward.maxAgeDays', label: '成功的视频观察缓存保留多久', type: 'int', min: 1, max: 365, unit: '天' },
+  { group: '时间间隔', path: 'content.forward.failTtlHours', label: '视频观察失败后多久可重试', type: 'int', min: 1, max: 168, unit: '小时' },
+  { group: '时间间隔', path: 'send.split.maxFirstMs', label: '首条等待上限', type: 'num', min: 0, max: 300, unit: '秒', scale: 1000, hint: '填 0 立即发送首条。' },
+  { group: '时间间隔', path: 'send.split.maxGapMs', label: '分段之间等待上限', type: 'num', min: 0, max: 120, unit: '秒', scale: 1000, hint: '填 0 不在分段之间停顿。' },
+  { group: '时间间隔', path: 'send.split.firstJitterMs', label: '首条额外随机等待上限', type: 'num', min: 0, max: 120, unit: '秒', scale: 1000, hint: '填 0 禁用首条随机等待。' },
+  { group: '时间间隔', path: 'send.split.gapJitterMs', label: '分段额外随机等待上限', type: 'num', min: 0, max: 120, unit: '秒', scale: 1000, hint: '填 0 禁用分段随机等待。' },
+  { group: '时间间隔', path: 'send.split.firstPerCharMs', label: '对方每个字增加首条等待', type: 'int', min: 0, max: 1000, unit: '毫秒/字' },
+  { group: '时间间隔', path: 'send.split.gapPerCharMs', label: '分段每个字增加等待', type: 'int', min: 0, max: 1000, unit: '毫秒/字' },
+  { group: '时间间隔', path: 'mail.timeoutMs', label: '邮件服务器超时', type: 'int', min: 3, max: 300, unit: '秒', scale: 1000, hint: '超过该时间断开邮件连接。' },
+  { group: '时间间隔', path: 'content.llm.timeoutMs', label: '模型请求默认超时', type: 'int', min: 1, max: 900, unit: '秒', scale: 1000, hint: '给没有指定专用超时的模型请求使用。' },
+  { group: '时间间隔', path: 'content.forward.timeoutMs', label: '视频取流与转写超时', type: 'int', min: 30, max: 1800, unit: '秒', scale: 1000, hint: '下载与转写各自可用的最长时间。' },
+  { group: '时间间隔', path: 'content.forward.asrWaitMs', label: '等待转写服务启动', type: 'int', min: 10, max: 600, unit: '秒', scale: 1000 },
+  { group: '时间间隔', path: 'content.forward.edgeWaitMs', label: '等待 Edge 调试口启动', type: 'int', min: 5, max: 600, unit: '秒', scale: 1000 },
+  { group: '时间间隔', path: 'perception.signals.timeoutMs', label: '读取浏览器信号超时', type: 'int', min: 100, max: 30000, unit: '毫秒' },
   // ================================================================ 日常
   { group: '日常', path: 'enabled', label: '总开关', type: 'bool', hint: '关掉就一拍都不跑（插件还在，只是不动）' },
   { group: '日常', path: 'dryRun', label: '演练模式', type: 'bool', hint: '开：只判定、只记日志，不真的发。关：判定通过就发（还要下面那条也开着）' },
   { group: '日常', path: 'send.enabled', label: '允许真的发送', type: 'bool', hint: '和「演练模式」两个都放行才会发出去；只开这一个不会发' },
   { group: '日常', path: 'tickMinutes', label: '每拍间隔', type: 'int', min: 1, max: 120, unit: '分钟', hint: '多久醒一次看你在不在。改小不会更黏人，只是判定更及时' },
+  { group: '日常', path: 'exploration.auto', label: '自动自主探索', type: 'bool', hint: '默认关闭。角色按人设选择继续研究或自由浏览，探索结束保存进展和可选的分享候选。' },
+  { group: '日常', path: 'exploration.intervalMinutes', label: '探索间隔', type: 'int', min: 30, max: 1440, unit: '分钟', hint: '默认 180 分钟；静默和忙碌时段不自动探索。' },
+  { group: '日常', path: 'exploration.interest', label: '最近对什么好奇', type: 'text', max: 160, rows: 2, hint: '可写想长期追的作品、网站或主题，也可补充待确认事实。研究和休闲都参考，留空按人设选。' },
+  { group: '日常', path: 'exploration.offerShare', label: '让探索进展参与主动分享', type: 'bool', hint: '默认关闭。开启后，进展只是主动消息候选，仍走原有时段、额度和发送开关。' },
   { group: '日常', path: 'quietHours', label: '全局静默', type: 'windows', hint: '这几段里什么都不读不发；多段用逗号隔开（支持全角逗号/冒号），留空 = 全天不限' },
   { group: '日常', path: 'busyHours', label: '忙碌时段', type: 'windows', hint: 'TA上课/上班/开会的那几段，这几段里我不主动开口（TA先说话还是照常回）。和静默不一样：静默连数据都不读，这里只是我先不打扰。多段、可跨零点，留空 = 不忙' },
 
   // ================================================================ 节奏
   { group: '节奏', path: 'rules.dailyCap', label: '每天最多几条', type: 'int', min: 0, max: 20, unit: '条', hint: '0 = 今天一条都不主动发。默认 3 条' },
-  { group: '节奏', path: 'rules.minGapMin', label: '两条之间至少隔', type: 'int', min: 10, max: 1440, unit: '分钟', hint: '默认 240 分钟（四小时）。改小会明显变黏；「高级」里开了间隔分档后，这条只在分档关着时用' },
-  { group: '节奏', path: 'rules.replyCooldownMin', label: 'TA说完话先等几分钟', type: 'int', min: 1, max: 120, unit: '分钟', hint: '默认 5 分钟。TA刚说完你就回，等于抢话' },
+  { group: '节奏', path: 'rules.minGapMin', label: '两条之间至少隔', type: 'int', min: 0, max: 1440, unit: '分钟', hint: '默认 240 分钟（四小时）。改小会明显变黏；「高级」里开了间隔分档后，这条只在分档关着时用' },
+  { group: '节奏', path: 'rules.replyCooldownMin', label: 'TA说完话先等几分钟', type: 'int', min: 0, max: 120, unit: '分钟', hint: '默认 5 分钟。TA刚说完你就回，等于抢话' },
   { group: '节奏', path: 'send.split.enabled', label: '一句一条分开发', type: 'bool', hint: '开（默认）：正文里空一行就算另一条，发的时候一条一条发，像人连着说几句。关：整段并成一条' },
   { group: '节奏', path: 'send.split.maxParts', label: '一轮最多拆几条', type: 'int', min: 1, max: 4, unit: '条', dep: dep('send.split.enabled', true), hint: '默认 4 条；多出来的并进最后一条' },
-  { group: '节奏', path: 'send.split.minFirstMs', label: '第一条至少等几秒', type: 'int', scale: 1000, min: 0, max: 60, unit: '秒', dep: dep('send.split.enabled', true), hint: '默认 6 秒。她那条字数越多等得越久（最多 60 秒），不是固定值；填 0 = 不等' },
-  { group: '节奏', path: 'send.split.minGapMs', label: '几条之间隔几秒', type: 'int', scale: 1000, min: 1, max: 5, unit: '秒', dep: dep('send.split.enabled', true), hint: '默认 1.2 秒（界面上填整数秒，填 1 就是 1 秒）。字数越多隔得越久，封顶 5 秒' },
-  { group: '节奏', path: 'send.split.maxRoundMs', label: '一轮最多发多久', type: 'int', scale: 1000, min: 10, max: 300, unit: '秒', dep: dep('send.split.enabled', true), hint: '默认 90 秒。拆得太多、快超时了，剩下的几条并成一条发' },
+  { group: '节奏', path: 'send.split.minFirstMs', label: '第一条至少等几秒', type: 'num', scale: 1000, min: 0, max: 300, unit: '秒', dep: dep('send.split.enabled', true), hint: '填 0 立即发首条。等待从对方发消息时起算，按字数和随机量增加。' },
+  { group: '节奏', path: 'send.split.minGapMs', label: '分段之间至少隔几秒', type: 'num', scale: 1000, min: 0, max: 120, unit: '秒', dep: dep('send.split.enabled', true), hint: '默认 1.2 秒。按字数和随机量增加，上限可另设。' },
+  { group: '节奏', path: 'send.split.maxRoundMs', label: '一轮最多发多久', type: 'int', scale: 1000, min: 1, max: 300, unit: '秒', dep: dep('send.split.enabled', true), hint: '默认 90 秒。拆得太多、快超时了，剩下的几条并成一条发' },
   { group: '节奏', path: 'rules.proactive', label: '我会主动找你', type: 'bool', hint: '开（默认）：没人说话的时候也会按由头找你。关：只回你的话，不主动开口（安静模式）' },
-  { group: '节奏', path: 'rules.qqContinuation', label: 'QQ 热聊补一句', type: 'bool', hint: '刚来回聊了几轮，普通回复发完约 15 秒后，可以顺着话题再补一句。有新消息就取消；没内容或没回应就停。遵守静默、忙碌时段和每日上限。' },
+  { group: '节奏', path: 'rules.qqContinuation', label: 'QQ 热聊补一句', type: 'bool', hint: '刚来回聊了几轮，普通回复发完并等待设定时长后，可以顺着话题再补一句。有新消息就取消；没内容或没回应就停。遵守静默、忙碌时段和每日上限。' },
   { group: '节奏', path: 'rules.autoReply', label: 'TA说话我自动回', type: 'bool', hint: '开（默认）：TA说完、隔了冷却时间就回。关：TA的话不自动回，只按「主动找TA」那条轨道走' },
   { group: '节奏', path: 'rules.feedback.enabled', label: '按TA的反应调由头', type: 'bool', hint: '开（默认）：记下哪一类发出去TA接住了、哪一类老没人应，老不接的先压几天；关：所有由头一视同仁' },
   { group: '节奏', path: 'rules.adaptiveGap', label: '没人应时自己少说点', type: 'bool', hint: '开（默认）：连着两条没回，之后两条之间自动多等一会儿（最多拖成三倍）；关：永远按上面那个固定间隔' },
@@ -127,8 +227,8 @@ export const SCHEMA = [
   // —— 随口说话：没有由头时也可以说一句。主开关放首屏，细节收进高级。
   { group: '说什么', path: 'rules.chitchat.enabled', label: '没什么事也可以说一句', type: 'bool', hint: '关（默认）：没有由头就不说话。开：别的由头都挑不出来时，让模型判一句「随口话」（「在吗」那种空招呼不算）——只走模型，写不出来就不发。一天最多几条在下面的「随口话一天最多几条」里自己设；不说时段跟着全局静默和TA睡着的那段走。要「让模型自己决定说不说」也开着才生效' },
   { group: '高级', path: 'rules.chitchat.perDay', label: '随口话一天最多几条', type: 'int', min: 1, max: 10, unit: '条', dep: dep('rules.chitchat.enabled', true), hint: '默认 3 条。这是上限：设 5 也不会一天真发 5 条——实际从 1 条起，最近TA接得住才往上放，老被晾着就收回 1 条。独立计数，但照旧计入每天总上限' },
-  { group: '高级', path: 'rules.chitchat.dayStart', label: '最早几点', type: 'int', min: 420, max: 1439, unit: '分钟（从 0 点算）', dep: dep('rules.chitchat.enabled', true), hint: '默认 480 分钟（= 08:00）。TA睡着的那段（鱼鱼邮件 7 天中位数推出来的，不够 3 天按 23:00–07:00）一律不说，深夜的关心走「深夜没睡」' },
-  { group: '高级', path: 'rules.chitchat.dayEnd', label: '最晚几点', type: 'int', min: 420, max: 1439, unit: '分钟（从 0 点算）', dep: dep('rules.chitchat.enabled', true), hint: '默认 1410 分钟（= 23:30）；真正不说的时间以「睡着时段」为准（设置页不单列，--health 能看到推导结果）' },
+  { group: '高级', path: 'rules.chitchat.dayStart', label: '最早几点', type: 'int', min: 0, max: 1439, unit: '分钟（从 0 点算）', dep: dep('rules.chitchat.enabled', true), hint: '默认 480 分钟（= 08:00）。也受休息时段限制，相关参数见「时间间隔」' },
+  { group: '高级', path: 'rules.chitchat.dayEnd', label: '最晚几点', type: 'int', min: 0, max: 1439, unit: '分钟（从 0 点算）', dep: dep('rules.chitchat.enabled', true), hint: '默认 1410 分钟（= 23:30）；同时受「休息时段」限制（--health 能看到推导结果）' },
   { group: '高级', path: 'rules.chitchat.maxChars', label: '随口话最多几个字', type: 'int', min: 10, max: 80, unit: '字', dep: dep('rules.chitchat.enabled', true), hint: '默认 40 字。写在硬要求里，也要过 guard；超了打回重写，再超就不发' },
   { group: '高级', path: 'rules.chitchat.seedDays', label: '随口话从多久内的记忆里找话头', type: 'int', min: 1, max: 365, unit: '天', dep: dep('rules.chitchat.enabled', true), hint: '默认 30 天。随口话得落在一件具体的事上，太老的记忆翻出来会显得突兀' },
   { group: '高级', path: 'rules.chitchat.seedSkipPrivate', label: '别拿我瞒着TA的事当话头', type: 'bool', dep: dep('rules.chitchat.enabled', true), hint: '默认开。我自己标了「不给对方看」的记忆，不许拿来当搭话素材（方向上是我瞒着TA，不是TA瞒着我）' },
@@ -139,7 +239,7 @@ export const SCHEMA = [
   { group: '说什么', path: 'content.topics.stress', label: '压力', type: 'bool', hint: '压力高时提一句。白天 09:00-22:00，一天最多一次' },
   { group: '说什么', path: 'content.topics.steps', label: '步数', type: 'bool', hint: '18 点以后收到新邮件时看今天走了多少：太少或很多都提一句，中间那一段不打扰。一天最多一次' },
   { group: '说什么', path: 'content.topics.screen', label: '屏幕时间', type: 'bool', hint: '在电脑前坐太久时提一句。默认晚上 21 点后才算' },
-  { group: '说什么', path: 'content.topics.share', label: '分享', type: 'bool', hint: '把我在 self.md 里私下记下的一句判断拿出来跟你说（≥40 字、隔 24 小时、同一条不重复用；标了「不给TA看」的自动跳过）' },
+  { group: '说什么', path: 'content.topics.share', label: '分享', type: 'bool', hint: '把我在 self.md 里私下记下的一句判断拿出来跟你说（≥40 字、按分享间隔发送、同一条不重复用；标了「不给TA看」的自动跳过）' },
   { group: '说什么', path: 'content.topics.catchup', label: '好几天没说话', type: 'bool', hint: '隔了几天TA没动静时找人。默认 2 天起' },
   { group: '说什么', path: 'content.topics.lateUp', label: '深夜了还没睡', type: 'bool', hint: '夜里TA还亮着屏幕、人在电脑前时提一句。一个晚上最多一次（跨零点算同一晚）' },
   { group: '说什么', path: 'content.topics.longSit', label: '坐太久了', type: 'bool', hint: '连续坐在电脑前、中间没离开过，到点说一句让TA起身。一天最多一次' },
@@ -158,7 +258,7 @@ export const SCHEMA = [
   { group: '数据从哪来', path: 'channels.qq.read', label: '读 QQ', type: 'bool', dep: ON_QQ, hint: '开（默认）：读TA QQ 上的消息，用来判「TA刚说话」和回复。关：QQ 只当发送通道，不再读' },
   { group: '数据从哪来', path: 'channels.douyin.read', label: '读抖音私信', type: 'bool', dep: ON_DOUYIN, hint: '开（默认）：读抖音私信和分享记录。关：抖音整块不读，TA在那边的消息不算「TA刚说话」' },
   { group: '数据从哪来', path: 'channels.main.read', label: '读主会话', type: 'bool', hint: '开：把 DSH 主对话也当成一个通道读（TA在这儿说的话也算）。默认关，免得主对话被当成聊天记录反复读' },
-  { group: '数据从哪来', path: 'content.topics.noReplyDouyin', label: '抖音分享也算没回', type: 'bool', dep: ON_DOUYIN, hint: '我分享给TA的视频TA一直没看/没回，也拿来当追问的由头。没装抖音插件、或上面那一行关着，这一项自动不参与' },
+  { group: '数据从哪来', path: 'content.topics.noReplyDouyin', label: '抖音分享也算没回', type: 'bool', dep: ON_DOUYIN, hint: '还需启用「追问没回的闲聊或分享」才生效。没装抖音插件或关闭抖音来源时跳过。' },
 
   // ================================================================ 课表与考试
   { group: '课表与考试', path: 'content.agenda.text', label: '我的课表', type: 'text', max: 4000, rows: 8, hint: '一行一节：「周一 08:00-09:40 电机学」，也认「第3-4节」和「1-16周」「单周」。周几可以写「星期一」，冒号全角半角都认；空行和 # 开头的行会跳过。整学期的课表看不懂就直接截图发给我，我帮你整理成这里能认的格式' },
@@ -179,7 +279,7 @@ export const SCHEMA = [
   { group: '高级', path: 'rules.judge.enabled', label: '让模型自己决定说不说', type: 'bool', hint: '关（默认）：规则挑到由头就写。开：规则只提一条建议，把整份处境交给模型——它可以说不说，也可以换个角度；它写好的句子仍要过长度/口吻/防重复那些护栏，判坏了就退回规则链' },
   { group: '高级', path: 'rules.judge.attempts', label: '判坏了再问几次', type: 'int', min: 1, max: 3, unit: '次', dep: ON_JUDGE, hint: '模型偶尔会把「判断」直接写成一句回话（不是 JSON），那一次算判坏、再问一次；问这么多次还不行就退回规则链。设 1 = 不重试' },
   { group: '高级', path: 'rules.judge.shadow', label: '被拦的拍子也预演一次', type: 'bool', dep: ON_JUDGE, hint: '关（默认）：护栏拦下就结束。开：被拦的拍子按比例再问模型一次「你会不会说、会说什么」，只记不发——用来攒 judge 的真实判断分布。结果不进接住率（TA根本没收到）' },
-  { group: '高级', path: 'rules.judge.shadowSampleRate', label: '预演采样比例', type: 'number', min: 0, max: 1, dep: ON_JUDGE, hint: '只在预演开着时生效（默认 0.25）：被拦的拍子只有这个比例会真问模型，其余直接丢——别一天烧一百次调用' },
+  { group: '高级', path: 'rules.judge.shadowSampleRate', label: '预演采样比例', type: 'num', min: 0, max: 1, dep: ON_JUDGE, hint: '只在预演开着时生效（默认 0.25）：被拦的拍子只有这个比例会真问模型，其余直接丢——别一天烧一百次调用' },
   { group: '高级', path: 'rules.naturalTriggers.enabled', label: '事件也能挑开我', type: 'bool', hint: '关（默认）：只看时钟。开：一段活干完、刚下课、刚在 self.md 写一条，这几种时刻也算「可以开口」——静默、忙碌、离开、每日上限一概照旧拦着，间隔要不要让路看下面那条' },
   { group: '高级', path: 'rules.naturalTriggers.takeGap', label: '事件拍可以让间隔让路', type: 'bool', dep: ON_NATURAL, hint: '关（默认）：事件只是把开口提前到发生的那一秒，两条之间仍隔满 minGap。开：事件拍可以越过 minGap，但仍要隔够「事件拍最短间隔」——不会因为下课就紧跟着再说一句' },
   { group: '高级', path: 'rules.naturalTriggers.floorMin', label: '事件拍最短间隔', type: 'int', min: 1, max: 240, unit: '分钟', dep: ON_NATURAL, hint: '只在上面那条开着时生效：事件拍两次开口之间至少隔这么久（默认 20 分钟）。比 minGap 短，但仍是个地板' },
@@ -208,6 +308,13 @@ export const SCHEMA = [
   { group: '高级', path: 'idle.awaySec', label: '多久没动算离开', type: 'int', min: 60, max: 3600, unit: '秒', hint: 'L1：停超过这么多秒就判「人不在」，这一拍直接跳过不打扰。默认 600 秒' },
   { group: '高级', path: 'perception.l2.enabled', label: '记下TA在做什么', type: 'bool', hint: '把前台窗口折成打游戏/写代码/看视频，只在判到要发的那一拍记一笔，不影响发不发。默认开' },
   { group: '高级', path: 'perception.l3.enabled', label: '看屏幕（OCR）', type: 'bool', hint: '截前台窗口做系统 OCR，约 1 秒。只在判到要发的那一拍才截，只当「当时我在干什么」的记录，不参与发不发。中文认错得厉害，结构化信号能说清时就不用它。默认关' },
+  { group: '高级', path: 'rules.askProjectOnce', label: '问一次最近在忙的项目', type: 'bool', hint: '对当前 QQ 收件人只主动问一次；不催回复。读到相关回答才保存为本地记忆，近期聊天可参考。' },
+  { group: '高级', path: 'exploration.mood', label: '探索心情（试用）', type: 'bool', hint: '探索时可顺手记一句感受，有效时长可在「时间间隔」调整。只影响已经决定要发的主动消息，不会主动多发一条。' },
+  { group: '高级', path: 'content.topics.followCasualSilence', label: '追问没回的闲聊或分享', type: 'bool', hint: '默认关闭。关闭后，问候、闲聊或分享没收到回复就放下。' },
+  { group: '高级', path: 'exploration.portrait', label: '延续 QQ 聊天的心情', type: 'bool', hint: '需要安装 emotion-state-portrait 和支持本入口的 QQ 桥。用 DSH 模型判断配置收件人的私聊，再复用情绪叠加与回落。' },
+  { group: '高级', path: 'exploration.web', label: '探索时搜索网页', type: 'bool', hint: '优先用 dsh-free-search，找不到结果时用 DSH 的 web_search。再用 web_fetch 读最多两页正文；仅搜到摘要时会标明。' },
+  { group: '高级', path: 'exploration.leisureEvery', label: '每几轮安排一次休闲', type: 'int', min: 0, max: 20, unit: '轮', hint: '默认 3。填 1 每轮休闲，填 0 关闭休闲轮。研究题本身也可以是小说、漫画等娱乐兴趣。' },
+  { group: '高级', path: 'exploration.video', label: '探索时找视频', type: 'bool', hint: '每轮最多看一条。画面需要 dsh-video-storyboard 和支持图片的模型；抖音还需要取流配置。有字幕或转写时可退回文字，只有标题会标明。' },
   { group: '高级', path: 'perception.l3.everyMin', label: '看屏幕隔多久', type: 'int', min: 5, max: 720, unit: '分钟', dep: ON_L3, hint: '默认 30 分钟。上一次看屏幕不到这么久就跳过，免得同一张桌面反复截' },
   { group: '高级', path: 'perception.signals.enabled', label: '看窗口和网页（不截屏）', type: 'bool', hint: '只读前台窗口标题、进程名和浏览器当前标签页，不截屏、不 OCR、不联网。比 L3 准，默认开' },
   { group: '高级', path: 'perception.signals.browser', label: '读浏览器当前标签页', type: 'bool', dep: ON_SIGNALS, hint: '借桌面 Edge 的调试口（默认 9223）问它在看哪个页面；端口没开就跳过，不影响别的。默认开' },
@@ -219,14 +326,14 @@ export const SCHEMA = [
   { group: '高级', path: 'content.topics.sleepLateBed', label: '几点之后算熬夜', type: 'hm', dep: onTopic('sleep'), hint: '默认 00:30。有「入睡时间」就直接用；大多数时候没有，拿睡眠反推入睡点（反推不含躺着没睡着那段，所以这条线定在「规定的时间 + 最近平均入睡耗时」）。06:00 后才睡着当数据异常，不算' },
   { group: '高级', path: 'content.topics.stressHighMin', label: '算「压力高」高于', type: 'int', min: 30, max: 100, dep: onTopic('stress'), hint: '默认 59 分（严格大于）。0-100 的量表' },
   { group: '高级', path: 'content.topics.stressDailyMax', label: '压力一天最多提', type: 'int', min: 0, max: 6, unit: '次', dep: onTopic('stress'), hint: '默认 1 次。提第二次要求压力不低于上次' },
-  { group: '高级', path: 'content.topics.stepsLowMax', label: '算「没怎么动」低于', type: 'int', min: 0, max: 20000, unit: '步', dep: onTopic('steps'), hint: '默认 2000 步。低于它 → 今天几乎没活动' },
-  { group: '高级', path: 'content.topics.stepsHighMin', label: '算「活动量好」高于', type: 'int', min: 0, max: 50000, unit: '步', dep: onTopic('steps'), hint: '默认 8000 步。高于它 → 今天活动量不错。两个值之间不发' },
+  { group: '高级', path: 'content.topics.stepsLowMax', label: '算「没怎么动」低于', type: 'int', min: 0, max: 20000, unit: '步', dep: onTopic('steps'), hint: '最多采用 600 步；低于门槛时也可能是漏记' },
+  { group: '高级', path: 'content.topics.stepsHighMin', label: '算「活动量好」高于', type: 'int', min: 0, max: 50000, unit: '步', dep: onTopic('steps'), hint: '最少采用 16000 步。两个门槛之间不发' },
   { group: '高级', path: 'content.topics.stepsFromHour', label: '步数从几点开始看', type: 'int', min: 0, max: 23, unit: '点', dep: onTopic('steps'), hint: '默认 18 点。白天的步数还没走完，说得太早容易翻车' },
-  { group: '高级', path: 'content.topics.screenHeavyMin', label: '算「坐太久」超过', type: 'int', min: 60, max: 900, unit: '分钟', dep: onTopic('screen'), hint: '默认 480 分钟（8 小时）' },
+  { group: '高级', path: 'content.topics.screenHeavyMin', label: '屏幕用多久才考虑提醒', type: 'int', min: 1, max: 1440, unit: '分钟', dep: onTopic('screen'), hint: '默认 720 分钟（12 小时）。和步数、久坐共享冷却。' },
   { group: '高级', path: 'content.topics.catchupDays', label: '算「几天没说话」', type: 'int', min: 1, max: 7, unit: '天', dep: onTopic('catchup'), hint: '默认 2 天' },
   { group: '高级', path: 'content.topics.lateFromHour', label: '深夜从几点算', type: 'int', min: 0, max: 23, unit: '点', dep: onTopic('lateUp'), hint: '默认 23 点是最早的一头' },
   { group: '高级', path: 'content.topics.lateToHour', label: '深夜到几点为止', type: 'int', min: 0, max: 23, unit: '点', dep: onTopic('lateUp'), hint: '默认 2 点。可以跨零点；跟「从几点算」相同则这一类失效' },
-  { group: '高级', path: 'content.topics.longSitHours', label: '连续坐多久才算', type: 'int', min: 1, max: 12, unit: '小时', dep: onTopic('longSit'), hint: '默认 3 小时。离开超过「空闲判定」的时长会重新计时' },
+  { group: '高级', path: 'content.topics.longSitHours', label: '电脑连续活跃多久才考虑提醒', type: 'num', min: 0.25, max: 24, unit: '小时', dep: onTopic('longSit'), hint: '默认 5 小时。离开超过空闲判定时长会重新计时。' },
   { group: '高级', path: 'content.topics.backAfterMin', label: '离开多久才算「出去过」', type: 'int', min: 5, max: 480, unit: '分钟', dep: onTopic('backHome'), hint: '默认 30 分钟。太短就只是去倒水，不算' },
   { group: '高级', path: 'content.topics.noReplyMin', label: '隔多久没回才问', type: 'int', min: 30, max: 1440, unit: '分钟', dep: onTopic('noReply'), hint: '默认 120 分钟。指距我那条消息（或分享的视频）' },
   { group: '高级', path: 'content.topics.noReplyAfterHerMin', label: 'TA说话后至少隔', type: 'int', min: 0, max: 720, unit: '分钟', dep: onTopic('noReply'), hint: '默认 120 分钟。TA刚说完话就别追着问，这一条和上面的「隔多久」都要满足' },
@@ -422,9 +529,9 @@ export function listForUi(cfg) {
   for (const name of GROUP_ORDER) {
     const items = SCHEMA.filter((s) => s.group === name && !s.hidden && depVisible(cfg, s.dep)).map((s) => {
       const secret = s.type === 'secret';
-      const value = secret ? '' : getPath(cfg, s.path, undefined);
+      const value = secret ? '' : getPath(cfg, s.path, s.default);
       // scale 把存储单位换成界面单位（毫秒 → 秒），读出来和显示都要换。
-      const shown = value == null || !s.scale ? value : Math.round(Number(value) / s.scale);
+      const shown = value == null || !s.scale ? value : (s.type === 'int' ? Math.round(Number(value) / s.scale) : Number(value) / s.scale);
       let hint = s.path.startsWith('sources.') ? `${s.hint || ''}${detectHint(s.path, cfg, detCache)}` : s.hint;
       const extra = {};
       // 课程勾选列表：课表里有什么就列什么（读不出来的行已经跳过了）
@@ -467,7 +574,7 @@ export function listForUi(cfg) {
       if (GROUP_NOTES[name]) group.note = GROUP_NOTES[name];
       if (FOLDABLE_GROUPS.has(name)) {
         group.foldable = true;
-        group.summary = name === '高级' ? `${items.length} 项 · 平时不用动` : groupSummary(cfg);
+        group.summary = groupSummary(cfg, name, items);
       }
       groups.push(group);
     }
@@ -484,26 +591,54 @@ function depVisible(cfg, d) {
   return getPath(cfg, d.path, d.default) === d.on;
 }
 
-/** 折起来的标题旁边那一句：课表几节、考试几场。读不出来也只说没填，不报错。 */
-function groupSummary(cfg) {
-  let courseText = '课表还没填';
-  try {
-    const list = courseItems(cfg);
-    if (list.length) {
-      const on = list.filter((i) => i.checked).length;
-      courseText = on < list.length ? `课表 ${list.length} 节（提醒 ${on} 节）` : `课表 ${list.length} 节`;
+/** 折起来的标题旁边那一句概括人话：节奏、由头、数据源、课表与考试、高级。 */
+function groupSummary(cfg, name, items = []) {
+  if (name === '高级') {
+    return `${items.length} 项 · 平时不用动`;
+  }
+  if (name === '节奏') {
+    const cap = cfg?.rules?.dailyCap ?? 3;
+    const gap = cfg?.rules?.minGapMin ?? 240;
+    const auto = cfg?.rules?.autoReply !== false ? '自动回TA' : '不自动回';
+    return `每天最多 ${cap} 条 · 至少隔 ${gap} 分钟 · ${auto}`;
+  }
+  if (name === '说什么') {
+    const t = cfg?.content?.topics || {};
+    const topicKeys = ['forward', 'sleep', 'stress', 'steps', 'screen', 'share', 'catchup', 'lateUp', 'longSit', 'backHome', 'noReply', 'agenda'];
+    const onCount = topicKeys.filter((k) => t[k] !== false).length;
+    const mode = cfg?.content?.mode || 'auto';
+    const modeLabel = mode === 'auto' ? '智能' : mode === 'llm' ? '模型' : '模板';
+    return `${onCount} 类由头启用 · ${modeLabel}模式`;
+  }
+  if (name === '数据从哪来') {
+    const parts = [];
+    if (cfg?.sources?.qq?.enabled !== false) parts.push('QQ');
+    if (cfg?.sources?.phone?.enabled !== false) parts.push('手机邮件');
+    if (cfg?.sources?.douyin?.enabled !== false) parts.push('抖音');
+    if (cfg?.sources?.memory?.enabled !== false) parts.push('记忆');
+    return parts.length ? `已启用：${parts.join(' / ')}` : '未启用任何数据源';
+  }
+  if (name === '课表与考试') {
+    let courseText = '课表还没填';
+    try {
+      const list = courseItems(cfg);
+      if (list.length) {
+        const on = list.filter((i) => i.checked).length;
+        courseText = on < list.length ? `课表 ${list.length} 节（提醒 ${on} 节）` : `课表 ${list.length} 节`;
+      }
+    } catch {
+      /* 认不出课表就照「还没填」说 */
     }
-  } catch {
-    /* 认不出课表就照「还没填」说 */
+    let examText = '考试还没填';
+    try {
+      const list = parseExams(examsSource(cfg).text, {});
+      if (list.length) examText = `考试 ${list.length} 场`;
+    } catch {
+      /* 同上 */
+    }
+    return `${courseText} · ${examText}`;
   }
-  let examText = '考试还没填';
-  try {
-    const list = parseExams(examsSource(cfg).text, {});
-    if (list.length) examText = `考试 ${list.length} 场`;
-  } catch {
-    /* 同上 */
-  }
-  return `${courseText} · ${examText}`;
+  return '';
 }
 
 /**
@@ -539,6 +674,14 @@ export function applyChange(cfg, path, raw) {
     cur = cur[parts[i]];
   }
   cur[parts[parts.length - 1]] = r.value;
+  if (r.path === 'rules.qqTiming.pauseSec' || r.path === 'rules.qqTiming.expireSec') {
+    const { pauseSec = 15, expireSec = 55 } = next.rules.qqTiming;
+    if (expireSec <= pauseSec) return { ok: false, error: 'QQ 热聊补话的作废时间须大于补话等待时间' };
+  }
+  if (r.path === 'rules.feedback.dayStartMin' || r.path === 'rules.feedback.dayEndMin') {
+    const { dayStartMin = 510, dayEndMin = 1410 } = next.rules.feedback;
+    if (dayEndMin <= dayStartMin) return { ok: false, error: '回应统计的截止时间须晚于开始时间' };
+  }
   // 接入总闸和通道开关是「同一个决定」：写总闸时把对应通道一起开/关。
   // 不然会出现「总闸开着、通道关着、什么都没发生」这种看不懂的状态。
   const CHANNEL_OF = { 'sources.qq.enabled': 'channels.qq.enabled', 'sources.douyin.enabled': 'channels.douyin.enabled' };
