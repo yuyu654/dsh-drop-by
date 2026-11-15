@@ -337,7 +337,7 @@
   },
   "version": 1,
   "_readme": [
-    "presence-gate 配置样例。第一次运行会在插件目录生成 config.json，改那份，不要改这份。",
+    "dsh-drop-by 配置样例。第一次运行会在插件目录生成 config.json，改那份，不要改这份。",
     "所有键都可以删：删掉的会回落到内置默认值。",
     "channels.qq.peerId 是唯一必填的收件人（QQ 号或 openid，看 qq-bridge 的绑定）；空着发不出去。",
     "content.llm.electron / cli 留空 = 自动找本机 DSH 安装位置；找不到再手填。",

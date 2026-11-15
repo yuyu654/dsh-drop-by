@@ -15,6 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { ROOT } from './config.js';
 import { dayKey, minutesOfDayOf } from './time.js';
 
 const WD = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 日: 7, 天: 7 };
@@ -216,16 +217,37 @@ export function parseAgenda(text, opts = {}) {
   return out.sort((a, b) => a.weekday - b.weekday || a.fromMin - b.fromMin);
 }
 
-/** 课的文本从哪来：设置页那个多行框优先，没填才看 data/agenda.txt。 */
-export function agendaSource(cfg, { dsh = path.join(os.homedir(), '.dsh') } = {}) {
-  const inline = String(cfg?.content?.agenda?.text || '');
+/** 从配置内联文本、显式路径或插件/旧目录 data 文件读取纯文本配置。 */
+export function resolveDataText(inlineRaw, fileCfg, filename, opts = {}) {
+  const inline = String(inlineRaw || '');
   if (inline.trim()) return { text: inline, from: 'config' };
-  const file = cfg?.content?.agenda?.file || path.join(dsh, 'presence-gate', 'data', 'agenda.txt');
-  try {
-    return { text: fs.readFileSync(file, 'utf8'), from: file };
-  } catch {
-    return { text: '', from: 'none' };
+  if (fileCfg) {
+    try {
+      return { text: fs.readFileSync(fileCfg, 'utf8'), from: fileCfg };
+    } catch {
+      return { text: '', from: 'none' };
+    }
   }
+  const hasCustomDsh = Boolean(opts?.dsh);
+  const dsh = opts?.dsh || path.join(os.homedir(), '.dsh');
+  const candidates = hasCustomDsh
+    ? [path.join(dsh, 'dsh-drop-by', 'data', filename), path.join(dsh, 'presence-gate', 'data', filename)]
+    : [
+        path.join(ROOT, 'data', filename),
+        path.join(dsh, 'dsh-drop-by', 'data', filename),
+        path.join(dsh, 'presence-gate', 'data', filename),
+      ];
+  for (const file of candidates) {
+    try {
+      return { text: fs.readFileSync(file, 'utf8'), from: file };
+    } catch {}
+  }
+  return { text: '', from: 'none' };
+}
+
+/** 课的文本从哪来：设置页那个多行框优先，没填才看 data/agenda.txt。 */
+export function agendaSource(cfg, opts = {}) {
+  return resolveDataText(cfg?.content?.agenda?.text, cfg?.content?.agenda?.file, 'agenda.txt', opts);
 }
 
 /** 课表里填的「开学第一周的周一」→ 今天是第几周；没填/填错返回 null（= 不按周次过滤）。 */

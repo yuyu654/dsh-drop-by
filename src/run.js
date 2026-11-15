@@ -1591,7 +1591,7 @@ ${v.raw}`);
   }
 
   if (has('--test-send')) {
-    const text = valOf('--test-send') || 'presence-gate 通道测试';
+    const text = valOf('--test-send') || 'dsh-drop-by 通道测试';
     const cfg = loadConfig();
     const to = cfg.channels.qq.peerId;
     const yes = has('--yes');
@@ -1608,7 +1608,7 @@ ${v.raw}`);
   if (has('--loop')) {
     const cfg0 = loadConfig();
     const ms = Math.max(1, Number(cfg0.tickMinutes) || 10) * 60_000;
-    console.log(`presence-gate 启动，每 ${ms / 60000} 分钟一拍，dryRun=${cfg0.dryRun}`);
+    console.log(`dsh-drop-by 启动，每 ${ms / 60000} 分钟一拍，dryRun=${cfg0.dryRun}`);
     printSchedule(cfg0, Date.now());
     {
       const problems = checkSchedule(cfg0).filter((f) => f.level !== 'info');

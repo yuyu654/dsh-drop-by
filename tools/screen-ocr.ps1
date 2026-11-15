@@ -1,4 +1,4 @@
-﻿# screen-ocr.ps1 —— L3 屏幕理解（presence-gate 专用）
+﻿# screen-ocr.ps1 —— L3 屏幕理解（dsh-drop-by 专用）
 #
 # 抓当前前台窗口的画面，用系统自带的 OCR（Windows.Media.Ocr）读出文字。
 # 设计约束：

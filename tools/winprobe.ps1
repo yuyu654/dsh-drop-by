@@ -1,4 +1,4 @@
-﻿# winprobe.ps1 —— 低成本系统探针（presence-gate 专用）
+﻿# winprobe.ps1 —— 低成本系统探针（dsh-drop-by 专用）
 #
 # 一次调用返回：空闲毫秒、前台窗口标题/PID、音频峰值、进程名集合。
 # 设计约束：

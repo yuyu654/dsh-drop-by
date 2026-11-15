@@ -1,4 +1,4 @@
-# presence-gate 生成用的最小 overlay。
+# dsh-drop-by 生成用的最小 overlay。
 #
 # 为什么需要它：不带 --patch 时 dsh CLI 走默认的 deepseek-official 路由，要求
 # DEEPSEEK_API_KEY 环境变量，直接报 MISSING_CREDENTIAL。这份 overlay 把路由换成
@@ -18,12 +18,12 @@
 
 - id: working-directory
   config:
-    defaultDirectory: 'C:/Users/YOU/.dsh/presence-gate'
+    defaultDirectory: 'C:/Users/YOU/.dsh/dsh-drop-by'
 
 - id: sandbox-policy
   config:
     mode: 'workspace-write'
-    workspaceRoot: 'C:/Users/YOU/.dsh/presence-gate'
+    workspaceRoot: 'C:/Users/YOU/.dsh/dsh-drop-by'
 
 - id: agent-default-model
   name: '@deepseek-ai/dsh-agent-default-model'

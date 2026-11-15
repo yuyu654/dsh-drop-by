@@ -5,7 +5,7 @@
 //      —— 就是设置页「人格 → 全局人格」里编辑的那份，改了下一个回合就生效
 //   2) 项目人格（可选）            <DSH_HOME>/agents/projects/<slug>.md 或 <cwd>/AGENT.md
 //      —— 插件默认「全局作底座、项目覆盖」，这里也按同样规则拼
-//   3) 本插件自己的 persona.md     presence-gate/persona.md
+//   3) 本插件自己的 persona.md     dsh-drop-by/persona.md
 //      —— 没装插件、或插件关掉时用这份，内容随你填
 //   4) 内置最小口吻
 //      —— 什么都没写也要能发话，但会明确告诉你是兜底
@@ -234,7 +234,7 @@ export function personaPlan(cfg, cwd) {
 export function ensureLocalPersonaTemplate(cfg) {
   const p = localPersonaPath(cfg);
   if (fs.existsSync(p)) return { written: false, path: p };
-  const tpl = `<!-- presence-gate 自填人格：装了 dsh-agent-md 且全局人格有内容时，这份不会被用到。
+  const tpl = `<!-- dsh-drop-by 自填人格：装了 dsh-agent-md 且全局人格有内容时，这份不会被用到。
      想让它生效：删掉/改名 ~/.dsh/AGENT.md，或在 config.json 里设 persona.enabled=true 且 persona.dshHome 指向一个没有 AGENT.md 的目录。 -->
 
 # 说话方式

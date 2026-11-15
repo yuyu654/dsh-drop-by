@@ -33,7 +33,7 @@ export const OUT_FILE = path.join(ROOT, 'data', 'compose-out.txt');
  */
 export function materializeOverlayText(raw) {
   const posix = String(raw || '').replace(/\\/g, '/');
-  return posix.replaceAll(/C:\/Users\/[^/]+\/\.dsh\/presence-gate/g, ROOT.replace(/\\/g, '/'));
+  return posix.replaceAll(/C:\/Users\/[^/]+\/\.dsh\/(?:presence-gate|dsh-drop-by)/g, ROOT.replace(/\\/g, '/'));
 }
 
 function overlayPathFor(file) {

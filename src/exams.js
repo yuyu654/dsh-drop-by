@@ -10,9 +10,7 @@
 //   · 快考了：考前 M 分钟（默认 60，按「分钟」算，进窗口提一次）。
 // 每场只提一次，靠 examKey 去重（改了时间/科目就是新的一场）。
 import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
-import { splitRoom } from './agenda.js';
+import { splitRoom, resolveDataText } from './agenda.js';
 import { dayKey } from './time.js';
 
 const LINE =
@@ -101,13 +99,6 @@ export function soonDue(list, now, min) {
 }
 
 /** 考试文本从哪来：设置页优先，没填看 data/exams.txt。 */
-export function examsSource(cfg, { dsh = path.join(os.homedir(), '.dsh') } = {}) {
-  const inline = String(cfg?.content?.exams?.text || '');
-  if (inline.trim()) return { text: inline, from: 'config' };
-  const file = cfg?.content?.exams?.file || path.join(dsh, 'presence-gate', 'data', 'exams.txt');
-  try {
-    return { text: fs.readFileSync(file, 'utf8'), from: file };
-  } catch {
-    return { text: '', from: 'none' };
-  }
+export function examsSource(cfg, opts = {}) {
+  return resolveDataText(cfg?.content?.exams?.text, cfg?.content?.exams?.file, 'exams.txt', opts);
 }
