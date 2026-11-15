@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { loadConfig } from '../src/config.js';
-import { listForUi, SCHEMA, GROUP_ORDER, FOLDABLE_GROUPS } from '../src/settings.js';
+import { listForUi, explorationItemsForUi, SCHEMA, GROUP_ORDER, FOLDABLE_GROUPS } from '../src/settings.js';
 
 const cfg = () => loadConfig({ env: { DSH_HOME: 'C:/Users/you/.dsh', PG_NO_CREDENTIALS: '1' }, fresh: true });
 const flat = (c) => listForUi(c).flatMap((g) => g.items);
@@ -36,6 +36,14 @@ test('首屏日常组保持精简清爽（其余组分类折叠）', () => {
   const stickyPaths = groups.find((x) => x.name === '决定TA粘不粘人').items.map((i) => i.path);
   for (const p of ['rules.dailyCap', 'rules.minGapMin', 'rules.adaptiveGap', 'rules.qqContinuation', 'rules.feedback.enabled', 'rules.judge.enabled', 'rules.chitchat.enabled', 'rules.gapByTier.enabled', 'rules.naturalTriggers.enabled']) {
     assert.ok(stickyPaths.includes(p), `决定TA粘不粘人组里要有 ${p}`);
+  }
+  const expItems = explorationItemsForUi(cfg());
+  assert.deepEqual(
+    expItems.map((i) => i.path),
+    ['exploration.auto', 'exploration.intervalMinutes', 'exploration.offPeakOnly', 'exploration.nextTopic', 'exploration.interest', 'exploration.offerShare']
+  );
+  for (const p of expItems.map((i) => i.path)) {
+    assert.ok(!daily.items.some((i) => i.path === p), `日常里不再重复出现 ${p}`);
   }
 });
 

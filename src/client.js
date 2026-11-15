@@ -500,14 +500,13 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
       function Panel() {
         var [state, setState] = useState(null);
         var [groups, setGroups] = useState([]);
+        var [explorationItems, setExplorationItems] = useState([]);
         var [error, setError] = useState('');
         var [toast, setToast] = useState(null);
         var [busy, setBusy] = useState(false);
         var [explorePending, setExplorePending] = useState(false);
         var [exploreResult, setExploreResult] = useState(null);
         var [showExplorationDetails, setShowExplorationDetails] = useState(false);
-        var [topicDraft, setTopicDraft] = useState('');
-        var [topicEditing, setTopicEditing] = useState(false);
         var [liveBridge, setLiveBridge] = useState({});
         var [rebindId, setRebindId] = useState('');
         var [mergeOpen, setMergeOpen] = useState(false);
@@ -535,6 +534,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
                 if (!mounted.current) return;
                 setState(r[0]);
                 setGroups(r[1].groups || []);
+                setExplorationItems(r[1].explorationItems || []);
                 setError('');
               })
               .catch(function (e) {
@@ -572,6 +572,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
                 if (!mounted.current) return;
                 setState(r.state);
                 setGroups(r.groups || []);
+                if (Array.isArray(r.explorationItems)) setExplorationItems(r.explorationItems);
                 setError('');
                 var note = r.notes && r.notes.length ? r.notes[0] : '已保存，下一拍生效';
                 flash(note, 'ok');
@@ -619,20 +620,13 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           [flash, load]
         );
 
-        useEffect(function () {
-          if (topicEditing) return;
-          var next = state && state.exploration && typeof state.exploration.nextTopic === 'string' ? state.exploration.nextTopic : '';
-          setTopicDraft(next);
-        }, [state, topicEditing]);
-
         function onExplore() {
           setExplorePending(true);
           setExploreResult(null);
-          var topic = String(topicDraft || '').trim();
+          var topic = String((state && state.exploration && state.exploration.nextTopic) || '').trim();
           apiPost('/explore', topic ? { topic: topic } : {}).then(function (r) {
             if (!mounted.current) return;
             setState(r.state);
-            setTopicEditing(false);
             var labels = {
               NO_PERSONA: '请先配置角色人设',
               QUIET_OR_BUSY: '当前是静默或忙碌时段，本轮未运行',
@@ -1168,57 +1162,11 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
               )
             ),
             h('div', { className: 'pg-exp-body' },
-              h('div', { className: 'pg-exp-topic' },
-                h('label', { className: 'pg-exp-topic-label', htmlFor: 'pg-next-topic' }, '近一轮探索主题'),
-                h('div', { className: 'pg-exp-topic-ctl' },
-                  h('input', {
-                    id: 'pg-next-topic',
-                    className: 'pg-input pg-exp-topic-input',
-                    type: 'text',
-                    maxLength: 120,
-                    disabled: busy || exploring,
-                    placeholder: '留空按「最近对什么好奇」自选；填好后优先围绕此题跑一轮',
-                    value: topicDraft,
-                    onFocus: function () { setTopicEditing(true); },
-                    onChange: function (e) { setTopicDraft(e.target.value); },
-                    onBlur: function () {
-                      setTopicEditing(false);
-                      var val = String(topicDraft || '').trim();
-                      if (val !== String(exploration.nextTopic || '').trim()) {
-                        onSave('exploration.nextTopic', val);
-                      }
-                    },
-                    onKeyDown: function (e) {
-                      if (e.key === 'Enter') e.target.blur();
-                    },
-                  }),
-                  String(topicDraft || '').trim() !== String(exploration.nextTopic || '').trim() ? h('button', {
-                    className: 'pg-btn',
-                    type: 'button',
-                    disabled: busy || exploring,
-                    onClick: function () {
-                      setTopicEditing(false);
-                      onSave('exploration.nextTopic', String(topicDraft || '').trim());
-                    },
-                  }, '保存主题') : null,
-                  (String(topicDraft || '').trim() || exploration.nextTopic) ? h('button', {
-                    className: 'pg-link-btn',
-                    type: 'button',
-                    disabled: busy || exploring,
-                    onClick: function () {
-                      setTopicEditing(false);
-                      setTopicDraft('');
-                      if (exploration.nextTopic) onSave('exploration.nextTopic', '');
-                    },
-                  }, '清空') : null
-                )
-              ),
               exploration.lastRun ? h('div', { className: 'pg-row-hint' },
                 '最近路径：' + (exploration.lastRun.calls && exploration.lastRun.calls.length ? exploration.lastRun.calls.join(' → ') : '文字探索')) : null,
               exploration.candidate && exploration.candidate.loginSite ? h('div', { className: 'pg-row-hint' },
                 '待登录 · ', h('a', { className: 'pg-link', href: exploration.candidate.source.url, target: '_blank', rel: 'noopener noreferrer' }, exploration.candidate.loginSite),
                 '。请在网站页面完成登录；公开网页工具可能仍无法读取登录后的页面。') : null,
-              h('div', { className: 'pg-row-hint' }, '临时指定题目填在上方「近一轮探索主题」（跑完非跳过轮会自动恢复自选）；长期追更作品/事实仍可在「日常 → 最近对什么好奇」补充。'),
               thread || leisure ? h('details', {
                 className: 'pg-exp-details',
                 open: showExplorationDetails,
@@ -1247,7 +1195,14 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
                   exploring ? '探索进行中…' : '试跑一轮（不发送）')
               ),
               exploreResult ? h('div', { role: 'status', className: 'pg-toast' + (exploreResult.error ? ' pg-toast-err' : ' pg-toast-ok') }, exploreResult.text) : null
-            )
+            ),
+            explorationItems.length ? h(
+              'div',
+              { className: 'pg-rows pg-exp-rows' },
+              explorationItems.map(function (item) {
+                return h(Row, { key: item.path, item: item, busy: busy, onSave: onSave });
+              })
+            ) : null
           ) : null,
           groups.length ? h('div', { className: 'pg-sec-label' }, '参数设置') : null,
           groups.map(function (g) {
@@ -1365,12 +1320,9 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         '.pg-textarea{width:100%;min-height:110px;text-align:left;resize:vertical;line-height:1.6;padding:7px 9px;font-size:12.5px;}',
         '.pg-row-wide{flex-wrap:wrap;align-items:flex-start;}',
         '.pg-row-wide .pg-row-ctl{flex:1 1 100%;max-width:100%;justify-content:flex-start;}',
-        '.pg-exp-card{padding-bottom:12px;}',
-        '.pg-exp-body{display:flex;flex-direction:column;gap:8px;padding-top:8px;}',
-        '.pg-exp-topic{display:flex;flex-direction:column;gap:5px;padding:8px 10px;border-radius:9px;background:var(--pg-field);border:1px solid var(--pg-line-soft);}',
-        '.pg-exp-topic-label{font-size:12px;font-weight:600;color:var(--pg-fg);}',
-        '.pg-exp-topic-ctl{display:flex;align-items:center;gap:7px;flex-wrap:wrap;}',
-        '.pg-exp-topic-input{flex:1 1 200px;width:auto;text-align:left;}',
+        '.pg-exp-card{padding-bottom:6px;}',
+        '.pg-exp-body{display:flex;flex-direction:column;gap:8px;padding-top:8px;padding-bottom:6px;}',
+        '.pg-exp-rows{margin-top:4px;border-top:1px solid var(--pg-line-soft);padding-top:2px;}',
         '.pg-exp-details{border:1px solid var(--pg-line-soft);border-radius:9px;background:var(--pg-field);padding:6px 10px;}',
         '.pg-exp-sum{cursor:pointer;font-size:12px;font-weight:550;color:var(--pg-muted);list-style:none;display:flex;align-items:center;gap:6px;}',
         '.pg-exp-sum::-webkit-details-marker{display:none;}',

@@ -33,7 +33,7 @@ import { calendarStatus, refreshCalendar } from './calendar.js';
 import { loadPersona } from './persona.js';
 import { exploreRound, explorationStatus, explorationMood, loadExploration, saveExploration } from './explore.js';
 import { makeHostLlm } from './hostllm.js';
-import { listForUi, applyChange, saveSecret } from './settings.js';
+import { listForUi, explorationItemsForUi, applyChange, saveSecret } from './settings.js';
 import { detectSources, detectEmotionPortrait } from './detect.js';
 import { inspectEmotionPlugin, repairEmotionConfig, appendEmotionInbox, recordExplorationEmotion } from './emotion-sync.js';
 import { inspectMemory, mergeMemorySessions, restoreMemoryBackup } from './memorysource.js';
@@ -505,6 +505,7 @@ export function apply(ctx, config = {}) {
         secret: true,
         notes: ['授权码已存进 credentials.json（界面上只显示「已设置」，不会再显示出来）'],
         groups: listForUi(loadConfig()),
+        explorationItems: explorationItemsForUi(loadConfig()),
         state: snapshot(),
       };
     }
@@ -531,7 +532,8 @@ export function apply(ctx, config = {}) {
       clearTimeout(timer);
       schedule(intervalMs());
     }
-    return { ok: true, path: r.path, value: r.value, notes, groups: listForUi(loadConfig()), state: snapshot() };
+    const latestCfg = loadConfig();
+    return { ok: true, path: r.path, value: r.value, notes, groups: listForUi(latestCfg), explorationItems: explorationItemsForUi(latestCfg), state: snapshot() };
   }
 
   // ---------------------------------------------------------------- 可选：状态接口
@@ -567,7 +569,8 @@ export function apply(ctx, config = {}) {
               try {
                 if (route === '/state' && (req.method || 'GET') === 'GET') return json(200, snapshot());
                 if (route === '/config' && (req.method || 'GET') === 'GET') {
-                  return json(200, { ok: true, path: CONFIG_PATH, groups: listForUi(loadConfig()) });
+                  const curCfg = loadConfig();
+                  return json(200, { ok: true, path: CONFIG_PATH, groups: listForUi(curCfg), explorationItems: explorationItemsForUi(curCfg) });
                 }
                 if (route === '/config' && req.method === 'POST') {
                   return json(200, await saveFromBody(req));

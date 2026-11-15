@@ -209,17 +209,18 @@ export const SCHEMA = [
   { group: '时间间隔', path: 'content.forward.asrWaitMs', label: '等待转写服务启动', type: 'int', min: 10, max: 600, unit: '秒', scale: 1000 },
   { group: '时间间隔', path: 'content.forward.edgeWaitMs', label: '等待 Edge 调试口启动', type: 'int', min: 5, max: 600, unit: '秒', scale: 1000 },
   { group: '时间间隔', path: 'perception.signals.timeoutMs', label: '读取浏览器信号超时', type: 'int', min: 100, max: 30000, unit: '毫秒' },
+  // ================================================================ 自主探索（设置页显示在「自主探索」卡片底部）
+  { group: '自主探索', path: 'exploration.auto', label: '自动自主探索', type: 'bool', hint: '默认关闭。角色按人设选择继续研究或自由浏览，探索结束保存进展和可选的分享候选。' },
+  { group: '自主探索', path: 'exploration.intervalMinutes', label: '探索间隔', type: 'int', min: 30, max: 1440, unit: '分钟', hint: '默认 180 分钟；静默和忙碌时段不自动探索（若开启下方「只在谷时自动探索」，还会避开 DeepSeek API 高峰时段）。' },
+  { group: '自主探索', path: 'exploration.offPeakOnly', label: '只在谷时自动探索', type: 'bool', hint: '开：自动探索仅在 DeepSeek 谷时（5折空闲时段）运行——按北京时间结合日历判定，工作日非高峰时段（00:00–09:00、12:00–14:00、18:00–24:00）、周中法定节假日全天及周末（含调休上班周末）全天均为谷时；工作日 09:00–12:00 / 14:00–18:00 跳过。手动点「试跑一轮」不受限制。' },
+  { group: '自主探索', path: 'exploration.nextTopic', label: '近一轮探索主题', type: 'str', max: 120, hint: '单独指定下一轮要探索的具体题目（优先于下方「最近对什么好奇」）；成功跑完一轮后会自动清空恢复日常自选。' },
+  { group: '自主探索', path: 'exploration.interest', label: '最近对什么好奇', type: 'text', max: 160, rows: 2, hint: '可写想长期追的作品、网站或主题，也可补充待确认事实。研究和休闲都参考，留空按人设选。' },
+  { group: '自主探索', path: 'exploration.offerShare', label: '让探索进展参与主动分享', type: 'bool', hint: '默认关闭。开启后，进展只是主动消息候选，仍走原有时段、额度和发送开关。' },
   // ================================================================ 日常
   { group: '日常', path: 'enabled', label: '总开关', type: 'bool', hint: '关掉就一拍都不跑（插件还在，只是不动）' },
   { group: '日常', path: 'dryRun', label: '演练模式', type: 'bool', hint: '开：只判定、只记日志，不真的发。关：判定通过就发（还要下面那条也开着）' },
   { group: '日常', path: 'send.enabled', label: '允许真的发送', type: 'bool', hint: '和「演练模式」两个都放行才会发出去；只开这一个不会发' },
   { group: '日常', path: 'tickMinutes', label: '每拍间隔', type: 'int', min: 1, max: 120, unit: '分钟', hint: '多久醒一次看你在不在。改小不会更黏人，只是判定更及时' },
-  { group: '日常', path: 'exploration.auto', label: '自动自主探索', type: 'bool', hint: '默认关闭。角色按人设选择继续研究或自由浏览，探索结束保存进展和可选的分享候选。' },
-  { group: '日常', path: 'exploration.intervalMinutes', label: '探索间隔', type: 'int', min: 30, max: 1440, unit: '分钟', hint: '默认 180 分钟；静默和忙碌时段不自动探索（若开启下方「只在谷时自动探索」，还会避开 DeepSeek API 高峰时段）。' },
-  { group: '日常', path: 'exploration.offPeakOnly', label: '只在谷时自动探索', type: 'bool', hint: '开：自动探索仅在 DeepSeek 谷时（5折空闲时段）运行——按北京时间结合日历判定，工作日非高峰时段（00:00–09:00、12:00–14:00、18:00–24:00）、周中法定节假日全天及周末（含调休上班周末）全天均为谷时；工作日 09:00–12:00 / 14:00–18:00 跳过。手动点「试跑一轮」不受限制。' },
-  { group: '日常', path: 'exploration.nextTopic', label: '近一轮探索主题', type: 'str', max: 120, hint: '单独指定下一轮要探索的具体题目（优先于下方「最近对什么好奇」）；成功跑完一轮后会自动清空恢复日常自选。' },
-  { group: '日常', path: 'exploration.interest', label: '最近对什么好奇', type: 'text', max: 160, rows: 2, hint: '可写想长期追的作品、网站或主题，也可补充待确认事实。研究和休闲都参考，留空按人设选。' },
-  { group: '日常', path: 'exploration.offerShare', label: '让探索进展参与主动分享', type: 'bool', hint: '默认关闭。开启后，进展只是主动消息候选，仍走原有时段、额度和发送开关。' },
   { group: '日常', path: 'quietHours', label: '全局静默', type: 'windows', hint: '这几段里什么都不读不发；多段用逗号隔开（支持全角逗号/冒号），留空 = 全天不限' },
   { group: '日常', path: 'busyHours', label: '忙碌时段', type: 'windows', hint: 'TA上课/上班/开会的那几段，这几段里我不主动开口（TA先说话还是照常回）。和静默不一样：静默连数据都不读，这里只是我先不打扰。多段、可跨零点，留空 = 不忙' },
   { group: '日常', path: 'content.holidays', label: '额外放假的日子', type: 'text', max: 200, rows: 2, hint: '法定节假日（2026 全年）已经内置，节假日整天不按忙碌时段算，静默照旧。这里只补表里没有的，逗号分隔，如 2027-01-01,2027-01-02' },
@@ -543,6 +544,56 @@ export function courseItems(cfg) {
   });
 }
 
+function groupItemsForUi(cfg, name, detCache = { value: null }) {
+  return SCHEMA.filter((s) => s.group === name && !s.hidden && depVisible(cfg, s.dep)).map((s) => {
+    const secret = s.type === 'secret';
+    const value = secret ? '' : getPath(cfg, s.path, s.default);
+    // scale 把存储单位换成界面单位（毫秒 → 秒），读出来和显示都要换。
+    const shown = value == null || !s.scale ? value : (s.type === 'int' ? Math.round(Number(value) / s.scale) : Number(value) / s.scale);
+    let hint = (s.path.startsWith('sources.') || s.path === 'exploration.portrait') ? `${s.hint || ''}${detectHint(s.path, cfg, detCache)}` : s.hint;
+    const extra = {};
+    // 课程勾选列表：课表里有什么就列什么（读不出来的行已经跳过了）
+    if (s.type === 'courses') {
+      extra.items = courseItems(cfg);
+      extra.display = extra.items.length
+        ? `${extra.items.filter((i) => i.checked).length}/${extra.items.length} 节在提醒`
+        : '还没填课表';
+    }
+    // 考试正文后面接一句「认出来几场」，让人知道格式有没有写对
+    if (s.path === 'content.exams.text') {
+      try {
+        const list = parseExams(examsSource(cfg).text, {});
+        if (list.length) hint = `${hint}｜已识别 ${list.length} 场，最近一场 ${list[0].date} ${list[0].hm} ${list[0].subject || ''}`.trim();
+      } catch {
+        /* 认不出来就不多嘴 */
+      }
+    }
+    return {
+      path: s.path,
+      label: s.label,
+      type: s.type,
+      ...(s.min !== undefined ? { min: s.min } : {}),
+      ...(s.max !== undefined ? { max: s.max } : {}),
+      ...(s.unit ? { unit: s.unit } : {}),
+      ...(s.options ? { options: s.options } : {}),
+      ...(s.rows ? { rows: s.rows } : {}),
+      ...(hint ? { hint } : {}),
+      ...(secret ? { secret: true, set: Boolean(secretFor(s.path)) } : {}),
+      ...extra,
+      value: s.type === 'windows' ? normalizeWindows(value).windows : shown,
+      display:
+        extra.display !== undefined
+          ? extra.display
+          : display(s, s.type === 'windows' ? value : shown),
+    };
+  });
+}
+
+/** 自主探索卡片底部的直出配置项。 */
+export function explorationItemsForUi(cfg) {
+  return groupItemsForUi(cfg, '自主探索');
+}
+
 /**
  * 设置页要的一份清单：分组 → 项 → 当前值。
  * 只暴露白名单里的路径；其余（CLI 路径、通道 id…）**不出现在界面上**。
@@ -552,48 +603,7 @@ export function listForUi(cfg) {
   const groups = [];
   const detCache = { value: null };
   for (const name of GROUP_ORDER) {
-    const items = SCHEMA.filter((s) => s.group === name && !s.hidden && depVisible(cfg, s.dep)).map((s) => {
-      const secret = s.type === 'secret';
-      const value = secret ? '' : getPath(cfg, s.path, s.default);
-      // scale 把存储单位换成界面单位（毫秒 → 秒），读出来和显示都要换。
-      const shown = value == null || !s.scale ? value : (s.type === 'int' ? Math.round(Number(value) / s.scale) : Number(value) / s.scale);
-      let hint = (s.path.startsWith('sources.') || s.path === 'exploration.portrait') ? `${s.hint || ''}${detectHint(s.path, cfg, detCache)}` : s.hint;
-      const extra = {};
-      // 课程勾选列表：课表里有什么就列什么（读不出来的行已经跳过了）
-      if (s.type === 'courses') {
-        extra.items = courseItems(cfg);
-        extra.display = extra.items.length
-          ? `${extra.items.filter((i) => i.checked).length}/${extra.items.length} 节在提醒`
-          : '还没填课表';
-      }
-      // 考试正文后面接一句「认出来几场」，让人知道格式有没有写对
-      if (s.path === 'content.exams.text') {
-        try {
-          const list = parseExams(examsSource(cfg).text, {});
-          if (list.length) hint = `${hint}｜已识别 ${list.length} 场，最近一场 ${list[0].date} ${list[0].hm} ${list[0].subject || ''}`.trim();
-        } catch {
-          /* 认不出来就不多嘴 */
-        }
-      }
-      return {
-        path: s.path,
-        label: s.label,
-        type: s.type,
-        ...(s.min !== undefined ? { min: s.min } : {}),
-        ...(s.max !== undefined ? { max: s.max } : {}),
-        ...(s.unit ? { unit: s.unit } : {}),
-        ...(s.options ? { options: s.options } : {}),
-        ...(s.rows ? { rows: s.rows } : {}),
-        ...(hint ? { hint } : {}),
-        ...(secret ? { secret: true, set: Boolean(secretFor(s.path)) } : {}),
-        ...extra,
-        value: s.type === 'windows' ? normalizeWindows(value).windows : shown,
-        display:
-          extra.display !== undefined
-            ? extra.display
-            : display(s, s.type === 'windows' ? value : shown),
-      };
-    });
+    const items = groupItemsForUi(cfg, name, detCache);
     if (items.length) {
       const group = { name, items };
       if (GROUP_NOTES[name]) group.note = GROUP_NOTES[name];
