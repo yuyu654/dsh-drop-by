@@ -6,7 +6,7 @@
 //
 // 只读、纯函数、不叫模型：给定假 ctx / state，能单测每一段在不在。
 // 末段「规则建议」是 pickTopic 的结果，**降级成 hint**：模型可以参考，也可以不用。
-import { agendaSource, coursesOn, nextCourse, currentWeek, weekdayOf } from './agenda.js';
+import { agendaSource, coursesOn, nextCourse, currentWeek, weekdayOf, courseEnabled } from './agenda.js';
 import { examsSource, parseExams, dayDiff } from './exams.js';
 import { signalFacts } from './signals.js';
 import { slotStats, recentPairs } from './feedback.js';
@@ -192,12 +192,18 @@ export function buildSnapshot({ ctx = {}, topic = null, cfg = {}, st = {}, now =
   try {
     const src = agendaSource(cfg);
     if (src.text.trim()) {
-      const week = currentWeek(now, zone, cfg?.content?.agenda?.termStart);
-      const today = coursesOn(src.text, weekdayOf(now, zone), { week, off: cfg?.content?.agenda?.off });
+      const agendaOpts = {
+        termStart: String(cfg?.content?.agenda?.termStart || ''),
+        periods: String(cfg?.content?.agenda?.periods || ''),
+        off: Array.isArray(cfg?.content?.agenda?.off) ? cfg.content.agenda.off : [],
+      };
+      const week = currentWeek(now, zone, agendaOpts.termStart);
+      const today = coursesOn(src.text, weekdayOf(now, zone), { ...agendaOpts, week })
+        .filter((c) => courseEnabled(c, agendaOpts.off));
       if (today.length) {
         agenda.push(`今天有课：${today.map((c) => `${minToHm(c.fromMin)}-${minToHm(c.toMin)}${c.name ? `「${c.name}」` : ''}`).join('、')}`);
       }
-      const nc = nextCourse(src.text, now, zone, { termStart: cfg?.content?.agenda?.termStart, off: cfg?.content?.agenda?.off });
+      const nc = nextCourse(src.text, now, zone, agendaOpts);
       if (nc) {
         const when = nc.inDays === 0 ? '今天' : nc.inDays === 1 ? '明天' : `${nc.inDays} 天后`;
         agenda.push(`下一节：${when} ${minToHm(nc.fromMin)}${nc.name ? `「${nc.name}」` : ''}`);
@@ -238,13 +244,26 @@ export function buildSnapshot({ ctx = {}, topic = null, cfg = {}, st = {}, now =
     blocks.push(['最近聊到哪（旧的在前）：', ...turns.map((t) => `${t.who === 'her' ? '她' : '我'}：${String(t.text || '').slice(0, 80)}`)]);
   }
 
-  // —— 我最近真发出去的几条（跨通道）
+  // —— 我最近真发出去的几条（跨通道 + 本插件近期主动发出）
   const recentOut = Array.isArray(ctx.recentOutbound) ? ctx.recentOutbound.slice(0, 5) : [];
-  if (recentOut.length) {
-    blocks.push([
-      '我最近发出去的：',
-      ...recentOut.map((r) => `· 「${String(r.text).slice(0, 80)}」（${r.channel === 'qq' ? 'QQ' : '抖音'}，${agoText((now - Number(r.ts || 0)) / 1000)}）`),
-    ]);
+  const normSend = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+  const seenSends = new Set(recentOut.map((r) => normSend(r.text).slice(0, 40)).filter(Boolean));
+  const selfSends = [];
+  for (const s of (Array.isArray(ctx.recentSends) ? [...ctx.recentSends].reverse() : [])) {
+    const clean = normSend(s).slice(0, 80);
+    if (!clean) continue;
+    const key = clean.slice(0, 40);
+    if (seenSends.has(key)) continue;
+    seenSends.add(key);
+    selfSends.push(`· 「${clean}」（本插件近期主动发出）`);
+    if (selfSends.length >= 3) break;
+  }
+  const outLines = [
+    ...selfSends,
+    ...recentOut.map((r) => `· 「${String(r.text).slice(0, 80)}」（${r.channel === 'qq' ? 'QQ' : '抖音'}，${agoText((now - Number(r.ts || 0)) / 1000)}）`),
+  ].slice(0, 5);
+  if (outLines.length) {
+    blocks.push(['我最近发出去的：', ...outLines]);
   }
 
   // —— 阶段 2：最近的对话配对（我拿什么开口 → 她怎么回）

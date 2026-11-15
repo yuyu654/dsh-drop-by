@@ -795,13 +795,18 @@ export function explainNoTopic(ctx, cfg, now, st = {}) {
   // 课表：填了才谈得上不成立
   {
     const a = agendaSource(cfg);
-    const list = parseAgenda(a.text);
+    const termStart = String(cfg.content?.agenda?.termStart || '');
+    const agendaOpts = {
+      termStart,
+      periods: String(cfg.content?.agenda?.periods || ''),
+      off: Array.isArray(cfg.content?.agenda?.off) ? cfg.content.agenda.off : [],
+    };
+    const list = parseAgenda(a.text, agendaOpts);
     if (t.agenda === false) reasons.push('课表由头已关闭（content.topics.agenda=false）');
     else if (!list.length) reasons.push('课表还没填（设置页「课表与考试」）');
     else {
-      const termStart = String(cfg.content?.agenda?.termStart || '');
       const week = currentWeek(now, tz, termStart);
-      const nc = nextCourse(a.text, now, tz, { termStart });
+      const nc = nextCourse(a.text, now, tz, agendaOpts);
       if (week && list.some((c) => c.weeks)) reasons.push(`现在是第 ${week} 周（开学 ${termStart}）`);
       else if (!termStart && list.some((c) => c.weeks)) reasons.push('没填开学日期，带周次的课暂时当每周都上');
       if (!nc) reasons.push('接下来 7 天没有要上的课（周次过滤后）');

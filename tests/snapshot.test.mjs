@@ -101,3 +101,35 @@ test('periodOf / agoText：时间说法', () => {
   assert.equal(agoText(3 * 3600), '3 小时前');
   assert.equal(agoText(2 * 86_400), '2 天前');
 });
+
+test('snapshot：自定义作息与勾选关闭的课程一致生效', async () => {
+  const { parseAgenda, courseKey } = await import('../src/agenda.js');
+  const periods = '1-2 08:30-10:05\n3-4 10:25-12:00';
+  const text = '周一 第1-2节 电力电子技术\n周一 第3-4节 自动控制';
+  const [c1] = parseAgenda(text, { periods });
+  const cfg = {
+    timezone: TZ,
+    content: { agenda: { text, periods, off: [courseKey(c1)] } },
+  };
+  const sunday = Date.parse('2026-11-15T21:40:00+08:00');
+  const s = buildSnapshot({ ctx: { tz: TZ }, cfg, st: {}, now: sunday, tz: TZ });
+  assert.doesNotMatch(s, /电力电子技术|08:00/);
+  assert.match(s, /下一节：明天 10:25「自动控制」/);
+});
+
+test('snapshot：主动发送缓存 recentSends 即使没有 recentOutbound 也进「我最近发出去的」并去重', () => {
+  const s = buildSnapshot({
+    ctx: {
+      tz: TZ,
+      recentOutbound: [{ text: '已经记在通道历史里的句子', channel: 'qq', ts: NOW - 60_000 }],
+      recentSends: ['已经记在通道历史里的句子', '刚刚主动发的：早点睡别熬了'],
+    },
+    cfg: { timezone: TZ },
+    st: {},
+    now: NOW,
+    tz: TZ,
+  });
+  assert.match(s, /我最近发出去的：/);
+  assert.match(s, /「刚刚主动发的：早点睡别熬了」（本插件近期主动发出）/);
+  assert.equal(s.match(/已经记在通道历史里的句子/g)?.length, 1);
+});
