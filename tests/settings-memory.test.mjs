@@ -30,4 +30,10 @@ test('这一项的提示里写清楚：换插件找自己的大肥鱼加适配',
   assert.match(item.hint, /鱼/);
   assert.match(item.hint, /大肥鱼/);
   assert.match(item.hint, /memorysource\.js/);
+
+  const srcGroup = groups.find((g) => g.name === '数据从哪来');
+  const enabledIdx = srcGroup.items.findIndex((i) => i.path === 'sources.memory.enabled');
+  const pluginIdx = srcGroup.items.findIndex((i) => i.path === 'sources.memory.plugin');
+  assert.ok(enabledIdx >= 0 && pluginIdx === enabledIdx + 1, '用哪个记忆插件要紧跟在读记忆插件的记忆下面');
+  assert.match(srcGroup.items[enabledIdx].hint, /下面这个记忆插件/);
 });
