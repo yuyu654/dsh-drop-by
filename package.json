@@ -1,6 +1,6 @@
 {
   "name": "dsh-drop-by",
-  "version": "0.18.0",
+  "version": "0.1.0",
   "private": false,
   "type": "module",
   "description": "主动开口的那道门：定时判断该不该主动说一句话，交给宿主模型写成一句人话再发出去（QQ / 抖音 / 主对话）",
