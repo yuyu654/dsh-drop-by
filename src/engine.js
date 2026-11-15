@@ -17,7 +17,8 @@ import { decide, presenceOf, checkTierGap, REASONS } from "./decide.js";
 import { append, appendOnce } from "./logger.js";
 import { pruneOldRecords, recordDay } from "./retention.js";
 import { hhmm, agoSec, healthDay, dayKey } from "./time.js";
-import { inQuiet, inBusy } from "./schedule.js";
+import { inQuiet } from "./schedule.js";
+import { busyNow } from "./holidays.js";
 import { sendQQPrivate, sendQQRound } from "./send.js";
 import { buildContext, selfMtime, lastHerMessage } from "./context.js";
 import { pickTopic, withForwardContent, fishStale, tierOfSlot, answerableOn } from "./topics.js";
@@ -75,7 +76,7 @@ export async function tickQqContinuation({ candidate, read, generate, active }) 
     const now = Date.now();
     if (!active() || now > candidate.expiresAt || !qqContinuationEnabled(fresh) ||
         (fresh.dryRun !== false) !== dryRun || String(fresh.channels.qq.peerId) !== to ||
-        inQuiet(now, fresh.quietHours, fresh.timezone) || inBusy(now, fresh.busyHours, fresh.timezone)) return false;
+        inQuiet(now, fresh.quietHours, fresh.timezone) || busyNow(now, fresh)) return false;
     const st = freshDayState(loadState(), recordDay(now, fresh.timezone, fresh));
     const bucket = st[bucketName];
     return (Number(bucket.lastSendAt) || 0) < candidate.outgoing.firstAt &&
@@ -185,7 +186,7 @@ export async function tick({
   const idleSec = typeof sys.idle_ms === 'number' && sys.idle_ms >= 0 ? Math.round(sys.idle_ms / 1000) : -1;
   const quiet = inQuiet(now, cfg.quietHours, tz);
   // 忙碌时段：只压「我先开口」，不压回复（她先说话就该回）
-  const busy = inBusy(now, cfg.busyHours, tz);
+  const busy = busyNow(now, cfg);
 
   // 电脑侧的存在记录要在挑由头之前更新，否则「刚回来」永远是上一拍的状态
   const pcEvent = trackPcPresence(st, sys, now, cfg);

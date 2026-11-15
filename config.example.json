@@ -226,6 +226,8 @@
     "mode": "auto",
     "fixedText": "测试",
     "maxChars": 60,
+    "holidays": "",
+    "workdays": "",
     "prompt": {
       "recentOutbound": true,
       "slotStats": true

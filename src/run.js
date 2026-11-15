@@ -63,6 +63,7 @@ import {
   featureByKey,
   FEATURES,
 } from './schedule.js';
+import { busyNow } from './holidays.js';
 import { sendQQPrivate, bridgeInfo } from './send.js';
 import { buildContext, selfMtime } from './context.js';
 import { detectTriggers } from './triggers.js';
@@ -231,7 +232,7 @@ function printSchedule(cfg, now) {
   const bh = Array.isArray(cfg.busyHours) ? cfg.busyHours : [];
   console.log(
     `  ${padEndCjk('忙碌', 14)}${padEndCjk(bh.length ? fmtWindows(bh) : '没设', 32)}${padEndCjk(
-      bh.length ? (inBusy(now, bh, tz) ? '忙' : '不忙') : '—',
+      bh.length ? (busyNow(now, cfg) ? '忙' : '不忙') : '—',
       8
     )}忙碌里不主动开口（她先说话照常回）`
   );
@@ -1059,7 +1060,7 @@ async function main() {
     // 记忆插件里的长期记忆（只读；读不到就照常写，不挡这一拍）。
     ctx.memory = readMemory({ cfg, now });
     ctx.recentOutbound = recentOutbound({ limit: 5, cfg });
-    const busy = inBusy(now, cfg.busyHours, tz);
+    const busy = busyNow(now, cfg);
     // --why 不叫模型：只用上次判过的结果，别为了看一眼诊断就花一次调用
     const cand = pickNoReply({
       st, cfg, now,

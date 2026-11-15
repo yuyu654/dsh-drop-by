@@ -27,7 +27,8 @@ import { loadConfig, saveConfig, loadState, CONFIG_PATH, LOG_DIR } from './confi
 import { tick, tickQqContinuation, qqContinuationEnabled } from './engine.js';
 import { readBridgeDialogue } from './outbound.js';
 import { createQqContinuation } from './qq-continuation.js';
-import { inQuiet, inBusy } from './schedule.js';
+import { inQuiet } from './schedule.js';
+import { busyNow } from './holidays.js';
 import { loadPersona } from './persona.js';
 import { exploreRound, explorationStatus, explorationMood, loadExploration, saveExploration } from './explore.js';
 import { makeHostLlm } from './hostllm.js';
@@ -271,7 +272,7 @@ export function apply(ctx, config = {}) {
     const cfg = loadConfig();
     const now = Date.now();
     if (cfg.enabled === false || (!manual && cfg.exploration.auto !== true)) return { ok: false, reason: 'DISABLED' };
-    if (inQuiet(now, cfg.quietHours, cfg.timezone) || (!manual && inBusy(now, cfg.busyHours, cfg.timezone))) {
+    if (inQuiet(now, cfg.quietHours, cfg.timezone) || (!manual && busyNow(now, cfg))) {
       return { ok: false, reason: 'QUIET_OR_BUSY' };
     }
     const persona = loadPersona({ cfg });
@@ -327,7 +328,7 @@ export function apply(ctx, config = {}) {
         const cfg = loadConfig();
         const now = Date.now();
         if (opt.enabled === false || !qqContinuationEnabled(cfg) ||
-            inQuiet(now, cfg.quietHours, cfg.timezone) || inBusy(now, cfg.busyHours, cfg.timezone)) {
+            inQuiet(now, cfg.quietHours, cfg.timezone) || busyNow(now, cfg)) {
           continuation.observe({ incoming: {}, outgoing: {} }, '', now);
           return;
         }

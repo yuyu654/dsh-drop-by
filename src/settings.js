@@ -202,6 +202,8 @@ export const SCHEMA = [
   { group: '日常', path: 'exploration.offerShare', label: '让探索进展参与主动分享', type: 'bool', hint: '默认关闭。开启后，进展只是主动消息候选，仍走原有时段、额度和发送开关。' },
   { group: '日常', path: 'quietHours', label: '全局静默', type: 'windows', hint: '这几段里什么都不读不发；多段用逗号隔开（支持全角逗号/冒号），留空 = 全天不限' },
   { group: '日常', path: 'busyHours', label: '忙碌时段', type: 'windows', hint: 'TA上课/上班/开会的那几段，这几段里我不主动开口（TA先说话还是照常回）。和静默不一样：静默连数据都不读，这里只是我先不打扰。多段、可跨零点，留空 = 不忙' },
+  { group: '日常', path: 'content.holidays', label: '额外放假的日子', type: 'text', max: 200, rows: 2, hint: '法定节假日（2026 全年）已经内置，节假日整天不按忙碌时段算，静默照旧。这里只补表里没有的，逗号分隔，如 2027-01-01,2027-01-02' },
+  { group: '日常', path: 'content.workdays', label: '调休上班的周末', type: 'text', max: 200, rows: 2, hint: '调休上班日即使在周末也按工作日算，忙碌时段照常生效。逗号分隔，如 2027-02-07' },
 
   // ================================================================ 节奏
   { group: '节奏', path: 'rules.dailyCap', label: '每天最多几条', type: 'int', min: 0, max: 20, unit: '条', hint: '0 = 今天一条都不主动发。默认 3 条' },

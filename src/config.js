@@ -150,6 +150,10 @@ const DEFAULTS = {
     // mode='fixed' 时发这句。用来验证「判定 → 发送」这段链路能不能通，不关心说了什么
     fixedText: '1',
     maxChars: 60,
+    // 法定节假日表（src/holidays.js）之外的补充：逗号分隔的 YYYY-MM-DD。
+    // holidays = 额外放假的日子；workdays = 调休上班的周末（优先于 holidays）。
+    holidays: '',
+    workdays: '',
     // 写给模型的素材，各自一个开关（默认开）。关掉那一段就整段不进 prompt，行为和加它之前完全一样。
     // recentOutbound：我最近真发出去的 5 条（防连着几天一个开头、一个话题）。
     // slotStats：每类由头的接住率（她接没接）。后者还受 rules.feedback.enabled 约束。

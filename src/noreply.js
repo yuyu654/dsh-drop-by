@@ -14,7 +14,7 @@
 
 import { douyinLastOutbound } from './outbound.js';
 import { hhmm, hmToMin, minutesOfDayOf } from './time.js';
-import { lastWindowEnd } from './schedule.js';
+import { lastBusyEnd, isHoliday } from './holidays.js';
 
 const MIN = 60_000;
 const BACKGROUND_SLOTS = new Set(['steps', 'screen', 'longSit']);
@@ -133,7 +133,7 @@ export function noReplyDue({ cand, cfg, now, herTs = null, tz }) {
       due = Math.max(due, hmStrictNext(v.untilHm, ref, tz) + afterBusyMin * MIN);
       src = `她大概忙到 ${v.untilHm}`;
     }
-    const busyEnd = lastWindowEnd(now, cfg?.busyHours, tz);
+    const busyEnd = lastBusyEnd(now, cfg);
     if (busyEnd) {
       const d2 = busyEnd + afterBusyMin * MIN;
       if (d2 > due) {
@@ -180,7 +180,7 @@ export function judgePrompt({ cand, ctx, cfg, now, tz }) {
       .join('\n');
     lines.push(`最近的对话：\n${body}`);
   }
-  const busy = Array.isArray(cfg?.busyHours) ? cfg.busyHours : [];
+  const busy = isHoliday(now, cfg) ? [] : (Array.isArray(cfg?.busyHours) ? cfg.busyHours : []);
   if (busy.length) {
     const txt = busy.map((w) => (Array.isArray(w) ? w.join('-') : String(w))).join('、');
     lines.push(`她平时这些时段忙：${txt}`);
