@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import { getPath } from './config.js';
 import { normalizeWindows, fmtWindows } from './schedule.js';
 import { SECRETS_PATH, saveSecrets, hostFor } from './fishmail.js';
-import { detectSources } from './detect.js';
+import { detectSources, detectEmotionPortrait } from './detect.js';
 import { parseAgenda, agendaSource, courseKey } from './agenda.js';
 import { parseExams, examsSource } from './exams.js';
 
@@ -38,6 +38,12 @@ function secretFor(path) {
  * 一次 listForUi 只扫一遍（detCache），别三个开关各扫一次。
  */
 function detectHint(specPath, cfg, detCache) {
+  if (specPath === 'exploration.portrait') {
+    if (!detCache.emotion) detCache.emotion = detectEmotionPortrait();
+    const d = detCache.emotion;
+    const ver = d.version ? `（v${d.version}）` : '';
+    return `｜检测：${d.note}${ver}`;
+  }
   const key = specPath.split('.')[1];
   if (!detCache.value) detCache.value = detectSources(cfg);
   const d = detCache.value[key];
@@ -93,6 +99,17 @@ const onTopic = (k) => dep(`content.topics.${k}`, true);
  *   dep     父开关（见上面的 dep()）：父开关关着就不显示
  */
 export const SCHEMA = [
+  { group: '高级', path: 'rules.qqRollover.enabled', label: '外部聊天到上下文阈值时预建续聊', type: 'bool', hint: '在同一工作区建新会话并经 QQ 提醒，旧会话可继续聊。建议在 dsh-fish-memory 开启按工作区共用记忆。' },
+  { group: '高级', path: 'rules.qqRollover.thresholdPercent', label: '预建续聊的上下文占用率', type: 'int', min: 10, max: 95, unit: '%', dep: dep('rules.qqRollover.enabled', true), hint: '默认 80%。只在绑定会话完成一轮时检查，每个旧会话只预建一次。' },
+  { group: '高级', path: 'rules.qqRollover.carryMessages', label: '新会话携带最近消息', type: 'int', min: 0, max: 50, unit: '条', dep: dep('rules.qqRollover.enabled', true), hint: '默认 10 条，用户和助手各自的一条都计数。填 0 只建立续聊会话。' },
+  { group: '高级', path: 'rules.qqRollover.prepareBindingFile', label: '预备重启后自动切到续聊会话', type: 'bool', dep: dep('rules.qqRollover.enabled', true), hint: '只预备 QQ 桥的磁盘绑定。当前聊天照常继续，重启 DSH 后启用。关闭后可手动切绑。' },
+  { group: '说什么', path: 'rules.qqCommands.enabled', label: '接收 QQ 主动任务指令', type: 'bool', hint: '只接收配置收件人的 QQ 私聊。允许搜索公开网页、推进研究、整理探索笔记或跑插件快速测试。回传不受日常静默和配额限制。' },
+  { group: '时间间隔', path: 'rules.qqCommands.intentTimeoutSec', label: 'QQ 意图识别最多等多久', type: 'int', min: 1, max: 20, unit: '秒', hint: '默认 5 秒。模型超时或未给出可校验的任务时，直接走普通 QQ 聊天。' },
+  { group: '时间间隔', path: 'rules.qqCommands.timeoutSec', label: 'QQ 任务多久先反馈超时', type: 'int', min: 5, max: 120, unit: '秒', hint: '默认 90 秒。任务到时限仍没结束会回一条状态。' },
+  { group: '时间间隔', path: 'rules.qqCommands.freshSec', label: 'QQ 任务指令最多多旧', type: 'int', min: 5, max: 900, unit: '秒', hint: '默认 120 秒。超过这个时间的补发消息不能启动后台任务。' },
+  { group: '时间间隔', path: 'rules.actionGate.expiresMinutes', label: 'QQ 动作提议多久内可确认', type: 'int', min: 1, max: 15, unit: '分钟', hint: '默认 15 分钟，从动作请示送达时算。只使用配置的 QQ 私聊中紧接着的一条消息。' },
+  { group: '时间间隔', path: 'rules.actionGate.ackWaitSec', label: '换源结果最多等确认回复多久', type: 'int', min: 0, max: 120, unit: '秒', hint: '默认 30 秒。搜索先结束时等待 QQ 的接单回复；已经回复就直接发结果。填 0 不等待。' },
+  { group: '说什么', path: 'rules.actionGate.enabled', label: 'QQ 确认后换源找正文', type: 'bool', hint: '仅当前研究确实没拿到正文、角色已提出具体换源请求时生效。需要开启探索网页、主动分享和真实发送。QQ 桥须有可回传结果的 OneBot HTTP API 和发送令牌。' },
   { group: '时间间隔', path: 'content.topics.agendaSoonMinLead', label: '临上课前少于多久就不再提醒', type: 'int', min: 0, max: 60, unit: '分钟' },
   { group: '时间间隔', path: 'content.topics.agendaTomorrowUntilHour', label: '明日早课提醒跨零点截止时间', type: 'int', min: 0, max: 6, unit: '点' },
   { group: '时间间隔', path: 'perception.probeCacheMs', label: '系统探针缓存时长', type: 'int', min: 0, max: 300, unit: '秒', scale: 1000 },
@@ -130,6 +147,7 @@ export const SCHEMA = [
   { group: '时间间隔', path: 'exploration.recentDays', label: '探索进展能用多久', type: 'int', min: 0, max: 90, unit: '天', hint: '适用于主动分享和 QQ 回复中的研究、休闲进展。填 0 不引用。' },
   { group: '时间间隔', path: 'exploration.moodHours', label: '探索心情保留多久', type: 'int', min: 0, max: 168, unit: '小时', hint: '默认 2 小时。填 0 不引用探索心情。' },
   { group: '时间间隔', path: 'exploration.portraitHours', label: 'QQ 聊天心情保留多久', type: 'int', min: 0, max: 168, unit: '小时', hint: '默认 2 小时，同时控制情绪回落速度。填 0 不引用。' },
+  { group: '时间间隔', path: 'rules.qqTiming.debounceMs', label: 'QQ 连发消息合并等待', type: 'int', min: 3000, max: 15000, unit: '毫秒', hint: '默认 3500 毫秒，最低 3000 毫秒。上限 15000 毫秒，为 QQ 桥单次投递 controller.prompt 的 20000 毫秒超时留出余量。' },
   { group: '时间间隔', path: 'rules.qqTiming.pollSec', label: 'QQ 热聊检查间隔', type: 'int', min: 1, max: 60, unit: '秒', hint: '多久检查一次 QQ 桥的最新消息。' },
   { group: '时间间隔', path: 'rules.qqTiming.windowSec', label: 'QQ 热聊回看窗口', type: 'int', min: 1, max: 1800, unit: '秒', hint: '在这段时间里至少有两轮对话才算热聊。' },
   { group: '时间间隔', path: 'rules.qqTiming.pauseSec', label: 'QQ 热聊补话先等多久', type: 'int', min: 0, max: 300, unit: '秒', hint: '从正常回复发送完成开始计时。' },
@@ -197,7 +215,9 @@ export const SCHEMA = [
   { group: '日常', path: 'send.enabled', label: '允许真的发送', type: 'bool', hint: '和「演练模式」两个都放行才会发出去；只开这一个不会发' },
   { group: '日常', path: 'tickMinutes', label: '每拍间隔', type: 'int', min: 1, max: 120, unit: '分钟', hint: '多久醒一次看你在不在。改小不会更黏人，只是判定更及时' },
   { group: '日常', path: 'exploration.auto', label: '自动自主探索', type: 'bool', hint: '默认关闭。角色按人设选择继续研究或自由浏览，探索结束保存进展和可选的分享候选。' },
-  { group: '日常', path: 'exploration.intervalMinutes', label: '探索间隔', type: 'int', min: 30, max: 1440, unit: '分钟', hint: '默认 180 分钟；静默和忙碌时段不自动探索。' },
+  { group: '日常', path: 'exploration.intervalMinutes', label: '探索间隔', type: 'int', min: 30, max: 1440, unit: '分钟', hint: '默认 180 分钟；静默和忙碌时段不自动探索（若开启下方「只在谷时自动探索」，还会避开 DeepSeek API 高峰时段）。' },
+  { group: '日常', path: 'exploration.offPeakOnly', label: '只在谷时自动探索', type: 'bool', hint: '开：自动探索仅在 DeepSeek 谷时（5折空闲时段）运行——按北京时间结合日历判定，工作日非高峰时段（00:00–09:00、12:00–14:00、18:00–24:00）、周中法定节假日全天及周末（含调休上班周末）全天均为谷时；工作日 09:00–12:00 / 14:00–18:00 跳过。手动点「试跑一轮」不受限制。' },
+  { group: '日常', path: 'exploration.nextTopic', label: '近一轮探索主题', type: 'str', max: 120, hint: '单独指定下一轮要探索的具体题目（优先于下方「最近对什么好奇」）；成功跑完一轮后会自动清空恢复日常自选。' },
   { group: '日常', path: 'exploration.interest', label: '最近对什么好奇', type: 'text', max: 160, rows: 2, hint: '可写想长期追的作品、网站或主题，也可补充待确认事实。研究和休闲都参考，留空按人设选。' },
   { group: '日常', path: 'exploration.offerShare', label: '让探索进展参与主动分享', type: 'bool', hint: '默认关闭。开启后，进展只是主动消息候选，仍走原有时段、额度和发送开关。' },
   { group: '日常', path: 'quietHours', label: '全局静默', type: 'windows', hint: '这几段里什么都不读不发；多段用逗号隔开（支持全角逗号/冒号），留空 = 全天不限' },
@@ -256,7 +276,8 @@ export const SCHEMA = [
   { group: '数据从哪来', path: 'sources.phone.enabled', label: '手机数据', type: 'bool', hint: '睡眠、压力、屏幕时间都来自手机 App 发的邮件。关掉就不连邮箱，这三类由头全部停用' },
   { group: '数据从哪来', path: 'sources.qq.enabled', label: 'QQ', type: 'bool', hint: '要 dsh-plugin-qq-bridge 装了并配对过才算通；关掉之后 QQ 侧的旧记录也不再当「TA刚说话」用' },
   { group: '数据从哪来', path: 'sources.douyin.enabled', label: '抖音', type: 'bool', hint: '要 dsh-douyin-scroll 装了、并且它的聊天盯梢开着才算通。开着会读抖音私信，那边说的话也算「TA刚说话」' },
-  { group: '数据从哪来', path: 'sources.memory.enabled', label: '读记忆插件的记忆', type: 'bool', hint: '从下面那个记忆插件里读它记下来的长期记忆，当「我本来就知道的事」用（只读，不改它的文件）。读不到就照常说话' },
+  { group: '数据从哪来', path: 'sources.memory.enabled', label: '读记忆插件的记忆', type: 'bool', hint: '从高级选项卡里那个记忆插件里读它记下来的长期记忆，当「我本来就知道的事」用（只读，不改它的文件）。读不到就照常说话' },
+  { group: '数据从哪来', path: 'exploration.portrait', label: '延续 QQ 聊天的心情（情绪插件）', type: 'bool', hint: '需要安装 emotion-state-portrait 和支持本入口的 QQ 桥。打开后会按每条 QQ 私聊实时打分即时心情，同时把私聊、QQ 指令与回复自动写入 emotion/inbox.jsonl 并在主动/被动对话里延续情绪画像' },
   { group: '数据从哪来', path: 'mail.enabled', label: '读邮箱', type: 'bool', hint: '开：才会连 IMAP 把手机 App 发来的 FISH 邮件取回来；关着完全不联网。账号和授权码在「高级」里' },
   { group: '数据从哪来', path: 'channels.qq.read', label: '读 QQ', type: 'bool', dep: ON_QQ, hint: '开（默认）：读TA QQ 上的消息，用来判「TA刚说话」和回复。关：QQ 只当发送通道，不再读' },
   { group: '数据从哪来', path: 'channels.douyin.read', label: '读抖音私信', type: 'bool', dep: ON_DOUYIN, hint: '开（默认）：读抖音私信和分享记录。关：抖音整块不读，TA在那边的消息不算「TA刚说话」' },
@@ -298,9 +319,9 @@ export const SCHEMA = [
   { group: '高级', path: 'content.prompt.slotStats', label: '让TA看见话题接住率', type: 'bool', dep: ON_CONTENT, hint: '开（默认）：告诉模型哪类由头TA接住了、哪类老没人应；关：不摆这些数字，行为和没加这段之前一样' },
   { group: '高级', path: 'sources.phone.staleHours', label: '数据过期多久算停', type: 'int', min: 6, max: 168, unit: '小时', dep: ON_PHONE, hint: '默认 36 小时。鱼鱼那封邮件超过这么多小时没更新，睡眠/压力/步数/屏幕四类由头就停用——拿旧数据问「昨晚睡得好吗」比不说话更伤' },
   { group: '高级', path: 'sources.phone.staleGuard', label: '数据过期就停用', type: 'bool', dep: ON_PHONE, hint: '开（默认）：邮件太旧时上面那四类由头不参与判定，--why 里会写原因；关：不管多旧都照旧用（阈值还留着，想恢复不用重填）' },
-  { group: '高级', path: 'sources.memory.plugin', label: '用哪个记忆插件', type: 'select', options: [['fish-memory', '鱼的记忆（dsh-fish-memory）']], dep: ON_MEMORY, hint: '目前只认鱼的记忆。它按会话分开存，一个会话一个文件。用别的记忆插件也能接：跟你的大肥鱼说一声，让它在 src/memorysource.js 里加一条适配就行' },
+  { group: '高级', path: 'sources.memory.plugin', label: '用哪个记忆插件', type: 'select', options: [['fish-memory', '鱼的记忆（dsh-fish-memory）']], dep: ON_MEMORY, hint: '目前只认鱼的记忆（同时支持会话文件 session-*.json 与工作区文件 ws_*.json）。用别的记忆插件也能接：跟你的大肥鱼说一声，让它在 src/memorysource.js 里加一条适配就行' },
   { group: '高级', path: 'sources.memory.max', label: '一次带几条', type: 'int', min: 1, max: 8, dep: ON_MEMORY, hint: '默认 3 条。长期画像（喜好、约定）优先，剩下给最近的事；带太多会把这一句挤成汇报' },
-  { group: '高级', path: 'sources.memory.session', label: '读哪个会话的记忆', type: 'str', max: 80, dep: ON_MEMORY, hint: '留空 = 最近改过的那一份（一般就是现在这个会话）；填会话 id 前几位锁一份；填 all 把全部会话合并' },
+  { group: '高级', path: 'sources.memory.session', label: '读哪个会话的记忆', type: 'str', max: 80, dep: ON_MEMORY, hint: '留空 = 同时读取最近改过的工作区文件与会话文件（按文本去重）；填会话 id 或 ws_ 前几位锁一份；填 all 全合并' },
   { group: '高级', path: 'channels.qq.send', label: '往 QQ 发', type: 'bool', dep: ON_QQ, hint: '开（默认）：这一侧才真发。关：判定照走、内容照写，但不往 QQ 发（配合演练模式看它会说什么）' },
   { group: '高级', path: 'channels.douyin.send', label: '往抖音发', type: 'bool', dep: ON_DOUYIN, hint: '默认关。抖音那边目前是另一个值班会话在回，这里开了一般也用不上' },
   { group: '高级', path: 'mail.user', label: '邮箱账号', type: 'str', max: 120, hint: '填完整地址（比如 123456@qq.com）。IMAP 服务器按域名自动猜，QQ/163/126/Gmail/Outlook 都在表里' },
@@ -312,9 +333,8 @@ export const SCHEMA = [
   { group: '高级', path: 'perception.l2.enabled', label: '记下TA在做什么', type: 'bool', hint: '把前台窗口折成打游戏/写代码/看视频，只在判到要发的那一拍记一笔，不影响发不发。默认开' },
   { group: '高级', path: 'perception.l3.enabled', label: '看屏幕（OCR）', type: 'bool', hint: '截前台窗口做系统 OCR，约 1 秒。只在判到要发的那一拍才截，只当「当时我在干什么」的记录，不参与发不发。中文认错得厉害，结构化信号能说清时就不用它。默认关' },
   { group: '高级', path: 'rules.askProjectOnce', label: '问一次最近在忙的项目', type: 'bool', hint: '对当前 QQ 收件人只主动问一次；不催回复。读到相关回答才保存为本地记忆，近期聊天可参考。' },
-  { group: '高级', path: 'exploration.mood', label: '探索心情（试用）', type: 'bool', hint: '探索时可顺手记一句感受，有效时长可在「时间间隔」调整。只影响已经决定要发的主动消息，不会主动多发一条。' },
+  { group: '高级', path: 'exploration.mood', label: '探索心情', type: 'bool', hint: '探索时可顺手记一句感受，有效时长可在「时间间隔」调整。只影响已经决定要发的主动消息，不会主动多发一条。' },
   { group: '高级', path: 'content.topics.followCasualSilence', label: '追问没回的闲聊或分享', type: 'bool', hint: '默认关闭。关闭后，问候、闲聊或分享没收到回复就放下。' },
-  { group: '高级', path: 'exploration.portrait', label: '延续 QQ 聊天的心情', type: 'bool', hint: '需要安装 emotion-state-portrait 和支持本入口的 QQ 桥。用 DSH 模型判断配置收件人的私聊，再复用情绪叠加与回落。' },
   { group: '高级', path: 'exploration.web', label: '探索时搜索网页', type: 'bool', hint: '优先用 dsh-free-search，找不到结果时用 DSH 的 web_search。再用 web_fetch 读最多两页正文；仅搜到摘要时会标明。' },
   { group: '高级', path: 'exploration.leisureEvery', label: '每几轮安排一次休闲', type: 'int', min: 0, max: 20, unit: '轮', hint: '默认 3。填 1 每轮休闲，填 0 关闭休闲轮。研究题本身也可以是小说、漫画等娱乐兴趣。' },
   { group: '高级', path: 'exploration.video', label: '探索时找视频', type: 'bool', hint: '每轮最多看一条。画面需要 dsh-video-storyboard 和支持图片的模型；抖音还需要取流配置。有字幕或转写时可退回文字，只有标题会标明。' },
@@ -535,7 +555,7 @@ export function listForUi(cfg) {
       const value = secret ? '' : getPath(cfg, s.path, s.default);
       // scale 把存储单位换成界面单位（毫秒 → 秒），读出来和显示都要换。
       const shown = value == null || !s.scale ? value : (s.type === 'int' ? Math.round(Number(value) / s.scale) : Number(value) / s.scale);
-      let hint = s.path.startsWith('sources.') ? `${s.hint || ''}${detectHint(s.path, cfg, detCache)}` : s.hint;
+      let hint = (s.path.startsWith('sources.') || s.path === 'exploration.portrait') ? `${s.hint || ''}${detectHint(s.path, cfg, detCache)}` : s.hint;
       const extra = {};
       // 课程勾选列表：课表里有什么就列什么（读不出来的行已经跳过了）
       if (s.type === 'courses') {
@@ -619,6 +639,7 @@ function groupSummary(cfg, name, items = []) {
     if (cfg?.sources?.phone?.enabled !== false) parts.push('手机邮件');
     if (cfg?.sources?.douyin?.enabled !== false) parts.push('抖音');
     if (cfg?.sources?.memory?.enabled !== false) parts.push('记忆');
+    if (cfg?.exploration?.portrait === true) parts.push('QQ情绪');
     return parts.length ? `已启用：${parts.join(' / ')}` : '未启用任何数据源';
   }
   if (name === '课表与考试') {

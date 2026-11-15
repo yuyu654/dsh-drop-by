@@ -6,41 +6,29 @@
 //
 // 输出：单行 JSON，方便被别的 agent/脚本直接消费。
 import { loadConfig } from './config.js';
-import { sendQQPrivate, bridgeInfo } from './send.js';
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { sendQQPrivate, sendQQRound, bridgeInfo } from './send.js';
 
-const argv = process.argv.slice(2);
-const argOf = (f, d) => {
-  const i = argv.indexOf(f);
-  return i >= 0 && argv[i + 1] ? argv[i + 1] : d;
-};
-
-const cfg = loadConfig();
-const text = argOf('--text', '');
-const to = argOf('--to', cfg.channels?.qq?.peerId || '');
-const yes = argv.includes('--yes');
-
-if (!text) {
-  console.log(JSON.stringify({ ok: false, error: '缺少 --text' }));
-  process.exit(2);
+export async function sendQqText({ text, to, cfg = loadConfig(), confirm = false, track = false }) {
+  if (!text) return { ok: false, error: '缺少 --text' };
+  const peer = to ?? cfg.channels?.qq?.peerId ?? '';
+  const gate = { sendEnabled: cfg.send?.enabled === true, dryRun: cfg.dryRun !== false, confirm };
+  const dryRun = !(gate.sendEnabled && !gate.dryRun && gate.confirm);
+  const options = { to: peer, text, dryRun, timeoutMs: cfg.send?.timeoutMs };
+  const result = track
+    ? await sendQQRound({ ...options, split: { enabled: false } })
+    : await sendQQPrivate(options);
+  return {
+    ...result, to: peer, text, gate, bridge: bridgeInfo(),
+    hint: dryRun ? '演练模式：需要 send.enabled=true、dryRun=false 且带 --yes 才会真发' : '',
+  };
 }
 
-const gate = {
-  sendEnabled: cfg.send?.enabled === true,
-  dryRun: cfg.dryRun !== false,
-  confirm: yes,
-};
-const dryRun = !(gate.sendEnabled && !gate.dryRun && gate.confirm);
-
-const r = await sendQQPrivate({ to, text, dryRun });
-console.log(
-  JSON.stringify({
-    ...r,
-    to,
-    text,
-    gate,
-    bridge: bridgeInfo(),
-    hint: dryRun
-      ? '演练模式：需要 send.enabled=true、dryRun=false 且带 --yes 才会真发'
-      : '',
-  })
-);
+if (process.argv[1] && process.argv[1].endsWith('qq-send.js') && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const argv = process.argv.slice(2);
+  const argOf = (flag) => argv.includes(flag) ? argv[argv.indexOf(flag) + 1] : undefined;
+  const result = await sendQqText({ to: argOf('--to'), text: argOf('--text'), confirm: argv.includes('--yes') });
+  console.log(JSON.stringify(result));
+  if (!result.text) process.exitCode = 2;
+}

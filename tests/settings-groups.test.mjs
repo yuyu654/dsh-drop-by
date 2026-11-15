@@ -1,6 +1,9 @@
 // settings-groups.test.mjs —— 设置页的分组、折叠、以及「父开关关着就不显示子项」。
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { loadConfig } from '../src/config.js';
 import { listForUi, SCHEMA, GROUP_ORDER, FOLDABLE_GROUPS } from '../src/settings.js';
 
@@ -82,4 +85,34 @@ test('日常板块上面那条注释：说清哪些功能可能踩反作弊，�
   assert.match(g.note, /键鼠空闲不受影响/);
   // 别组不跟着长注释
   assert.equal(listForUi(cfg()).find((x) => x.name === '节奏').note, undefined);
+});
+
+test('数据从哪来：展示情绪插件名称与实时检测状态', () => {
+  const prevHome = process.env.PG_DSH_HOME;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'pg-settings-emo-'));
+  try {
+    process.env.PG_DSH_HOME = home;
+    const c1 = cfg();
+    c1.exploration.portrait = true;
+    const g1 = listForUi(c1).find((x) => x.name === '数据从哪来');
+    assert.match(g1.summary, /QQ情绪/);
+    const item1 = g1.items.find((i) => i.path === 'exploration.portrait');
+    assert.ok(item1, '数据从哪来组里要有延续 QQ 聊天的心情');
+    assert.match(item1.label, /情绪插件/);
+    assert.match(item1.hint, /emotion-state-portrait/);
+    assert.match(item1.hint, /｜检测：没装 emotion-state-portrait/);
+
+    const dir = path.join(home, 'profiles', 'desktop', 'node_modules', 'emotion-state-portrait');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'emotion-state-portrait', version: '1.0.5' }));
+    fs.writeFileSync(path.join(dir, 'qq-emotion.mjs'), 'export default {};');
+
+    const g2 = listForUi(c1).find((x) => x.name === '数据从哪来');
+    const item2 = g2.items.find((i) => i.path === 'exploration.portrait');
+    assert.match(item2.hint, /｜检测：已装 emotion-state-portrait（v1\.0\.5）/);
+  } finally {
+    if (prevHome === undefined) delete process.env.PG_DSH_HOME;
+    else process.env.PG_DSH_HOME = prevHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });

@@ -64,3 +64,12 @@ test('buildChitchatPrompt：有种子时不注入 mood，也不塞「最近聊�
   assert.match(noSeed, /情绪/);
   assert.match(noSeed, /你们最近聊到的/);
 });
+
+test('explorationToneHint：portraitMood 独立传出，不被 toneOf 的字母数字规则滤空', () => {
+  const portrait = '心情：欣喜Lv1（语气轻快）；状态：精神饱满；对她：熟悉';
+  assert.equal(toneOf(portrait), '');
+  const hint = explorationToneHint({ portraitMood: portrait });
+  assert.match(hint, /画像状态/);
+  assert.match(hint, /欣喜Lv1/);
+  assert.match(hint, /对她：熟悉/);
+});

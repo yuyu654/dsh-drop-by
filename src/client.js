@@ -52,12 +52,30 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         });
       }
 
+      var BRIDGE_API = '/dsh-qq-bridge';
+
       function apiGet(path) {
         return fetch(API + path, { cache: 'no-store' }).then(readJson);
       }
 
-      function apiPost(path) {
-        return fetch(API + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).then(readJson);
+      function apiPost(path, body) {
+        return fetch(API + path, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body || {}),
+        }).then(readJson);
+      }
+
+      function bridgeGet(path) {
+        return fetch(BRIDGE_API + path, { cache: 'no-store' }).then(readJson);
+      }
+
+      function bridgePost(path, payload) {
+        return fetch(BRIDGE_API + path, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload || {}),
+        }).then(readJson);
       }
 
       function apiSave(payload) {
@@ -141,8 +159,9 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
             },
           });
         }
+        var wide = item.type === 'str' || item.type === 'secret' || item.type === 'windows';
         return h('input', {
-          className: 'pg-input',
+          className: 'pg-input' + (wide ? ' pg-input-wide' : ''),
           type: item.type === 'int' || item.type === 'num' ? 'number' : item.type === 'secret' ? 'password' : 'text',
           value: draft,
           min: item.min === undefined ? undefined : item.min,
@@ -327,7 +346,19 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           })
         );
         if (!g.foldable) {
-          return wrap(h('section', { className: 'pg-card' }, h('div', { className: 'pg-card-title' }, g.name), rows));
+          return wrap(
+            h(
+              'section',
+              { className: 'pg-card' },
+              h(
+                'div',
+                { className: 'pg-card-head' },
+                h('div', { className: 'pg-card-title' }, g.name),
+                h('span', { className: 'pg-card-count' }, g.items.length + ' 项')
+              ),
+              rows
+            )
+          );
         }
         return wrap(
           h(
@@ -336,8 +367,9 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
             h(
               'summary',
               { className: 'pg-card-title pg-card-sum' },
-              h('span', null, g.name),
-              g.summary ? h('span', { className: 'pg-card-sub' }, g.summary) : null
+              h('span', { className: 'pg-card-sum-name' }, g.name),
+              g.summary ? h('span', { className: 'pg-card-sub' }, g.summary) : null,
+              h('span', { className: 'pg-card-count' }, g.items.length + ' 项')
             ),
             timing ? h('input', {
               className: 'pg-input pg-timing-search',
@@ -437,7 +469,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           cells.map(function (c) {
             return h(
               'div',
-              { className: 'pg-fact', key: c.k },
+              { className: 'pg-fact', key: c.k, title: c.v + (c.note ? ' — ' + c.note : '') },
               h('div', { className: 'pg-fact-k' }, c.k),
               h('div', { className: 'pg-fact-v' }, c.v),
               c.note ? h('div', { className: 'pg-fact-note' }, c.note) : null
@@ -474,6 +506,15 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         var [explorePending, setExplorePending] = useState(false);
         var [exploreResult, setExploreResult] = useState(null);
         var [showExplorationDetails, setShowExplorationDetails] = useState(false);
+        var [topicDraft, setTopicDraft] = useState('');
+        var [topicEditing, setTopicEditing] = useState(false);
+        var [liveBridge, setLiveBridge] = useState({});
+        var [rebindId, setRebindId] = useState('');
+        var [mergeOpen, setMergeOpen] = useState(false);
+        var [mergeTargetFile, setMergeTargetFile] = useState('');
+        var [mergePicked, setMergePicked] = useState({});
+        var [mergePreviewInfo, setMergePreviewInfo] = useState(null);
+        var [mergePreviewBusy, setMergePreviewBusy] = useState(false);
         var [loading, setLoading] = useState(true);
         var mounted = useRef(true);
         var toastTimer = useRef(null);
@@ -578,15 +619,24 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           [flash, load]
         );
 
+        useEffect(function () {
+          if (topicEditing) return;
+          var next = state && state.exploration && typeof state.exploration.nextTopic === 'string' ? state.exploration.nextTopic : '';
+          setTopicDraft(next);
+        }, [state, topicEditing]);
+
         function onExplore() {
           setExplorePending(true);
           setExploreResult(null);
-          apiPost('/explore').then(function (r) {
+          var topic = String(topicDraft || '').trim();
+          apiPost('/explore', topic ? { topic: topic } : {}).then(function (r) {
             if (!mounted.current) return;
             setState(r.state);
+            setTopicEditing(false);
             var labels = {
               NO_PERSONA: '请先配置角色人设',
-              QUIET_OR_BUSY: '当前是静默时段，本轮未运行',
+              QUIET_OR_BUSY: '当前是静默或忙碌时段，本轮未运行',
+              PEAK_HOURS: '当前为 DeepSeek 高峰时段，已按谷时开关跳过',
               DISABLED: '插件已关闭',
               UNAVAILABLE: '探索暂不可用，可能已有一轮在运行',
               HOST_LLM_MISSING: '宿主模型服务不可用',
@@ -603,6 +653,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
               : (labels[r.reason] || r.reason || '探索失败');
             setExploreResult({ text: message, error: !r.ok });
             if (r.ok && r.action !== 'skip') setShowExplorationDetails(true);
+            load(true);
           }).catch(function (e) {
             if (mounted.current) setExploreResult({ text: e.message || '探索请求失败', error: true });
           }).finally(function () {
@@ -610,61 +661,595 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           });
         }
 
+        useEffect(function () {
+          var list = state && Array.isArray(state.rollovers) ? state.rollovers : [];
+          if (!list.length) return;
+          var active = true;
+          Promise.all(list.map(function (r) {
+            return bridgeGet('/state?sessionId=' + encodeURIComponent(r.newSessionId))
+              .then(function (res) { return [r.newSessionId, Boolean(res && res.binding && res.binding.enabled !== false)]; })
+              .catch(function () { return null; });
+          })).then(function (entries) {
+            if (!active || !mounted.current) return;
+            setLiveBridge(function (prev) {
+              var next = Object.assign({}, prev);
+              entries.forEach(function (pair) {
+                if (pair) next[pair[0]] = pair[1];
+              });
+              return next;
+            });
+          });
+          return function () { active = false; };
+        }, [state]);
+
+        function onRebind(r) {
+          if (!r || !r.newSessionId) return;
+          setRebindId(r.newSessionId);
+          bridgeGet('/state?sessionId=' + encodeURIComponent(r.oldSessionId))
+            .catch(function () { return null; })
+            .then(function (oldState) {
+              var oldBinding = oldState && oldState.binding;
+              var disableOld = oldBinding && oldBinding.enabled !== false
+                ? bridgePost('/options', { sessionId: r.oldSessionId, enabled: false })
+                : Promise.resolve();
+              return disableOld.then(function () {
+                var peerId = r.peerId || (oldBinding && oldBinding.peerId) || '';
+                if (!peerId) throw new Error('缺少 QQ 对象 ID，请到 QQ 桥手动绑定');
+                return bridgePost('/bind', {
+                  sessionId: r.newSessionId,
+                  peerKind: r.peerKind || (oldBinding && oldBinding.peerKind) || 'private',
+                  peerId: peerId,
+                  peerName: r.peerName || (oldBinding && oldBinding.peerName) || undefined,
+                  mentionOnly: typeof r.mentionOnly === 'boolean' ? r.mentionOnly : Boolean(oldBinding && oldBinding.mentionOnly),
+                  authoritative: typeof r.authoritative === 'boolean' ? r.authoritative : Boolean(oldBinding && oldBinding.authoritative),
+                });
+              });
+            })
+            .then(function () {
+              if (!mounted.current) return;
+              setLiveBridge(function (prev) {
+                var next = Object.assign({}, prev);
+                next[r.newSessionId] = true;
+                return next;
+              });
+              flash('已切换 QQ 绑定到续聊会话 ' + r.newSessionId.slice(0, 8) + '，发一条消息即完成交接', 'ok');
+              load(true);
+            })
+            .catch(function (e) {
+              if (!mounted.current) return;
+              flash((e && e.message) || '重绑失败（请确认 QQ 桥插件已启用）', 'err');
+            })
+            .then(function () {
+              if (mounted.current) setRebindId('');
+            });
+        }
+
+        function onDismissRollover(r) {
+          if (!r || !r.oldSessionId) return;
+          setRebindId(r.oldSessionId);
+          apiPost('/rollover/dismiss', { oldSessionId: r.oldSessionId })
+            .then(function (res) {
+              if (!mounted.current) return;
+              if (res && res.state) setState(res.state);
+              flash('已忽略该续聊提醒', 'ok');
+            })
+            .catch(function (e) {
+              if (!mounted.current) return;
+              flash((e && e.message) || '操作失败', 'err');
+            })
+            .then(function () {
+              if (mounted.current) setRebindId('');
+            });
+        }
+
+        function onRepairEmotion() {
+          setBusy(true);
+          apiPost('/emotion/repair', {})
+            .then(function (res) {
+              if (!mounted.current) return;
+              if (res && res.state) setState(res.state);
+              var msg = res && res.ok
+                ? (res.changed ? '已对齐情绪插件：' + res.changes.join('；') : '情绪插件配置已是当前本机路径')
+                : ('未能自动修复：' + ((res && res.reason) || '未知原因'));
+              flash(msg, res && res.ok ? 'ok' : 'err');
+            })
+            .catch(function (e) {
+              if (!mounted.current) return;
+              flash((e && e.message) || '修复失败', 'err');
+            })
+            .then(function () {
+              if (mounted.current) setBusy(false);
+            });
+        }
+
+        function runMergePreview(targetFile, sourceFiles) {
+          if (!targetFile || !sourceFiles || !sourceFiles.length) {
+            setMergePreviewInfo(null);
+            return;
+          }
+          setMergePreviewBusy(true);
+          apiPost('/memory/merge', { targetFile: targetFile, sourceFiles: sourceFiles, dryRun: true })
+            .then(function (res) {
+              if (!mounted.current) return;
+              if (res && res.ok) setMergePreviewInfo({ target: res.target, added: res.added, skipped: res.skipped, count: sourceFiles.length });
+            })
+            .catch(function () {})
+            .then(function () {
+              if (mounted.current) setMergePreviewBusy(false);
+            });
+        }
+
+        function onMergeMemory(targetFile, sourceFiles) {
+          if (!sourceFiles || !sourceFiles.length) {
+            flash('请先勾选至少一个要并入的旧会话', 'err');
+            return;
+          }
+          setBusy(true);
+          apiPost('/memory/merge', { targetFile: targetFile || '', sourceFiles: sourceFiles })
+            .then(function (res) {
+              if (!mounted.current) return;
+              if (res && res.state) setState(res.state);
+              setMergePicked({});
+              setMergePreviewInfo(null);
+              var msg = res && res.ok
+                ? (res.added > 0
+                  ? '已将所选 ' + sourceFiles.length + ' 份会话中的 ' + res.added + ' 条新记忆并入工作区（跳过重复 ' + res.skipped + ' 条，已自动备份）'
+                  : '所选会话的记忆均已在目标工作区中（跳过重复 ' + res.skipped + ' 条）')
+                : ('并入失败：' + ((res && res.reason) || '未找到目标工作区文件'));
+              flash(msg, res && res.ok ? 'ok' : 'err');
+            })
+            .catch(function (e) {
+              if (!mounted.current) return;
+              flash((e && e.message) || '并入记忆失败', 'err');
+            })
+            .then(function () {
+              if (mounted.current) setBusy(false);
+            });
+        }
+
+        function onRestoreMemory(targetFile) {
+          setBusy(true);
+          apiPost('/memory/restore', { targetFile: targetFile || '' })
+            .then(function (res) {
+              if (!mounted.current) return;
+              if (res && res.state) setState(res.state);
+              setMergePreviewInfo(null);
+              var msg = res && res.ok
+                ? '已撤销上次并入，恢复工作区合并前备份（共 ' + res.totalRestored + ' 条）'
+                : ('无法撤销：' + ((res && res.reason === 'NO_BACKUP_FOUND') ? '该工作区没有合并前备份' : (res && res.reason) || '未知原因'));
+              flash(msg, res && res.ok ? 'ok' : 'err');
+            })
+            .catch(function (e) {
+              if (!mounted.current) return;
+              flash((e && e.message) || '撤销并入失败', 'err');
+            })
+            .then(function () {
+              if (mounted.current) setBusy(false);
+            });
+        }
+
         if (loading && !state) return h('div', { className: 'pg-root' }, h('div', { className: 'pg-loading' }, '读状态…'));
+        var rollovers = state && Array.isArray(state.rollovers) ? state.rollovers : [];
+        var emotion = state && state.emotion;
+        var memory = state && state.memory;
         var exploration = state && state.exploration;
         var exploring = explorePending || Boolean(exploration && exploration.running);
         var thread = exploration && exploration.thread;
         var leisure = exploration && exploration.leisure;
         function sourceLinks(entry) {
           return (entry && entry.sources || []).filter(function (s) { return /^https?:\/\//i.test(s.url); }).map(function (s) {
-            return h('div', { className: 'pg-quote-note', key: s.url },
-              s.evidence + ' · ', h('a', { href: s.url, target: '_blank', rel: 'noopener noreferrer' }, s.title));
+            return h('div', { className: 'pg-exp-item', key: s.url },
+              s.evidence + ' · ', h('a', { className: 'pg-link', href: s.url, target: '_blank', rel: 'noopener noreferrer' }, s.title));
           });
         }
+        function shortId(s) {
+          var str = String(s || '');
+          return str.length > 34 ? str.slice(0, 16) + '…' + str.slice(-14) : str;
+        }
+        function dayClock(ms) {
+          if (!ms) return '';
+          var d = new Date(ms);
+          if (isNaN(d.getTime())) return '';
+          var mm = String(d.getMonth() + 1).padStart(2, '0');
+          var dd = String(d.getDate()).padStart(2, '0');
+          return mm + '/' + dd + ' ' + clockOf(ms);
+        }
+        function decodeWsSlug(name) {
+          var raw = String(name || '').replace(/\.json$/, '').replace(/^ws_--/, '').replace(/--$/, '');
+          raw = raw.replace(/_([0-9a-fA-F]{4})/g, function (_, hex) {
+            return String.fromCharCode(parseInt(hex, 16));
+          }).replace(/-_dsh/g, '-.dsh');
+          raw = raw.replace(/^[A-Za-z]-Users-[^-]+-/, '');
+          return raw || String(name || '');
+        }
+        function memDisplay(name) {
+          var s = String(name || '');
+          if (s.indexOf('ws_') === 0) {
+            var dec = decodeWsSlug(s);
+            return '工作区 ' + (dec.length > 28 ? '…' + dec.slice(-26) : dec);
+          }
+          if (s.indexOf('session-') === 0) {
+            var sid = s.replace(/\.json$/, '').replace(/^session-/, '');
+            return '旧会话 ' + sid.slice(0, 8);
+          }
+          return shortId(s);
+        }
+        var hasModules = Boolean((emotion && emotion.installed) || (memory && memory.enabled && memory.files && memory.files.length) || rollovers.length || exploration);
 
         return h(
           'div',
           { className: 'pg-root' },
           state ? h(Head, { state: state, busy: busy, onRefresh: function () { load(false); }, onTick: onTick }) : null,
+          toast
+            ? h('div', { className: 'pg-toast pg-toast-sticky' + (toast.kind === 'err' ? ' pg-toast-err' : ' pg-toast-ok'), role: 'status' },
+                h('span', { className: 'pg-toast-text' }, toast.text),
+                h('button', {
+                  type: 'button',
+                  className: 'pg-toast-close',
+                  'aria-label': '关闭提示',
+                  onClick: function () { setToast(null); },
+                }, '×'))
+            : null,
           error ? h('div', { className: 'pg-error' }, '取不到状态：' + error) : null,
           state ? h(Facts, { state: state }) : null,
           state ? h(LastWords, { state: state }) : null,
-          exploration ? h('div', { className: 'pg-quote' },
-            h('div', { className: 'pg-quote-k' }, '自主探索（试用）'),
-            exploration.lastRun ? h('div', { className: 'pg-quote-note' },
-              (exploration.lastRun.mode === 'leisure' ? '休闲' : '研究') + ' · ' + exploration.lastRun.outcome +
-              (exploration.lastRun.calls?.length ? ' · ' + exploration.lastRun.calls.join(' → ') : ' · 文字探索')) : null,
-            exploration.candidate?.loginSite ? h('div', { className: 'pg-quote-note' },
-              '待登录 · ', h('a', { href: exploration.candidate.source.url, target: '_blank', rel: 'noopener noreferrer' }, exploration.candidate.loginSite),
-              '。请在网站页面完成登录；公开网页工具可能仍无法读取登录后的页面。') : null,
-            h('div', { className: 'pg-quote-note' }, '遇到待确认的本地事实，可在「日常 → 最近对什么好奇」补充你知道的信息，保存后点「试跑一轮」。当前版本需要在这里补充。'),
-            thread || leisure ? h('details', {
-              open: showExplorationDetails,
-              onToggle: function (event) { setShowExplorationDetails(event.currentTarget.open); }
-            },
-              h('summary', null, '最近的探索进展'),
-              ...[thread, leisure].filter(Boolean).flatMap(function (entry, index) {
-                var prefix = entry === leisure ? '休闲' : '研究';
-                return [['进度', entry.checkpoint], ['新发现', entry.discovery], ['待确认', entry.waitingFor]]
-                  .filter(function (item) { return item[1]; }).map(function (item) {
-                    return h('div', { key: index + item[0], className: 'pg-quote-note' }, prefix + ' · ' + item[0] + '：' + item[1]);
-                  });
-              }),
-              thread ? h('div', { className: 'pg-quote-v' }, thread.topic + '：' + thread.progress) : null,
-              thread ? h('div', { className: 'pg-quote-note' }, '下一步：' + thread.next) : null,
-              ...sourceLinks(thread),
-              leisure ? h('div', { className: 'pg-quote-v' }, '随便逛逛 · ' + leisure.topic + '：' + leisure.progress) : null,
-              ...sourceLinks(leisure),
-              exploration.candidate ? h('div', { className: 'pg-quote-note' }, '可分享：' + exploration.candidate.line) : null,
-              exploration.mood ? h('div', { className: 'pg-quote-note' }, '探索感受：' + exploration.mood.text) : null
-            ) : null,
-            h('button', { className: 'pg-btn', type: 'button', disabled: busy || exploring || !state.enabled, onClick: onExplore },
-              exploring ? '探索进行中…' : '试跑一轮（不发送）'),
-            exploreResult ? h('div', { role: 'status', className: 'pg-toast' + (exploreResult.error ? ' pg-toast-err' : '') }, exploreResult.text) : null
+          hasModules ? h('div', { className: 'pg-sec-label' }, '联动模块与状态') : null,
+          emotion && emotion.installed ? h('div', { className: 'pg-card' },
+            h('div', { className: 'pg-card-head' },
+              h('div', { className: 'pg-card-title' }, '情绪状态（emotion-state-portrait' + (emotion.version ? ' v' + emotion.version : '') + '）'),
+              emotion.needsRepair
+                ? h('span', { className: 'pg-badge pg-badge-dry' }, '需对齐本机')
+                : h('span', { className: 'pg-badge pg-badge-live' }, '已对齐本机')
+            ),
+            h('div', { className: 'pg-rows' },
+              h('div', { className: 'pg-row' },
+                h('div', { className: 'pg-row-text' },
+                  h('div', { className: 'pg-row-label' },
+                    emotion.live
+                      ? ('心情 ' + (emotion.live.mood && emotion.live.mood.length ? emotion.live.mood.join(' · ') : '平静') +
+                          ' · 精神 ' + emotion.live.spirit + '/100' +
+                          (emotion.live.statusWord ? '（' + emotion.live.statusWord + '）' : '') +
+                          (emotion.live.transition ? ' · 跃迁 ' + emotion.live.transition : '') +
+                          ' · 画像 ' + emotion.live.portraitCount + ' 人')
+                      : (emotion.stateExists === false
+                          ? '已安装情绪插件 · 暂无 state.json（等待首轮打分或发条 QQ 私聊后自动生成）'
+                          : (emotion.note || '已安装'))
+                  ),
+                  h('div', { className: 'pg-row-hint' },
+                    emotion.needsRepair && emotion.issues && emotion.issues.length
+                      ? '检测到遗留或无效配置：' + emotion.issues.join('；')
+                      : ('自动随 QQ 私聊、指令与探索更新 inbox.jsonl' +
+                          (emotion.live && emotion.live.updatedAt ? ' · 最近更新 ' + clockOf(new Date(emotion.live.updatedAt).toISOString()) : '') +
+                          (emotion.inboxBytes ? ' · inbox ' + Math.max(1, Math.round(emotion.inboxBytes / 1024)) + ' KB' : ''))
+                  )
+                ),
+                h('div', { className: 'pg-row-ctl' },
+                  h('button', {
+                    className: 'pg-btn' + (emotion.needsRepair ? ' pg-btn-primary' : ''),
+                    type: 'button',
+                    disabled: busy,
+                    onClick: onRepairEmotion,
+                  }, emotion.needsRepair ? '一键修复本机配置' : '重新对齐配置')
+                )
+              )
+            )
           ) : null,
-          toast
-            ? h('div', { className: 'pg-toast' + (toast.kind === 'err' ? ' pg-toast-err' : '') }, toast.text)
-            : null,
+          memory && memory.enabled && memory.files && memory.files.length ? (function () {
+            var sVal = memory.sessionSetting || '';
+            var nonEmpty = memory.files.filter(function (f) { return f.count > 0; });
+            var wsFiles = memory.files.filter(function (f) { return f.kind === 'workspace'; });
+            var sessFiles = nonEmpty.filter(function (f) { return f.kind === 'session'; });
+            var known = sVal === '' || sVal === 'all' || nonEmpty.some(function (f) { return f.id === sVal; });
+            var activeTarget = mergeTargetFile && wsFiles.some(function (f) { return f.name === mergeTargetFile; })
+              ? mergeTargetFile
+              : (memory.mergeTarget || (wsFiles[0] && wsFiles[0].name) || '');
+            var activeTargetObj = wsFiles.find(function (f) { return f.name === activeTarget; }) || null;
+            var pickedNames = sessFiles.filter(function (f) { return mergePicked[f.name]; }).map(function (f) { return f.name; });
+            var anyBackup = wsFiles.some(function (f) { return f.hasBackup; });
+            var fullActive = memory.active && memory.active.files && memory.active.files.length ? memory.active.files.join(' + ') : '';
+            var readableActive = memory.active && memory.active.files && memory.active.files.length
+              ? memory.active.files.map(memDisplay).join(' + ')
+              : '';
+            var toggleAllSessions = function (checkAll) {
+              var next = {};
+              if (checkAll) sessFiles.forEach(function (f) { next[f.name] = true; });
+              setMergePicked(next);
+              runMergePreview(activeTarget, checkAll ? sessFiles.map(function (f) { return f.name; }) : []);
+            };
+            var toggleOneSession = function (fname) {
+              var next = Object.assign({}, mergePicked);
+              next[fname] = !next[fname];
+              setMergePicked(next);
+              var list = sessFiles.filter(function (f) { return next[f.name]; }).map(function (f) { return f.name; });
+              runMergePreview(activeTarget, list);
+            };
+            var readBadge = sVal === 'all' ? '全部只读汇总' : sVal ? '指定文件' : '自动';
+            return h('div', { className: 'pg-card' },
+              h('div', { className: 'pg-card-head' },
+                h('div', { className: 'pg-card-title' }, '长期记忆（' + (memory.plugin || 'fish-memory') + ' · 共 ' + memory.files.length + ' 份）'),
+                h('span', { className: 'pg-badge ' + (sVal && sVal !== 'all' ? 'pg-badge-dry' : 'pg-badge-live') }, readBadge)
+              ),
+              h('div', { className: 'pg-rows' },
+                h('div', { className: 'pg-row' },
+                  h('div', { className: 'pg-row-text' },
+                    h('div', { className: 'pg-row-label', title: fullActive || undefined },
+                      readableActive
+                        ? ('平时读取：' + readableActive + '（本轮带 ' + memory.active.count + ' 条）')
+                        : '当前未命中有效记忆文件'
+                    ),
+                    h('div', { className: 'pg-row-hint' },
+                      '这里只决定写消息时看哪几份文件，不会改动磁盘。工作区（ws_*）按目录跨对话共享；旧会话（session-*）是早期的单次对话记录。'
+                    )
+                  ),
+                  h('div', { className: 'pg-row-ctl' },
+                    h('select', {
+                      className: 'pg-input pg-select',
+                      value: sVal,
+                      title: sVal || '自动：当前工作区 + 最新旧会话',
+                      disabled: busy,
+                      onChange: function (e) { onSave('sources.memory.session', e.target.value); },
+                    },
+                      h('option', { value: '' }, '自动（推荐）：工作区 + 最新会话'),
+                      h('option', { value: 'all' }, '全部只读汇总（不改磁盘文件）'),
+                      !known ? h('option', { value: sVal }, '前缀锁定：' + memDisplay(sVal)) : null,
+                      nonEmpty.map(function (f) {
+                        var when = f.mtime ? ' · ' + dayClock(f.mtime) : '';
+                        return h('option', { key: f.name, value: f.id, title: f.name + (f.sample && f.sample.length ? '\n' + f.sample.join(' / ') : '') },
+                          memDisplay(f.name) + '（' + f.count + '条' + (f.kind === 'session' ? when : '') + '）');
+                      })
+                    )
+                  )
+                ),
+                wsFiles.length && (sessFiles.length > 0 || anyBackup) ? h('div', { className: 'pg-row' },
+                  h('div', { className: 'pg-row-text' },
+                    h('div', { className: 'pg-row-label' }, '整理历史会话到工作区（可选）'),
+                    h('div', { className: 'pg-row-hint' },
+                      '如果想让以前旧会话里的长期设定也沉淀到某个工作区里，点右侧展开挑选要并入哪些会话，不会立刻写入。' +
+                      (anyBackup ? '（检测到上次并入前备份，可点右侧展开撤销还原）' : '')
+                    )
+                  ),
+                  h('div', { className: 'pg-row-ctl' },
+                    h('button', {
+                      className: 'pg-btn',
+                      type: 'button',
+                      disabled: busy,
+                      onClick: function () {
+                        var nextOpen = !mergeOpen;
+                        setMergeOpen(nextOpen);
+                        if (nextOpen && !mergeTargetFile && activeTarget) setMergeTargetFile(activeTarget);
+                      },
+                    }, mergeOpen ? '收起整理面板' : '挑选会话并入…')
+                  )
+                ) : null,
+                mergeOpen && wsFiles.length ? h('div', { className: 'pg-merge-box' },
+                  h('div', { className: 'pg-merge-bar' },
+                    h('span', { className: 'pg-merge-bar-label' }, '1. 并入哪个工作区：'),
+                    h('select', {
+                      className: 'pg-input pg-select',
+                      value: activeTarget,
+                      disabled: busy,
+                      onChange: function (e) {
+                        var nextT = e.target.value;
+                        setMergeTargetFile(nextT);
+                        runMergePreview(nextT, pickedNames);
+                      },
+                    }, wsFiles.map(function (w) {
+                      return h('option', { key: w.name, value: w.name, title: w.name },
+                        memDisplay(w.name) + '（现有 ' + w.count + ' 条）');
+                    })),
+                    activeTargetObj && activeTargetObj.hasBackup ? h('button', {
+                      type: 'button',
+                      className: 'pg-btn',
+                      disabled: busy,
+                      title: '把该工作区文件恢复到最近一次并入前的状态',
+                      onClick: function () { onRestoreMemory(activeTargetObj.name); },
+                    }, '撤销上次并入') : null
+                  ),
+                  sessFiles.length ? h('div', { className: 'pg-merge-bar' },
+                    h('span', { className: 'pg-merge-bar-label' },
+                      '2. 勾选要并入的旧会话（已选 ' + pickedNames.length + '/' + sessFiles.length + ' 份）：'
+                    ),
+                    h('div', { className: 'pg-merge-quick' },
+                      h('button', { type: 'button', className: 'pg-link-btn', disabled: busy, onClick: function () { toggleAllSessions(true); } }, '全选'),
+                      h('button', { type: 'button', className: 'pg-link-btn', disabled: busy || !pickedNames.length, onClick: function () { toggleAllSessions(false); } }, '清空')
+                    )
+                  ) : null,
+                  sessFiles.length ? h('div', { className: 'pg-merge-list' },
+                    sessFiles.map(function (f) {
+                      var checked = Boolean(mergePicked[f.name]);
+                      var sampleText = f.sample && f.sample.length ? f.sample.join('；') : '暂无可预览文本';
+                      return h('label', { key: f.name, className: 'pg-merge-item' + (checked ? ' pg-merge-item-on' : ''), title: f.name },
+                        h('input', {
+                          type: 'checkbox',
+                          checked: checked,
+                          disabled: busy,
+                          onChange: function () { toggleOneSession(f.name); },
+                        }),
+                        h('div', { className: 'pg-merge-item-body' },
+                          h('div', { className: 'pg-merge-meta' },
+                            h('strong', null, memDisplay(f.name)),
+                            h('span', { className: 'pg-badge' }, f.count + ' 条' + (f.stableCount ? ' · 含设定 ' + f.stableCount : '')),
+                            f.mtime ? h('span', { className: 'pg-merge-time' }, dayClock(f.mtime)) : null
+                          ),
+                          h('div', { className: 'pg-merge-sample' }, '内容摘录：' + sampleText)
+                        )
+                      );
+                    })
+                  ) : h('div', { className: 'pg-row-hint' }, '当前没有非空的历史 session-*.json 文件。'),
+                  h('div', { className: 'pg-merge-foot' },
+                    h('div', { className: 'pg-row-hint' },
+                      pickedNames.length === 0
+                        ? '请勾选上面想并入的旧会话；只新增去重条目，原会话文件保留不删，写入前自动备份。'
+                        : mergePreviewBusy
+                          ? '正在统计预计新增条目…'
+                          : (mergePreviewInfo && mergePreviewInfo.target === activeTarget
+                            ? (mergePreviewInfo.added > 0
+                              ? '预览：将新增 ' + mergePreviewInfo.added + ' 条到「' + memDisplay(activeTarget) + '」，跳过重复/已删 ' + mergePreviewInfo.skipped + ' 条'
+                              : '所选 ' + pickedNames.length + ' 份会话内容均已在目标工作区中（无需重复写入）')
+                            : '已选 ' + pickedNames.length + ' 份会话')
+                    ),
+                    h('div', { className: 'pg-row-ctl pg-row-ctl-wrap' },
+                      h('button', {
+                        type: 'button',
+                        className: 'pg-btn pg-btn-primary',
+                        disabled: busy || mergePreviewBusy || pickedNames.length === 0 || (mergePreviewInfo && mergePreviewInfo.target === activeTarget && mergePreviewInfo.added === 0),
+                        onClick: function () { onMergeMemory(activeTarget, pickedNames); },
+                      }, '确认并入（' + pickedNames.length + ' 份）'),
+                      h('button', {
+                        type: 'button',
+                        className: 'pg-btn',
+                        disabled: busy,
+                        onClick: function () { setMergeOpen(false); },
+                      }, '取消')
+                    )
+                  )
+                ) : null
+              )
+            );
+          })() : null,
+          rollovers.length ? h('div', { className: 'pg-card' },
+            h('div', { className: 'pg-card-head' },
+              h('div', { className: 'pg-card-title' }, 'QQ 会话续聊'),
+              h('span', { className: 'pg-badge pg-badge-dry' }, '待切换 ' + rollovers.length)
+            ),
+            h('div', { className: 'pg-rows' }, rollovers.map(function (r) {
+              var switched = liveBridge[r.newSessionId] === true;
+              var working = rebindId === r.newSessionId || rebindId === r.oldSessionId;
+              var meta = [
+                '目标 ' + r.newSessionId.slice(0, 8),
+                '来自 ' + r.oldSessionId.slice(0, 8),
+                r.carryMessages ? '保留最近 ' + r.carryMessages + ' 条前情' : '空白上下文',
+                r.createdAt ? '创建于 ' + clockOf(r.createdAt) : '',
+              ].filter(Boolean).join(' · ');
+              var hint = switched
+                ? 'QQ 桥当前已绑定到该新会话，发一条 QQ 消息即可注入前情并完成切换'
+                : (r.diskBound
+                  ? '已写入磁盘等待重启生效；若不想重启 DSH，可点右侧立即切换当前连接'
+                  : '新会话已创建，点击右侧即可停用旧绑定并切到新会话');
+              return h('div', { className: 'pg-row', key: r.oldSessionId + '->' + r.newSessionId },
+                h('div', { className: 'pg-row-text' },
+                  h('div', { className: 'pg-row-label' },
+                    (r.peerName ? r.peerName + ' · ' : '') + meta,
+                    switched ? h('span', { className: 'pg-badge pg-badge-live', style: { marginLeft: '6px' } }, '已绑定待首条消息') : null
+                  ),
+                  h('div', { className: 'pg-row-hint' }, hint)
+                ),
+                h('div', { className: 'pg-row-ctl pg-row-ctl-wrap' },
+                  h('button', {
+                    className: 'pg-btn pg-btn-primary',
+                    type: 'button',
+                    disabled: working || switched,
+                    onClick: function () { onRebind(r); },
+                  }, working ? '切换中…' : (switched ? '已切换' : '立即重绑')),
+                  h('button', {
+                    className: 'pg-btn',
+                    type: 'button',
+                    disabled: working,
+                    onClick: function () { onDismissRollover(r); },
+                  }, '忽略')
+                )
+              );
+            }))
+          ) : null,
+          exploration ? h('div', { className: 'pg-card pg-exp-card' },
+            h('div', { className: 'pg-card-head' },
+              h('div', { className: 'pg-card-title' }, '自主探索'),
+              h('div', { className: 'pg-card-badges' },
+                exploration.peakStatus ? h('span', {
+                  className: 'pg-badge ' + (exploration.peakStatus.offPeak ? 'pg-badge-live' : 'pg-badge-dry'),
+                  title: '按 DeepSeek 官方峰谷说明（北京时间）与日历判定'
+                }, (exploration.peakStatus.offPeak ? '谷时 · ' : '高峰 · ') + exploration.peakStatus.label) : null,
+                exploration.offPeakOnly ? h('span', { className: 'pg-badge pg-badge-off' }, '仅谷时自动') : null,
+                exploring
+                  ? h('span', { className: 'pg-badge pg-badge-dry' }, '探索中')
+                  : exploration.lastRun
+                    ? h('span', { className: 'pg-badge pg-badge-live' }, (exploration.lastRun.mode === 'leisure' ? '休闲' : '研究') + ' · ' + exploration.lastRun.outcome)
+                    : h('span', { className: 'pg-badge pg-badge-off' }, '待试跑')
+              )
+            ),
+            h('div', { className: 'pg-exp-body' },
+              h('div', { className: 'pg-exp-topic' },
+                h('label', { className: 'pg-exp-topic-label', htmlFor: 'pg-next-topic' }, '近一轮探索主题'),
+                h('div', { className: 'pg-exp-topic-ctl' },
+                  h('input', {
+                    id: 'pg-next-topic',
+                    className: 'pg-input pg-exp-topic-input',
+                    type: 'text',
+                    maxLength: 120,
+                    disabled: busy || exploring,
+                    placeholder: '留空按「最近对什么好奇」自选；填好后优先围绕此题跑一轮',
+                    value: topicDraft,
+                    onFocus: function () { setTopicEditing(true); },
+                    onChange: function (e) { setTopicDraft(e.target.value); },
+                    onBlur: function () {
+                      setTopicEditing(false);
+                      var val = String(topicDraft || '').trim();
+                      if (val !== String(exploration.nextTopic || '').trim()) {
+                        onSave('exploration.nextTopic', val);
+                      }
+                    },
+                    onKeyDown: function (e) {
+                      if (e.key === 'Enter') e.target.blur();
+                    },
+                  }),
+                  String(topicDraft || '').trim() !== String(exploration.nextTopic || '').trim() ? h('button', {
+                    className: 'pg-btn',
+                    type: 'button',
+                    disabled: busy || exploring,
+                    onClick: function () {
+                      setTopicEditing(false);
+                      onSave('exploration.nextTopic', String(topicDraft || '').trim());
+                    },
+                  }, '保存主题') : null,
+                  (String(topicDraft || '').trim() || exploration.nextTopic) ? h('button', {
+                    className: 'pg-link-btn',
+                    type: 'button',
+                    disabled: busy || exploring,
+                    onClick: function () {
+                      setTopicEditing(false);
+                      setTopicDraft('');
+                      if (exploration.nextTopic) onSave('exploration.nextTopic', '');
+                    },
+                  }, '清空') : null
+                )
+              ),
+              exploration.lastRun ? h('div', { className: 'pg-row-hint' },
+                '最近路径：' + (exploration.lastRun.calls && exploration.lastRun.calls.length ? exploration.lastRun.calls.join(' → ') : '文字探索')) : null,
+              exploration.candidate && exploration.candidate.loginSite ? h('div', { className: 'pg-row-hint' },
+                '待登录 · ', h('a', { className: 'pg-link', href: exploration.candidate.source.url, target: '_blank', rel: 'noopener noreferrer' }, exploration.candidate.loginSite),
+                '。请在网站页面完成登录；公开网页工具可能仍无法读取登录后的页面。') : null,
+              h('div', { className: 'pg-row-hint' }, '临时指定题目填在上方「近一轮探索主题」（跑完非跳过轮会自动恢复自选）；长期追更作品/事实仍可在「日常 → 最近对什么好奇」补充。'),
+              thread || leisure ? h('details', {
+                className: 'pg-exp-details',
+                open: showExplorationDetails,
+                onToggle: function (event) { setShowExplorationDetails(event.currentTarget.open); }
+              },
+                h('summary', { className: 'pg-exp-sum' }, '最近的探索进展'),
+                h('div', { className: 'pg-exp-list' },
+                  [thread, leisure].filter(Boolean).flatMap(function (entry, index) {
+                    var prefix = entry === leisure ? '休闲' : '研究';
+                    return [['进度', entry.checkpoint], ['新发现', entry.discovery], ['待确认', entry.waitingFor]]
+                      .filter(function (item) { return item[1]; }).map(function (item) {
+                        return h('div', { key: index + item[0], className: 'pg-exp-item' }, prefix + ' · ' + item[0] + '：' + item[1]);
+                      });
+                  }),
+                  thread ? h('div', { className: 'pg-exp-highlight' }, thread.topic + '：' + thread.progress) : null,
+                  thread ? h('div', { className: 'pg-exp-item' }, '下一步：' + thread.next) : null,
+                  ...sourceLinks(thread),
+                  leisure ? h('div', { className: 'pg-exp-highlight' }, '随便逛逛 · ' + leisure.topic + '：' + leisure.progress) : null,
+                  ...sourceLinks(leisure),
+                  exploration.candidate ? h('div', { className: 'pg-exp-item' }, '可分享：' + exploration.candidate.line) : null,
+                  exploration.mood ? h('div', { className: 'pg-exp-item' }, '探索感受：' + exploration.mood.text) : null
+                )
+              ) : null,
+              h('div', { className: 'pg-exp-actions' },
+                h('button', { className: 'pg-btn', type: 'button', disabled: busy || exploring || !state.enabled, onClick: onExplore },
+                  exploring ? '探索进行中…' : '试跑一轮（不发送）')
+              ),
+              exploreResult ? h('div', { role: 'status', className: 'pg-toast' + (exploreResult.error ? ' pg-toast-err' : ' pg-toast-ok') }, exploreResult.text) : null
+            )
+          ) : null,
+          groups.length ? h('div', { className: 'pg-sec-label' }, '参数设置') : null,
           groups.map(function (g) {
             return h(Group, { key: g.name, group: g, busy: busy, onSave: onSave });
           }),
@@ -720,72 +1305,126 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         '--pg-warn:var(--dsw-alias-state-warn-primary,#8a6a2f);',
         '--pg-err:var(--dsw-alias-state-error-primary,#a83a2c);',
         'font-family:var(--dsw-font-family-sans,var(--dsw-font-family,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif));',
-        'color:var(--pg-fg);display:flex;flex-direction:column;gap:13px;padding:2px;box-sizing:border-box;max-width:100%;}',
-        '.pg-head{display:flex;align-items:flex-start;gap:14px;}',
+        'color:var(--pg-fg);display:flex;flex-direction:column;gap:14px;padding:4px 2px 10px;box-sizing:border-box;max-width:100%;}',
+        '.pg-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;padding:2px 2px 4px;}',
         '.pg-head-left{flex:1 1 auto;min-width:0;}',
-        '.pg-h1{font-size:15px;font-weight:650;letter-spacing:.2px;line-height:1.4;display:flex;align-items:center;gap:8px;flex-wrap:wrap;}',
+        '.pg-h1{font-size:15.5px;font-weight:650;letter-spacing:.2px;line-height:1.4;display:flex;align-items:center;gap:8px;flex-wrap:wrap;}',
         '.pg-sub{font-size:12.5px;color:var(--pg-muted);margin-top:5px;line-height:1.6;}',
-        '.pg-head-actions{display:flex;gap:8px;flex:0 0 auto;}',
-        '.pg-btn{font:inherit;font-size:12.5px;padding:6px 11px;border-radius:9px;border:1px solid var(--pg-line);background:var(--pg-bar);color:var(--pg-fg);cursor:pointer;white-space:nowrap;}',
-        '.pg-btn:hover:not(:disabled){background:var(--pg-hover);}',
-        '.pg-btn:disabled{opacity:.55;cursor:default;}',
+        '.pg-head-actions{display:flex;gap:8px;flex:0 0 auto;flex-wrap:wrap;}',
+        '.pg-btn{font:inherit;font-size:12.5px;font-weight:500;padding:6px 12px;border-radius:9px;border:1px solid var(--pg-line);background:var(--pg-bar);color:var(--pg-fg);cursor:pointer;white-space:nowrap;transition:background .15s,border-color .15s,transform .08s,opacity .15s;}',
+        '.pg-btn:hover:not(:disabled){background:var(--pg-hover);border-color:color-mix(in srgb,var(--pg-brand) 30%,var(--pg-line));}',
+        '.pg-btn:active:not(:disabled){transform:translateY(1px);}',
+        '.pg-btn:focus-visible{outline:2px solid color-mix(in srgb,var(--pg-brand) 45%,transparent);outline-offset:1px;}',
+        '.pg-btn:disabled{opacity:.5;cursor:default;}',
         '.pg-btn-primary{background:var(--pg-brand);color:var(--pg-brand-fg);border-color:transparent;}',
-        '.pg-badge{font-size:11.5px;font-weight:500;padding:2px 8px;border-radius:999px;border:1px solid var(--pg-line);background:var(--pg-bar);color:var(--pg-muted);}',
-        '.pg-badge-live{color:var(--pg-ok);border-color:color-mix(in srgb,var(--pg-ok) 40%,transparent);background:color-mix(in srgb,var(--pg-ok) 12%,transparent);}',
-        '.pg-badge-dry{color:var(--pg-warn);border-color:color-mix(in srgb,var(--pg-warn) 40%,transparent);background:color-mix(in srgb,var(--pg-warn) 12%,transparent);}',
+        '.pg-btn-primary:hover:not(:disabled){background:var(--pg-brand);opacity:.9;border-color:transparent;}',
+        '.pg-badge{font-size:11px;font-weight:550;padding:2px 8px;border-radius:999px;border:1px solid var(--pg-line);background:var(--pg-bar);color:var(--pg-muted);line-height:1.45;white-space:nowrap;}',
+        '.pg-badge-live{color:var(--pg-ok);border-color:color-mix(in srgb,var(--pg-ok) 38%,transparent);background:color-mix(in srgb,var(--pg-ok) 11%,transparent);}',
+        '.pg-badge-dry{color:var(--pg-warn);border-color:color-mix(in srgb,var(--pg-warn) 38%,transparent);background:color-mix(in srgb,var(--pg-warn) 11%,transparent);}',
         '.pg-badge-off{color:var(--pg-faint);}',
-        '.pg-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:9px;}',
-        '.pg-fact{background:var(--pg-bar);border:1px solid var(--pg-line-soft);border-radius:11px;padding:9px 11px;min-width:0;}',
-        '.pg-fact-k{font-size:11.5px;color:var(--pg-faint);}',
-        '.pg-fact-v{font-size:13px;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
-        '.pg-fact-note{font-size:11px;color:var(--pg-muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
-        '.pg-quote{background:var(--pg-field);border:1px solid var(--pg-line-soft);border-left:3px solid var(--pg-brand);border-radius:10px;padding:9px 12px;}',
-        '.pg-quote-k{font-size:11.5px;color:var(--pg-faint);}',
-        '.pg-quote-v{font-size:13px;line-height:1.6;margin-top:3px;}',
-        '.pg-quote-note{font-size:11.5px;color:var(--pg-muted);margin-top:3px;}',
-        '.pg-card{background:var(--pg-card);border:1px solid var(--pg-line-soft);border-radius:13px;padding:4px 13px 6px;}',
-        '.pg-card-title{font-size:11.5px;font-weight:600;letter-spacing:.4px;color:var(--pg-faint);padding:9px 0 3px;}',
-        '.pg-note{font-size:11.5px;line-height:1.65;color:var(--pg-muted);background:var(--pg-field);border:1px solid var(--pg-line-soft);border-left:3px solid #c98a2e;border-radius:9px;padding:8px 10px;margin:0 0 8px;}',
-        '.pg-card-sum{cursor:pointer;list-style:none;display:flex;align-items:baseline;gap:6px;padding:10px 0 8px;}',
+        '.pg-sec-label{font-size:11px;font-weight:650;letter-spacing:.6px;color:var(--pg-faint);display:flex;align-items:center;gap:10px;padding:4px 2px 0;}',
+        '.pg-sec-label::after{content:"";flex:1 1 auto;height:1px;background:var(--pg-line-soft);}',
+        '.pg-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(136px,1fr));gap:9px;}',
+        '.pg-fact{background:var(--pg-bar);border:1px solid var(--pg-line-soft);border-radius:11px;padding:10px 12px;min-width:0;transition:border-color .15s;}',
+        '.pg-fact:hover{border-color:var(--pg-line);}',
+        '.pg-fact-k{font-size:11px;font-weight:600;color:var(--pg-faint);letter-spacing:.3px;}',
+        '.pg-fact-v{font-size:13.5px;font-weight:550;font-variant-numeric:tabular-nums;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+        '.pg-fact-note{font-size:11px;color:var(--pg-muted);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+        '.pg-quote{background:var(--pg-field);border:1px solid var(--pg-line-soft);border-left:3px solid var(--pg-brand);border-radius:11px;padding:10px 13px;}',
+        '.pg-quote-k{font-size:11px;font-weight:600;color:var(--pg-faint);}',
+        '.pg-quote-v{font-size:13px;line-height:1.65;margin-top:4px;}',
+        '.pg-quote-note{font-size:11.5px;color:var(--pg-muted);margin-top:4px;}',
+        '.pg-card{background:var(--pg-card);border:1px solid var(--pg-line-soft);border-radius:13px;padding:4px 14px 6px;box-shadow:0 1px 2px rgba(0,0,0,.025);}',
+        '.pg-card-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0 6px;border-bottom:1px solid var(--pg-line-soft);flex-wrap:wrap;}',
+        '.pg-card-badges{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}',
+        '.pg-card-title{font-size:12px;font-weight:650;letter-spacing:.25px;color:var(--pg-muted);}',
+        '.pg-card-count{font-size:11px;font-weight:500;color:var(--pg-faint);white-space:nowrap;}',
+        '.pg-card-fold .pg-card-sum{padding:11px 0;margin:0;border-bottom:0;transition:color .15s;}',
+        '.pg-card-fold[open] .pg-card-sum{border-bottom:1px solid var(--pg-line-soft);padding-bottom:9px;}',
+        '.pg-card-sum{cursor:pointer;list-style:none;display:flex;align-items:center;gap:7px;}',
+        '.pg-card-sum:hover{color:var(--pg-fg);}',
         '.pg-card-sum::-webkit-details-marker{display:none;}',
-        '.pg-card-sum::before{content:"▸";font-size:10px;opacity:.75;}',
+        '.pg-card-sum::before{content:"▸";font-size:10px;opacity:.7;transition:transform .15s;flex:0 0 auto;}',
         '.pg-card-fold[open] .pg-card-sum::before{content:"▾";}',
-        '.pg-card-sub{font-size:11px;font-weight:400;letter-spacing:0;color:var(--pg-faint);opacity:.92;}',
+        '.pg-card-sum-name{flex:0 0 auto;}',
+        '.pg-card-sub{font-size:11px;font-weight:400;letter-spacing:0;color:var(--pg-faint);flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+        '.pg-note{font-size:11.5px;line-height:1.65;color:var(--pg-muted);background:var(--pg-field);border:1px solid var(--pg-line-soft);border-left:3px solid var(--pg-warn);border-radius:9px;padding:9px 11px;margin:0 0 8px;}',
         '.pg-rows{display:flex;flex-direction:column;}',
-        '.pg-timing-search{width:100%;margin:8px 0;}',
-        '.pg-row{display:flex;align-items:flex-start;gap:12px;padding:9px 0;border-bottom:1px solid var(--pg-line-soft);}',
+        '.pg-timing-search{width:100%;margin:9px 0 4px;text-align:left;padding:6px 10px;}',
+        '.pg-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:10px 0;border-bottom:1px solid var(--pg-line-soft);}',
         '.pg-row:last-child{border-bottom:0;}',
         '.pg-row-text{flex:1 1 auto;min-width:0;}',
-        '.pg-row-label{font-size:12.5px;line-height:1.5;}',
-        '.pg-row-hint{font-size:11.5px;color:var(--pg-muted);line-height:1.55;margin-top:2px;}',
-        '.pg-row-ctl{flex:0 0 auto;display:flex;align-items:center;min-height:24px;max-width:46%;}',
-        '.pg-input{font:inherit;font-size:12.5px;color:var(--pg-fg);background:var(--pg-field);border:1px solid var(--pg-line);border-radius:8px;padding:4px 8px;width:96px;box-sizing:border-box;text-align:right;}',
-        '.pg-input:focus{outline:none;border-color:var(--pg-brand);}',
-        '.pg-select{width:auto;min-width:132px;text-align:left;cursor:pointer;}',
-        '.pg-textarea{width:100%;min-height:110px;text-align:left;resize:vertical;line-height:1.55;padding:6px 8px;font-size:12.5px;}',
-        '.pg-row-wide{flex-wrap:wrap;}',
-        '.pg-row-wide .pg-row-ctl{flex:1 1 100%;max-width:100%;}',
-        '.pg-courses{width:100%;border:1px solid rgba(127,127,127,.28);border-radius:8px;padding:4px 8px;background:rgba(127,127,127,.06);}',
-        '.pg-courses-sum{cursor:pointer;font-size:12.5px;opacity:.85;list-style:none;}',
+        '.pg-row-label{font-size:12.5px;font-weight:500;line-height:1.5;overflow-wrap:anywhere;}',
+        '.pg-row-hint{font-size:11.5px;color:var(--pg-muted);line-height:1.55;margin-top:2px;overflow-wrap:anywhere;}',
+        '.pg-row-ctl{flex:0 0 auto;display:flex;align-items:center;justify-content:flex-end;min-height:26px;max-width:48%;}',
+        '.pg-row-ctl-wrap{gap:6px;flex-wrap:wrap;justify-content:flex-end;}',
+        '.pg-input{font:inherit;font-size:12.5px;color:var(--pg-fg);background:var(--pg-field);border:1px solid var(--pg-line);border-radius:8px;padding:5px 9px;width:96px;max-width:100%;box-sizing:border-box;text-align:right;transition:border-color .15s,box-shadow .15s;}',
+        '.pg-input-wide{width:210px;text-align:left;}',
+        '.pg-input:focus{outline:none;border-color:var(--pg-brand);box-shadow:0 0 0 2px color-mix(in srgb,var(--pg-brand) 16%,transparent);}',
+        '.pg-select{width:auto;min-width:140px;max-width:240px;text-align:left;cursor:pointer;text-overflow:ellipsis;}',
+        '.pg-textarea{width:100%;min-height:110px;text-align:left;resize:vertical;line-height:1.6;padding:7px 9px;font-size:12.5px;}',
+        '.pg-row-wide{flex-wrap:wrap;align-items:flex-start;}',
+        '.pg-row-wide .pg-row-ctl{flex:1 1 100%;max-width:100%;justify-content:flex-start;}',
+        '.pg-exp-card{padding-bottom:12px;}',
+        '.pg-exp-body{display:flex;flex-direction:column;gap:8px;padding-top:8px;}',
+        '.pg-exp-topic{display:flex;flex-direction:column;gap:5px;padding:8px 10px;border-radius:9px;background:var(--pg-field);border:1px solid var(--pg-line-soft);}',
+        '.pg-exp-topic-label{font-size:12px;font-weight:600;color:var(--pg-fg);}',
+        '.pg-exp-topic-ctl{display:flex;align-items:center;gap:7px;flex-wrap:wrap;}',
+        '.pg-exp-topic-input{flex:1 1 200px;width:auto;text-align:left;}',
+        '.pg-exp-details{border:1px solid var(--pg-line-soft);border-radius:9px;background:var(--pg-field);padding:6px 10px;}',
+        '.pg-exp-sum{cursor:pointer;font-size:12px;font-weight:550;color:var(--pg-muted);list-style:none;display:flex;align-items:center;gap:6px;}',
+        '.pg-exp-sum::-webkit-details-marker{display:none;}',
+        '.pg-exp-sum::before{content:"▸";font-size:10px;opacity:.75;}',
+        '.pg-exp-details[open] .pg-exp-sum::before{content:"▾";}',
+        '.pg-exp-list{display:flex;flex-direction:column;gap:5px;padding-top:8px;margin-top:6px;border-top:1px solid var(--pg-line-soft);}',
+        '.pg-exp-item{font-size:11.5px;color:var(--pg-muted);line-height:1.55;overflow-wrap:anywhere;}',
+        '.pg-exp-highlight{font-size:12.5px;color:var(--pg-fg);line-height:1.6;padding:4px 8px;background:var(--pg-card);border-radius:7px;border:1px solid var(--pg-line-soft);}',
+        '.pg-exp-actions{display:flex;align-items:center;gap:8px;padding-top:2px;}',
+        '.pg-link{color:var(--pg-brand);text-decoration:underline;text-underline-offset:2px;}',
+        '.pg-link-btn{font:inherit;font-size:11.5px;border:0;background:transparent;color:var(--pg-brand);cursor:pointer;padding:2px 4px;text-decoration:underline;text-underline-offset:2px;}',
+        '.pg-link-btn:disabled{opacity:.45;cursor:default;text-decoration:none;}',
+        '.pg-merge-box{margin:6px 0 8px;padding:10px 12px;border-radius:10px;border:1px solid var(--pg-line);background:var(--pg-field);display:flex;flex-direction:column;gap:9px;}',
+        '.pg-merge-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}',
+        '.pg-merge-bar-label{font-size:12px;font-weight:600;color:var(--pg-fg);}',
+        '.pg-merge-quick{display:flex;align-items:center;gap:6px;margin-left:auto;}',
+        '.pg-merge-list{display:flex;flex-direction:column;gap:6px;max-height:220px;overflow-y:auto;padding-right:2px;}',
+        '.pg-merge-item{display:flex;align-items:flex-start;gap:8px;padding:8px 10px;border-radius:8px;border:1px solid var(--pg-line-soft);background:var(--pg-card);cursor:pointer;transition:border-color .15s,background .15s;}',
+        '.pg-merge-item:hover{border-color:var(--pg-line);}',
+        '.pg-merge-item-on{border-color:color-mix(in srgb,var(--pg-brand) 45%,var(--pg-line));background:color-mix(in srgb,var(--pg-brand) 4%,var(--pg-card));}',
+        '.pg-merge-item input{margin-top:3px;flex:0 0 auto;accent-color:var(--pg-brand);}',
+        '.pg-merge-item-body{flex:1 1 auto;min-width:0;}',
+        '.pg-merge-meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px;}',
+        '.pg-merge-time{font-size:11px;color:var(--pg-faint);margin-left:auto;}',
+        '.pg-merge-sample{font-size:11.5px;color:var(--pg-muted);margin-top:3px;line-height:1.5;overflow-wrap:anywhere;}',
+        '.pg-merge-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding-top:4px;border-top:1px solid var(--pg-line-soft);}',
+        '.pg-courses{width:100%;border:1px solid var(--pg-line);border-radius:9px;padding:6px 10px;background:var(--pg-field);}',
+        '.pg-courses-sum{cursor:pointer;font-size:12.5px;opacity:.9;list-style:none;}',
         '.pg-courses-sum::-webkit-details-marker{display:none;}',
         '.pg-courses-sum::before{content:"▸ ";}',
         '.pg-courses[open] .pg-courses-sum::before{content:"▾ ";}',
-        '.pg-courses-list{display:flex;flex-direction:column;gap:4px;padding:6px 2px 4px;}',
-        '.pg-course-all{font-weight:600;border-bottom:1px solid rgba(127,127,127,.25);padding-bottom:5px;margin-bottom:1px;}',
-        '.pg-course{display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer;line-height:1.45;}',
-        '.pg-course input{flex:0 0 auto;}',
+        '.pg-courses-list{display:flex;flex-direction:column;gap:5px;padding:8px 2px 4px;}',
+        '.pg-course-all{font-weight:600;border-bottom:1px solid var(--pg-line-soft);padding-bottom:6px;margin-bottom:2px;}',
+        '.pg-course{display:flex;align-items:center;gap:7px;font-size:12.5px;cursor:pointer;line-height:1.45;}',
+        '.pg-course input{flex:0 0 auto;accent-color:var(--pg-brand);}',
         '.pg-switch{display:inline-flex;align-items:center;cursor:pointer;position:relative;}',
         '.pg-switch input{position:absolute;opacity:0;width:0;height:0;}',
-        '.pg-switch-track{width:34px;height:20px;border-radius:999px;background:var(--pg-line);display:inline-block;position:relative;transition:background .15s;}',
+        '.pg-switch-track{width:36px;height:20px;border-radius:999px;background:var(--pg-line);display:inline-block;position:relative;transition:background .15s;}',
         '.pg-switch-dot{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--pg-card);transition:transform .15s;box-shadow:0 1px 2px rgba(0,0,0,.18);}',
         '.pg-switch input:checked+.pg-switch-track{background:var(--pg-brand);}',
-        '.pg-switch input:checked+.pg-switch-track .pg-switch-dot{transform:translateX(14px);}',
+        '.pg-switch input:checked+.pg-switch-track .pg-switch-dot{transform:translateX(16px);}',
+        '.pg-switch input:focus-visible+.pg-switch-track{outline:2px solid color-mix(in srgb,var(--pg-brand) 45%,transparent);outline-offset:2px;}',
         '.pg-switch input:disabled+.pg-switch-track{opacity:.5;}',
-        '.pg-toast{font-size:12.5px;padding:9px 12px;border-radius:9px;border:1px solid var(--pg-line);background:var(--pg-bar);color:var(--pg-fg);}',
-        '.pg-toast-err{color:var(--pg-err);border-color:color-mix(in srgb,var(--pg-err) 35%,transparent);background:color-mix(in srgb,var(--pg-err) 10%,transparent);}',
+        '.pg-toast{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12.5px;padding:9px 12px;border-radius:10px;border:1px solid var(--pg-line);background:var(--pg-bar);color:var(--pg-fg);}',
+        '.pg-toast-sticky{position:sticky;top:6px;z-index:5;box-shadow:0 4px 12px rgba(0,0,0,.08);}',
+        '.pg-toast-ok{color:var(--pg-ok);border-color:color-mix(in srgb,var(--pg-ok) 35%,transparent);background:color-mix(in srgb,var(--pg-ok) 9%,var(--pg-card));}',
+        '.pg-toast-err{color:var(--pg-err);border-color:color-mix(in srgb,var(--pg-err) 35%,transparent);background:color-mix(in srgb,var(--pg-err) 9%,var(--pg-card));}',
+        '.pg-toast-text{flex:1 1 auto;min-width:0;overflow-wrap:anywhere;}',
+        '.pg-toast-close{flex:0 0 auto;border:0;background:transparent;color:inherit;font-size:16px;line-height:1;padding:0 4px;cursor:pointer;opacity:.7;}',
+        '.pg-toast-close:hover{opacity:1;}',
         '.pg-error{color:var(--pg-err);background:color-mix(in srgb,var(--pg-err) 10%,transparent);border:1px solid color-mix(in srgb,var(--pg-err) 35%,transparent);border-radius:10px;padding:10px 12px;font-size:12.5px;line-height:1.6;}',
         '.pg-loading{font-size:12.5px;color:var(--pg-muted);padding:18px 0;}',
-        '.pg-foot{font-size:11.5px;color:var(--pg-faint);line-height:1.6;padding:0 2px 4px;}',
+        '.pg-foot{font-size:11.5px;color:var(--pg-faint);line-height:1.6;padding:2px 4px 6px;}',
+        '@media (max-width:580px){.pg-head{flex-direction:column;align-items:stretch;}.pg-row{flex-direction:column;align-items:stretch;gap:8px;}.pg-row-ctl,.pg-row-ctl-wrap{max-width:100%;justify-content:flex-start;}.pg-input-wide,.pg-select{width:100%;max-width:100%;}}',
         '@supports not (color:var(--dsw-alias-label-primary)){.pg-root{--pg-fg:#241f18;--pg-muted:#6f6558;--pg-faint:#9a9084;--pg-card:#fffdf8;--pg-bar:#f6f2ea;--pg-field:#fbf8f2;--pg-line:#e0d7c8;--pg-line-soft:#ece5d8;--pg-hover:rgba(0,0,0,.05);--pg-brand:#241f18;--pg-brand-fg:#fffdf8;--pg-ok:#2f6b46;--pg-warn:#8a6a2f;--pg-err:#a83a2c}}',
       ].join('');
 

@@ -9,6 +9,7 @@ import { dshHome } from './detect.js';
 import { recentTurns } from './outbound.js';
 import { agoSec } from './time.js';
 import { loadPersona } from './persona.js';
+import { actionProposalCandidate } from './action-proposal.js';
 import { explorationProgress, explorationShare, loadExploration } from './explore.js';
 // 解析逻辑搬到 fishparse.js：fishmail.js 归档时也要用它，放这里会和 LATEST_PATH 形成循环依赖
 export { minsOf, parseFishSummary } from './fishparse.js';
@@ -240,11 +241,14 @@ export function buildContext({ cfg, now, st, ch, sys, tz }) {
     ...(() => {
       const mem = readSelfMemory(tz);
       const candidate = cfg?.exploration?.offerShare === true
-        ? explorationShare(exploration, persona, now, cfg?.exploration)
+        ? actionProposalCandidate({ cfg, peer: cfg?.channels?.qq?.peerId, now, state: exploration, persona }) ||
+          explorationShare(exploration, persona, now, cfg?.exploration)
         : null;
       const loginSent = candidate?.loginSite && st?.content?.explorationLoginNotices?.includes(candidate.loginSite);
       const discoverySent = candidate?.discoveryId && st?.content?.sharedExplorationIds?.includes(candidate.discoveryId);
-      const usable = candidate && !loginSent && !discoverySent && candidate.line.slice(0, 80) !== st?.content?.lastShareLine
+      const usable = candidate && !loginSent && !discoverySent && (candidate.actionRetry
+        ? candidate.at !== st?.content?.lastRetryProposalAt
+        : candidate.line.slice(0, 80) !== st?.content?.lastShareLine)
         ? { ...candidate, exploration: true }
         : mem?.items.find((x) => !x.private) || null;
       return { self: usable, selfItems: mem?.items || [], selfPath: mem?.path || null };

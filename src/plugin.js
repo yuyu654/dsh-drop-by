@@ -28,14 +28,24 @@ import { tick, tickQqContinuation, qqContinuationEnabled } from './engine.js';
 import { readBridgeDialogue } from './outbound.js';
 import { createQqContinuation } from './qq-continuation.js';
 import { inQuiet } from './schedule.js';
-import { busyNow, builtinYears } from './holidays.js';
+import { busyNow, builtinYears, deepseekPeakStatus, offPeakNow } from './holidays.js';
 import { calendarStatus, refreshCalendar } from './calendar.js';
 import { loadPersona } from './persona.js';
 import { exploreRound, explorationStatus, explorationMood, loadExploration, saveExploration } from './explore.js';
 import { makeHostLlm } from './hostllm.js';
 import { listForUi, applyChange, saveSecret } from './settings.js';
-import { detectSources } from './detect.js';
+import { detectSources, detectEmotionPortrait } from './detect.js';
+import { inspectEmotionPlugin, repairEmotionConfig, appendEmotionInbox, recordExplorationEmotion } from './emotion-sync.js';
+import { inspectMemory, mergeMemorySessions, restoreMemoryBackup } from './memorysource.js';
+import { updatePortraitMood } from './emotion-portrait.js';
 import { watchVideo } from './video-host.js';
+import { bindActionExecutor, isHandledActionMessage } from './action-proposal.js';
+import { sendQqText } from './qq-send.js';
+import { sendQQPrivate } from './send.js';
+import { createSessionRollover, pendingRollovers, dismissRollover } from './session-rollover.js';
+import { qqRolloverAdapter } from './qq-rollover-adapter.js';
+import { installQqPromptMerge, isBridgeManagedMessage } from './qq-debounce.js';
+import { executeQqCommand } from './qq-command.js';
 import { createExplorationMedia } from './explore-media.js';
 
 export const name = 'dsh-drop-by';
@@ -195,6 +205,8 @@ export function apply(ctx, config = {}) {
   let explorationToolsCtx = null;
   let lastExploreAttempt = 0;
   const continuation = createQqContinuation();
+  const rolloverFile = path.join(path.dirname(CONFIG_PATH), 'data', 'session-handoff.json');
+  const rolloverAdapter = qqRolloverAdapter();
   let ticks = 0;
   let lastAt = 0;
   let nextAt = 0;
@@ -268,22 +280,30 @@ export function apply(ctx, config = {}) {
     return base + (jitter ? Math.floor(Math.random() * jitter) : 0);
   }
 
-  async function runExploration(manual = false) {
+  async function runExploration(manual = false, retry = null, onRetryEvidence, requestedResearch, manualTopic = '') {
     if (disposed || opt.enabled === false || exploring) return { ok: false, reason: 'UNAVAILABLE' };
     const cfg = loadConfig();
     const now = Date.now();
     if (cfg.enabled === false || (!manual && cfg.exploration.auto !== true)) return { ok: false, reason: 'DISABLED' };
-    if (inQuiet(now, cfg.quietHours, cfg.timezone) || (!manual && busyNow(now, cfg))) {
+    if (!requestedResearch && (inQuiet(now, cfg.quietHours, cfg.timezone) || ((!manual || retry) && busyNow(now, cfg)))) {
       return { ok: false, reason: 'QUIET_OR_BUSY' };
+    }
+    if (!manual && !retry && !requestedResearch && cfg.exploration?.offPeakOnly === true && !offPeakNow(now, cfg)) {
+      return { ok: false, reason: 'PEAK_HOURS' };
     }
     const persona = loadPersona({ cfg });
     if (!persona.ok) return { ok: false, reason: 'NO_PERSONA' };
     const previous = loadExploration();
     const status = explorationStatus(previous, persona);
+    if (retry && (previous?.personaKey !== retry.personaKey || status.lastAt !== retry.roundAt ||
+        cfg.rules?.actionGate?.enabled !== true || cfg.exploration.web !== true)) return { ok: false, reason: 'STALE_RETRY' };
     const interval = Math.max(30, Number(cfg.exploration.intervalMinutes) || 180) * 60_000;
     if (!manual && now - Math.max(lastExploreAttempt, status.lastAt || 0) < interval) return { ok: false, reason: 'NOT_DUE' };
     const host = llmNow(cfg);
     if (!host.ready) return { ok: false, reason: host.reason || 'HOST_LLM_MISSING' };
+    const explicitTopic = String(manualTopic || '').trim();
+    const configuredTopic = String(cfg.exploration?.nextTopic || '').trim();
+    const focusTopic = requestedResearch ? '' : (explicitTopic || (!retry ? configuredTopic : ''));
     exploring = true;
     lastExploreAttempt = now;
     try {
@@ -292,14 +312,36 @@ export function apply(ctx, config = {}) {
         observeVideo: host.observeVideo,
         watchDouyin: (id) => watchVideo(id, { cfg, host, llm: host.generate, ctx: explorationToolsCtx || ctx }),
       });
-      const r = await exploreRound({ persona, previous, interest: cfg.exploration.interest, now, generate: host.generate,
-        includeMood: cfg.exploration.mood === true, media, leisureEvery: cfg.exploration.leisureEvery, timing: cfg.exploration });
+      const r = await exploreRound({ persona, previous, interest: cfg.exploration.interest, focusTopic, now, generate: host.generate,
+        includeMood: cfg.exploration.mood === true, media, leisureEvery: cfg.exploration.leisureEvery, timing: cfg.exploration, retry, onRetryEvidence, requestedResearch });
       const fresh = loadConfig();
       if (disposed || fresh.enabled === false || (!manual && fresh.exploration.auto !== true) ||
+          (retry && (fresh.rules?.actionGate?.enabled !== true || fresh.exploration.web !== true)) ||
+          (requestedResearch && fresh.rules?.qqCommands?.enabled !== true) ||
           loadPersona({ cfg: fresh }).text !== persona.text) return { ok: false, reason: 'CANCELLED' };
       if (!r.ok) return r;
       saveExploration(r.state);
-      return { ok: true, action: r.action, ...explorationStatus(r.state, persona) };
+      // 仅在「近一轮探索主题」确实在本轮产生非跳过结果后自动消费清空，避免用户误卡死未来探索。
+      if (focusTopic && r.action !== 'skip' && String(fresh.exploration?.nextTopic || '').trim() === focusTopic) {
+        saveConfig({ ...fresh, exploration: { ...fresh.exploration, nextTopic: '' } });
+      }
+      if (r.action !== 'skip') {
+        const explorationText = recordExplorationEmotion({ state: r.state, cfg: fresh });
+        if (explorationText && fresh.exploration?.portrait === true && fresh.channels?.qq?.peerId && host.ready) {
+          await updatePortraitMood({
+            cfg: fresh,
+            persona,
+            peer: fresh.channels.qq.peerId,
+            text: explorationText,
+            at: r.state.lastAt || now,
+            generate: host.generate,
+            exploration: r.state.mood?.text || '',
+            sourceLabel: '当前自主探索记录',
+          });
+        }
+      }
+      return { ok: true, action: r.action, ...explorationStatus(r.state, persona),
+        ...(retry ? { foundBody: r.state.lastRun?.sources?.some((source) => source.evidence === '网页正文') === true } : {}) };
     } catch (e) {
       log.warn(`自主探索失败：${String(e?.message || e).slice(0, 160)}`);
       return { ok: false, reason: 'EXPLORATION_ERROR' };
@@ -307,6 +349,25 @@ export function apply(ctx, config = {}) {
       exploring = false;
     }
   }
+
+  const releaseActionExecutor = opt.enabled === false ? () => {} : bindActionExecutor({
+    run: ({ params }, onRetryEvidence) => runExploration(true, params, onRetryEvidence),
+    command: (cmd, cfg) => executeQqCommand({
+      cmd, cfg,
+      media: cmd.type === 'explore_query' ? createExplorationMedia({
+        tools: serviceOf(explorationToolsCtx || ctx, 'tools'), web: cfg.exploration.web === true, timing: cfg.exploration,
+      }) : null,
+      explore: (request) => runExploration(true, null, null, request),
+      state: loadExploration, persona: () => loadPersona({ cfg }),
+    }),
+    async report({ peer, result, cfg, command }) {
+      const text = command ? result?.text || '这条任务没跑完，暂时没有结果。' : !result?.ok ? '这次换源没跑完，我先把这个坑留着。'
+        : result.foundBody ? '换了个站，正文找到了。'
+          : '换了来源找过，还是没拿到正文。';
+      const sent = await sendQqText({ to: peer, text, cfg, confirm: true, track: true });
+      if (!sent.ok || sent.dryRun) log.warn('任务结果没能发到 QQ。');
+    },
+  });
 
   function schedule(delayMs) {
     if (disposed) return;
@@ -334,7 +395,8 @@ export function apply(ctx, config = {}) {
           return;
         }
         const due = continuation.observe(readBridgeDialogue(), String(cfg.channels.qq.peerId), now, cfg.rules.qqTiming);
-        if (!due || running) return;
+        if (!due || running || isHandledActionMessage(due.incoming.peer, due.incoming.ts) ||
+            isBridgeManagedMessage(due.incoming.peer, due.incoming.ts, now, Number(cfg.rules?.qqTiming?.inFlightSec ?? 180) * 1000, true)) return;
         continuation.consume(due);
         const host = llmNow(cfg);
         if (!host.ready) return;
@@ -377,7 +439,11 @@ export function apply(ctx, config = {}) {
       exploration: (() => {
         const state = loadExploration();
         const persona = loadPersona({ cfg });
+        const peakStatus = deepseekPeakStatus(Date.now(), cfg);
         return { ...explorationStatus(state, persona), auto: cfg.exploration.auto, running: exploring,
+          offPeakOnly: cfg.exploration.offPeakOnly === true,
+          nextTopic: String(cfg.exploration?.nextTopic || ''),
+          peakStatus,
           mood: cfg.exploration.mood === true ? explorationMood(state, persona, Date.now(), cfg.exploration) : null };
       })(),
       today: {
@@ -405,6 +471,9 @@ export function apply(ctx, config = {}) {
         },
         detect: detectSources(cfg),
       },
+      emotion: { ...detectEmotionPortrait(), ...inspectEmotionPlugin({ cfg }) },
+      memory: inspectMemory({ cfg }),
+      rollovers: pendingRollovers(rolloverFile, rolloverAdapter),
     };
   }
 
@@ -509,7 +578,60 @@ export function apply(ctx, config = {}) {
                   return json(200, { ...r, state: snapshot() });
                 }
                 if (route === '/explore' && req.method === 'POST') {
-                  const r = await runExploration(true);
+                  let body = {};
+                  try {
+                    const raw = typeof req?.on === 'function' ? await readBody(req) : '';
+                    if (raw) body = JSON.parse(raw);
+                    else if (req?.body && typeof req.body === 'object') body = req.body;
+                  } catch {
+                    return json(400, { ok: false, error: '请求体不是 JSON' });
+                  }
+                  const manualTopic = typeof body?.topic === 'string' ? body.topic.trim() : '';
+                  const r = await runExploration(true, null, null, null, manualTopic);
+                  return json(200, { ...r, state: snapshot() });
+                }
+                if (route === '/rollover/dismiss' && req.method === 'POST') {
+                  let body = {};
+                  try {
+                    body = JSON.parse((await readBody(req)) || '{}');
+                  } catch {
+                    return json(400, { ok: false, error: '请求体不是 JSON' });
+                  }
+                  const oldSessionId = typeof body?.oldSessionId === 'string' ? body.oldSessionId.trim() : '';
+                  if (!oldSessionId) return json(400, { ok: false, error: '缺 oldSessionId' });
+                  const dismissed = dismissRollover(rolloverFile, oldSessionId);
+                  return json(200, { ok: true, dismissed, state: snapshot() });
+                }
+                if (route === '/emotion/repair' && req.method === 'POST') {
+                  const r = repairEmotionConfig({ cfg: loadConfig(), force: true });
+                  return json(200, { ...r, state: snapshot() });
+                }
+                if (route === '/memory/merge' && req.method === 'POST') {
+                  let body = {};
+                  try {
+                    const raw = await readBody(req);
+                    if (raw) body = JSON.parse(raw);
+                  } catch {
+                    return json(400, { ok: false, error: '请求体不是 JSON' });
+                  }
+                  const targetFile = typeof body?.targetFile === 'string' ? body.targetFile.trim() : '';
+                  const sourceFiles = Array.isArray(body?.sourceFiles)
+                    ? body.sourceFiles.map((s) => String(s || '').trim()).filter(Boolean)
+                    : null;
+                  const dryRun = body?.dryRun === true;
+                  const r = mergeMemorySessions({ cfg: loadConfig(), targetFile, sourceFiles, dryRun });
+                  return json(200, { ...r, state: snapshot() });
+                }
+                if (route === '/memory/restore' && req.method === 'POST') {
+                  let body = {};
+                  try {
+                    const raw = await readBody(req);
+                    if (raw) body = JSON.parse(raw);
+                  } catch {
+                    return json(400, { ok: false, error: '请求体不是 JSON' });
+                  }
+                  const targetFile = typeof body?.targetFile === 'string' ? body.targetFile.trim() : '';
+                  const r = restoreMemoryBackup({ cfg: loadConfig(), targetFile });
                   return json(200, { ...r, state: snapshot() });
                 }
                 return json(404, { ok: false, error: 'NOT_FOUND' });
@@ -656,7 +778,44 @@ export function apply(ctx, config = {}) {
             },
           }));
           if (typeof disposeCalendar === 'function') (c?.effect || ctx.effect)(() => disposeCalendar);
-          noteMount('tool: presence_status、presence_watch_video、presence_holiday_calendar 已挂上');
+          const disposeEmotionRepair = tools.register(spec({
+            name: 'presence_repair_emotion',
+            description: '查看 emotion-state-portrait 情绪插件在本机的状态，或把配置里遗留的作者路径、模型 Key 与 QQ 号一键对齐到当前机器。',
+            parameters: {
+              action: { type: 'string', enum: ['status', 'repair'], description: 'status=只查看（默认）；repair=自动修复本机配置' },
+            },
+            async execute(args) {
+              const cfg = loadConfig();
+              if (String(args?.action || 'status') === 'repair') return repairEmotionConfig({ cfg, force: true });
+              return inspectEmotionPlugin({ cfg });
+            },
+            output: {
+              schema: { type: 'object', additionalProperties: true },
+              render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+            },
+          }));
+          if (typeof disposeEmotionRepair === 'function') (c?.effect || ctx.effect)(() => disposeEmotionRepair);
+          const disposeMemoryMerge = tools.register(spec({
+            name: 'presence_memory_merge',
+            description: '查看 dsh-fish-memory 工作区/会话记忆文件，或按文本去重将历史 session-*.json 记忆只增不删地合并进默认工作区 ws_*.json（写入前自动备份）。',
+            parameters: {
+              action: { type: 'string', enum: ['status', 'merge'], description: 'status=只查看（默认）；merge=执行合并' },
+              targetFile: { type: 'string', description: '可选：指定目标 ws_*.json 文件名，留空取最近有记忆的工作区' },
+            },
+            async execute(args) {
+              const cfg = loadConfig();
+              if (String(args?.action || 'status') === 'merge') {
+                return mergeMemorySessions({ cfg, targetFile: String(args?.targetFile || '') });
+              }
+              return inspectMemory({ cfg });
+            },
+            output: {
+              schema: { type: 'object', additionalProperties: true },
+              render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+            },
+          }));
+          if (typeof disposeMemoryMerge === 'function') (c?.effect || ctx.effect)(() => disposeMemoryMerge);
+          noteMount('tool: presence_status、presence_watch_video、presence_holiday_calendar、presence_repair_emotion、presence_memory_merge 已挂上');
         } catch (e) {
           toolMounted = false;
           noteMount(`tool: 挂载失败 ${String(e?.message || e).slice(0, 160)}`);
@@ -667,12 +826,80 @@ export function apply(ctx, config = {}) {
     whenService(ctx, 'tools', mountTool, log);
   }
 
+  const releases = new Map();
+  let projectionsService, registryService;
+  if (opt.enabled !== false) {
+    whenService(ctx, 'sessionProjections', (c) => { projectionsService = serviceOf(c, 'sessionProjections'); }, log);
+    whenService(ctx, 'workspaceRegistry', (c) => { registryService = serviceOf(c, 'workspaceRegistry'); }, log);
+    whenService(ctx, 'sessionController', (c) => {
+      const controller = serviceOf(c, 'sessionController') || serviceOf(ctx, 'sessionController');
+      if (disposed || !controller || releases.has(controller)) return;
+      const rollover = createSessionRollover({
+        controller,
+        projections: () => projectionsService || serviceOf(ctx, 'sessionProjections'),
+        workspaceRegistry: () => registryService || serviceOf(ctx, 'workspaceRegistry'),
+        adapter: rolloverAdapter,
+        file: rolloverFile,
+        getConfig: loadConfig,
+        log,
+        async notify({ handoff, usage, prepared, displayTitle }) {
+          const cfg = loadConfig();
+          const to = cfg.channels?.qq?.peerId;
+          if (disposed || cfg.enabled === false || cfg.dryRun !== false || cfg.send?.enabled !== true || !to ||
+              cfg.sources?.qq?.enabled === false || cfg.channels?.qq?.enabled === false || cfg.channels?.qq?.send === false) return;
+          const { newSessionId, carryMessages, fallbackMessages } = handoff;
+          const percent = Math.round(usage.ratio * 1000) / 10;
+          const context = carryMessages ? `已备好 ${fallbackMessages.length} 条前情，切换时会更新到最近 ${carryMessages} 条` : '会从空白上下文开始';
+          const title = displayTitle ? `「${displayTitle}」` : '续聊会话';
+          const switching = prepared ? '方便时重启 DSH 自动切换，或在「陪伴」设置页点一下立即重绑'
+            : '方便时在「陪伴」设置页点一下立即重绑';
+          const sent = await sendQQPrivate({ to, dryRun: false, timeoutMs: cfg.send?.timeoutMs,
+            text: `当前会话上下文用了 ${percent}%（${usage.used}/${usage.limit}）。已建好${title}[${newSessionId.slice(0, 8)}]，${context}。这边还能聊，${switching}。` });
+          if (!sent.ok) log.warn('续聊提醒发送失败：' + sent.error);
+        },
+      });
+      const removePrompt = installQqPromptMerge(controller, rollover.prompt);
+      const lastAssistant = new Map();
+      const assistantText = (msg) => (Array.isArray(msg?.content) ? msg.content : [])
+        .map((p) => (p?.type === 'text' ? String(p.text || '') : '')).join('').trim();
+      const removeListener = ctx.on?.('session/event', (session, event) => {
+        if (disposed || !session?.id) return;
+        if (event?.type === 'assistant/message') {
+          const text = assistantText(event.data?.message);
+          if (text) lastAssistant.set(session.id, { turn: event.data?.turn, text });
+          return;
+        }
+        if (event?.type === 'turn/end') {
+          const cfg = loadConfig();
+          if (cfg.exploration?.portrait === true) {
+            const b = rolloverAdapter.bindingFor(session.id);
+            const last = lastAssistant.get(session.id);
+            if (b?.peerKind === 'private' && String(b.peerId) === String(cfg.channels?.qq?.peerId || '') &&
+                last?.text && (last.turn === undefined || last.turn === event.data?.turn)) {
+              lastAssistant.delete(session.id);
+              appendEmotionInbox({ user: b.peerId, role: 'ai', text: last.text, t: Date.now() });
+            }
+          }
+          return rollover.handleEvent(session, event).catch((error) => log.warn('续聊准备失败：' + error.message));
+        }
+      });
+      releases.set(controller, () => {
+        removePrompt();
+        if (typeof removeListener === 'function') removeListener();
+      });
+    }, log);
+  }
+
   // ---------------------------------------------------------------- 起钟
   const api = {
     snapshot,
     runOnce,
+    runExploration: () => runExploration(false),
     stop() {
       disposed = true;
+      releaseActionExecutor();
+      for (const release of releases.values()) release();
+      releases.clear();
       if (timer) clearTimeout(timer);
       if (continuationTimer) clearTimeout(continuationTimer);
       timer = null;
@@ -683,6 +910,10 @@ export function apply(ctx, config = {}) {
   // 跨年了、内置表还没覆盖到今年：启动时补一次日历接口（失败只记日志，不挡拍）。
   try {
     const c0 = loadConfig();
+    if (opt.enabled !== false) {
+      const synced = repairEmotionConfig({ cfg: c0, force: false });
+      if (synced.changed) log.info('情绪插件配置已按本机环境自动对齐：' + synced.changes.join('；'));
+    }
     const yr = new Date().getFullYear();
     if (c0?.calendar?.auto !== false && c0?.calendar?.url && !builtinYears().includes(yr)) {
       void refreshCalendar({ year: yr, url: c0.calendar.url, cfg: c0 })

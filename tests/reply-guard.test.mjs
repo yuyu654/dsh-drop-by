@@ -55,7 +55,8 @@ fs.utimesSync(out, outAt, outAt);
 
 fs.writeFileSync(cfgPath, JSON.stringify(baseCfg));
 
-const { tick } = await import('../src/engine.js');
+const { tick: engineTick } = await import('../src/engine.js');
+const tick = (options) => engineTick({ ...options, probeSystem: async () => ({ idle_ms: 0 }) });
 
 after(() => {
   fs.rmSync(home, { recursive: true, force: true });

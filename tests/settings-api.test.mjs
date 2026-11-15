@@ -31,6 +31,7 @@ fs.writeFileSync(
 process.env.PG_CONFIG_PATH = cfgPath;
 process.env.PG_STATE_PATH = path.join(tmp, 'state.json');
 process.env.PG_SECRETS_PATH = path.join(tmp, 'credentials.json');
+process.env.PG_DSH_HOME = path.join(tmp, 'dsh');
 
 // 环境变量必须在 import 之前设好（config.js 在模块加载时算路径）
 const { apply } = await import('../src/plugin.js');
@@ -192,6 +193,82 @@ test('设置口：读、写、拒绝、以及不碰真配置', async (t) => {
   // ---- 方法不对 → 404（不是 500）
   const wrongMethod = await call(route, { method: 'GET', url: '/api/dsh-drop-by/config2' });
   assert.equal(wrongMethod.status, 404);
+
+  // ---- 续聊交接列表与忽略接口
+  const initialState = await call(route, { method: 'GET', url: '/api/dsh-drop-by/state' });
+  assert.equal(initialState.status, 200);
+  assert.deepEqual(initialState.json.rollovers, []);
+
+  const dataDir = path.join(tmp, 'data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.writeFileSync(path.join(dataDir, 'session-handoff.json'), JSON.stringify({
+    'old-1': {
+      oldSessionId: 'old-1',
+      newSessionId: 'new-1',
+      peerKind: 'private',
+      peerId: '42',
+      carryMessages: 6,
+      triggeredAt: Date.now(),
+      injected: false,
+    },
+  }));
+  const withRollover = await call(route, { method: 'GET', url: '/api/dsh-drop-by/state' });
+  assert.equal(withRollover.json.rollovers.length, 1);
+  assert.equal(withRollover.json.rollovers[0].newSessionId, 'new-1');
+
+  const missingDismiss = await call(route, { method: 'POST', url: '/api/dsh-drop-by/rollover/dismiss', body: {} });
+  assert.equal(missingDismiss.status, 400);
+
+  const dismissed = await call(route, { method: 'POST', url: '/api/dsh-drop-by/rollover/dismiss', body: { oldSessionId: 'old-1' } });
+  assert.equal(dismissed.status, 200);
+  assert.equal(dismissed.json.ok, true);
+  assert.equal(dismissed.json.dismissed, true);
+  assert.deepEqual(dismissed.json.state.rollovers, []);
+
+  // ---- 情绪插件本地化修复接口（隔离在 tmp/dsh）
+  const dshDir = path.join(tmp, 'dsh');
+  const emDir = path.join(dshDir, 'profiles', 'desktop', 'node_modules', 'emotion-state-portrait', 'emotion');
+  fs.mkdirSync(emDir, { recursive: true });
+  fs.writeFileSync(path.join(path.dirname(emDir), 'package.json'), JSON.stringify({ name: 'emotion-state-portrait', version: '1.0.5' }));
+  fs.writeFileSync(path.join(path.dirname(emDir), 'qq-emotion.mjs'), 'export default {};');
+  fs.writeFileSync(path.join(dshDir, '.credentials.yaml'), 'refs:\n  DEEPSEEK_API_KEY: sk-tmp\n');
+  fs.writeFileSync(path.join(emDir, 'config.json'), JSON.stringify({
+    owner: { qq: '3425023826' },
+    llm: { keyFile: 'C:/Users/YangXinYuan/.dsh/.credentials.yaml', keyPattern: 'QWEN_TOKEN_PLAN_CN_API_KEY:\\s*(\\S+)' },
+    integration: { source: 'onebot', personaBlock: { enabled: false, file: 'C:/Users/YangXinYuan/.dsh/profiles/desktop/cordis.patch.yml' } },
+  }));
+  const repaired = await call(route, { method: 'POST', url: '/api/dsh-drop-by/emotion/repair', body: {} });
+  assert.equal(repaired.status, 200);
+  assert.equal(repaired.json.ok, true);
+  assert.equal(repaired.json.changed, true);
+  assert.equal(repaired.json.state.emotion.needsRepair, false);
+
+  // ---- 记忆巡检与历史会话并入工作区接口（隔离在 tmp/dsh/fish-memory）
+  const memDir = path.join(dshDir, 'fish-memory');
+  fs.mkdirSync(memDir, { recursive: true });
+  const tsIso = new Date().toISOString();
+  fs.writeFileSync(path.join(memDir, 'ws_--demo--.json'), JSON.stringify({ version: 2, memories: [{ id: 'w1', text: '工作区已有记忆', category: 'event', at: tsIso }], deleted: [] }));
+  fs.writeFileSync(path.join(memDir, 'session-abc.json'), JSON.stringify({ version: 2, memories: [{ id: 's1', text: '会话新增的一条记忆', category: 'stable_profile', at: tsIso }], deleted: [] }));
+  const previewRes = await call(route, { method: 'POST', url: '/api/dsh-drop-by/memory/merge', body: { dryRun: true } });
+  assert.equal(previewRes.status, 200);
+  assert.equal(previewRes.json.dryRun, true);
+  assert.equal(previewRes.json.added, 1);
+  assert.equal(previewRes.json.state.memory.files.find((f) => f.name === 'ws_--demo--.json')?.count, 1);
+
+  const memMerged = await call(route, { method: 'POST', url: '/api/dsh-drop-by/memory/merge', body: {} });
+  assert.equal(memMerged.status, 200);
+  assert.equal(memMerged.json.ok, true);
+  assert.equal(memMerged.json.added, 1);
+  assert.equal(memMerged.json.state.memory.defaultTarget, 'ws_--demo--.json');
+  assert.equal(memMerged.json.state.memory.files.find((f) => f.name === 'ws_--demo--.json')?.count, 2);
+  assert.equal(memMerged.json.state.memory.files.find((f) => f.name === 'ws_--demo--.json')?.hasBackup, true);
+
+  const memRestore = await call(route, { method: 'POST', url: '/api/dsh-drop-by/memory/restore', body: { targetFile: 'ws_--demo--.json' } });
+  assert.equal(memRestore.status, 200);
+  assert.equal(memRestore.json.ok, true);
+  assert.equal(memRestore.json.totalRestored, 1);
+  assert.equal(memRestore.json.state.memory.files.find((f) => f.name === 'ws_--demo--.json')?.count, 1);
+  assert.equal(memRestore.json.state.memory.files.find((f) => f.name === 'ws_--demo--.json')?.hasBackup, false);
 
   // ---- 真配置没被动过
   if (realHashBefore) {

@@ -31,7 +31,7 @@ import { outboundFor, answeredAlready, recentOutbound, douyinLastInbound, bridge
 import { settle, sweep, noteSent, adaptiveExtraMin } from "./feedback.js";
 import { generate as llmGenerate } from "./llm.js";
 import { compose, composeDraft } from "./compose.js";
-import { loadPersona } from "./persona.js";
+import { loadPersona, qqContinuationTone } from "./persona.js";
 import { buildSnapshot } from "./snapshot.js";
 import { shadowEligible, shadowRate, runShadow } from "./shadow.js";
 import { maybeWriteYesterdayReport } from "./report.js";
@@ -42,8 +42,11 @@ import { pickNoReply, judgeAway } from "./noreply.js";
 import { readSignals, signalFacts, needL3 } from "./signals.js";
 import { readMemory } from "./memorysource.js";
 import { runQqContinuation } from "./qq-continuation.js";
-import { explorationMood, loadExploration, styleApprovedDraft } from "./explore.js";
+import { explorationMood, loadExploration, styleApprovedDraft, toneOf } from "./explore.js";
 import { portraitMood } from "./emotion-portrait.js";
+import { readPortraitMoodMap } from "./emotion-sync.js";
+import { isBridgeManagedMessage } from './qq-debounce.js';
+import { isHandledActionMessage, prepareActionProposal, RETRY_QUESTION } from './action-proposal.js';
 import { publicExplorationUrl } from "./explore-media.js";
 import { projectQuestion, recordProjectQuestion, captureProjectAnswer, projectMemory, proactiveProjectBlock, writeProjectQuestion } from "./project-chat.js";
 
@@ -66,6 +69,18 @@ export function qqContinuationEnabled(cfg) {
     Boolean(cfg.channels?.qq?.peerId) && (cfg.dryRun !== false || cfg.send?.enabled === true);
 }
 
+function resolveMoodState({ cfg, persona, now }) {
+  const explored = cfg.exploration?.mood === true ? explorationMood(loadExploration(), persona, now, cfg.exploration) : null;
+  const portraitShort = portraitMood(cfg, persona, now);
+  const portraitFull = cfg.exploration?.portrait === true
+    ? readPortraitMoodMap({ peer: cfg.channels?.qq?.peerId, now })
+    : '';
+  const portrait = portraitFull
+    ? (portraitShort && !portraitFull.includes(portraitShort) ? `${portraitFull}；即时心情：${portraitShort}` : portraitFull)
+    : portraitShort;
+  return { explored, portrait };
+}
+
 export async function tickQqContinuation({ candidate, read, generate, active }) {
   const to = candidate.incoming.peer;
   const cfg = loadConfig();
@@ -83,8 +98,13 @@ export async function tickQqContinuation({ candidate, read, generate, active }) 
       (Number(bucket.todaySent) || 0) < (Number(fresh.rules.dailyCap) || 0);
   };
   if (!allowed()) return;
+  const persona = loadPersona({ cfg });
+  const { explored, portrait } = resolveMoodState({ cfg, persona, now: Date.now() });
+  const moodBits = [portrait, toneOf(explored?.text)].filter(Boolean).join('；');
+  const baseTone = qqContinuationTone(persona);
+  const tone = moodBits ? `${baseTone ? `${baseTone}；` : ''}当前心情参考（只调语气，不直念）：${moodBits}` : baseTone;
   const r = await runQqContinuation({
-    candidate, read, allowed, generate, cfg, persona: loadPersona({ cfg }).text,
+    candidate, read, allowed, generate, cfg, tone,
     async deliver(text) {
       const sent = dryRun ? null : await sendQQPrivate({ to, text, dryRun: false, timeoutMs: cfg.send?.timeoutMs });
       return { text, sent, reason: dryRun ? 'DRY_RUN' : sent.ok ? 'SEND' : 'SEND_FAILED' };
@@ -167,7 +187,7 @@ function settleBackfill(st, cfg, now, lastUserTs) {
 }
 
 export async function tick({
-  persist = true, generate: gen = null, llmReady = null, random = null, watchVideo = summarizeVideo,
+  persist = true, generate: gen = null, llmReady = null, random = null, watchVideo = summarizeVideo, probeSystem = probe,
 } = {}) {
   const cfg = loadConfig();
   const now = Date.now();
@@ -182,7 +202,7 @@ export async function tick({
   // 幂等，跑多少遍结果一样，删的是整文件，不会把正在写的那个删掉（它属于今天）。
   const pruned = pruneOldRecords(cfg, now, { tz });
 
-  const sys = await probe(false, cfg);
+  const sys = await probeSystem(false, cfg);
   const idleSec = typeof sys.idle_ms === 'number' && sys.idle_ms >= 0 ? Math.round(sys.idle_ms / 1000) : -1;
   const quiet = inQuiet(now, cfg.quietHours, tz);
   // 忙碌时段：只压「我先开口」，不压回复（她先说话就该回）
@@ -261,6 +281,15 @@ export async function tick({
     extraGapMin,
   });
 
+  const peer = cfg.channels?.qq?.peerId;
+  const bridgeReplyWindow = Number(cfg.rules?.qqTiming?.inFlightSec ?? 180) * 1000;
+  const bridgeOwnsReply = (at) => isHandledActionMessage(peer, at) ||
+    isBridgeManagedMessage(peer, at, Date.now(), bridgeReplyWindow);
+  if (d.track === 'reply' && ch.lastUserChannel === 'qq' && bridgeOwnsReply(ch.lastUserTs)) {
+    d.decision = 'skip';
+    d.reason = 'REPLY_ALREADY_ANSWERED';
+  }
+
   // —— 内容这一步：先问「有没有由头」，再问「写不写得出来」。
   //    任何一步失败都退回 skip，并且**不消耗当日配额**（见下面计数那块）。
   let ctx = null;
@@ -272,6 +301,7 @@ export async function tick({
   let signals = null;
   let memory = null;
   let verdict = null;
+  let actionProposal = null;
 
   if (d.decision === 'send') {
     const mode = String(cfg.content?.mode || 'auto');
@@ -480,15 +510,24 @@ export async function tick({
           topic = pickTopic(ctx, cfg, now, { ...st, skipSlots: [...(st.skipSlots || []), 'forward'] });
         }
       }
+      const moodEligible = d.track === 'proactive' && !['projectCheckIn', 'noReply', 'examSoon', 'examReview', 'agenda'].includes(topic?.slot);
+      const { explored, portrait } = moodEligible ? resolveMoodState({ cfg, persona, now }) : { explored: null, portrait: '' };
+      // 注：探索临时感受 explored 不进 judge（见 judge-engine.test），只在批准后润色语气；情绪插件持久化画像可作底色参考
+      const judgeMoodBits = portrait ? `画像状态：${portrait}` : '';
       // —— 阶段 2：规则允许开口之后，先让模型看一眼整份处境，自己决定说不说。
       //    开关默认关；关着这一整段不执行，行为与加它之前完全一样。
       //    模型说「不说」→ 记 NO_TOPIC（这是它的决定，不是没由头）；判断失败 → 退回规则链。
       const mediaShare = topic?.slot === 'share' ? topic.evidence?.source : null;
       if (cfg.rules?.judge?.enabled === true && d.decision === 'send' && topic?.slot !== 'projectCheckIn') {
         const snapshot = buildSnapshot({ ctx, topic, cfg, st, now, tz, coarseDesktop: d.track === 'proactive' });
-        const judgeInput = mediaShare
+        const baseJudgeInput = topic?.evidence?.actionRetry
+          ? snapshot + '\n这是一次真实的换源请示。若适合开口，draft 只用人设口吻问用户是否同意我换来源找这份正文，不要改成别的话题。'
+          : mediaShare
           ? snapshot + '\n这条附有固定来源。如果想聊别的事就选择不发。批准时只写这条内容为什么值得分享，严格按来源类型表述，正文不写网址。'
           : snapshot;
+        const judgeInput = judgeMoodBits
+          ? `${baseJudgeInput}\n当前心情底色（仅作语气参考，不得当作单独开口由头或直接念出）：${judgeMoodBits}`
+          : baseJudgeInput;
         verdict = await judgeDecision({ snapshot: judgeInput, persona, cfg, generate: gen || llmGenerate, llmReady });
         // state 只存结论，不存快照（快照几百字，state 每拍落盘）
         st.judge = {
@@ -516,19 +555,29 @@ export async function tick({
       }
       // 被防重复拦下时 topic 已经置空、判定改成 skip，这里就不要再叫模型了。
       if (d.decision === 'send') {
-        const moodEligible = d.track === 'proactive' && !['projectCheckIn', 'noReply', 'examSoon', 'examReview', 'agenda'].includes(topic?.slot);
-        const explored = moodEligible && cfg.exploration?.mood === true ? explorationMood(loadExploration(), persona, now, cfg.exploration)?.text : '';
-        const portrait = moodEligible ? portraitMood(cfg, persona) : '';
-        const feeling = [explored, portrait].filter(Boolean).join('；');
-        const toneCtx = feeling ? { ...ctx, explorationMood: { text: feeling } } : ctx;
+        // 画像心情（已由情绪插件脱敏）与探索原话（需过 toneOf 去术语）分开传，避免 Lv1 等被误删
+        const toneCtx = (explored?.text || portrait)
+          ? {
+              ...ctx,
+              ...(explored?.text ? { explorationMood: explored } : {}),
+              ...(portrait ? { portraitMood: portrait } : {}),
+            }
+          : ctx;
         // judge 说「说」→ 用它写好的草稿，只过 clean + guard；说不了或不发就退规则链。
+        const proposalDraft = topic?.evidence?.actionRetry && verdict?.ok && verdict.say
+          ? composeDraft({ ctx, draft: verdict.draft, cfg, topic }) : null;
         content =
-          topic?.slot === 'projectCheckIn'
+          topic?.evidence?.actionRetry
+            ? proposalDraft?.ok ? proposalDraft : composeDraft({ ctx, draft: RETRY_QUESTION, cfg, topic })
+            : topic?.slot === 'projectCheckIn'
             ? await writeProjectQuestion({ ctx, cfg, topic, persona, generate: gen })
             : verdict?.ok && verdict.say === true
             ? composeDraft({ ctx, draft: verdict.draft, cfg, topic })
             : await compose({ ctx: d.track === 'proactive' ? { ...toneCtx, signals: null, screen: null } : ctx, topic, persona, cfg, now, st, generate: gen, llmReady });
-        if (moodEligible && verdict?.ok && verdict.say === true) {
+        if (topic && content.violations?.some((v) => v.code === 'FALSE_ATTRIBUTION') && verdict?.ok && verdict.say) {
+          content = await compose({ ctx, topic, persona, cfg, now, st, generate: gen, llmReady });
+        }
+        if (moodEligible && !topic?.evidence?.actionRetry && verdict?.ok && verdict.say === true) {
           content = await styleApprovedDraft({ draft: content, ctx: toneCtx, persona, generate: gen, timing: cfg.exploration,
             validate: (draft) => composeDraft({ ctx, draft, cfg, topic }) });
         }
@@ -542,7 +591,15 @@ export async function tick({
             d.reason = blocked;
           }
         }
-        if (d.decision === 'send' && mediaShare) {
+        if (d.decision === 'send' && topic?.evidence?.actionRetry) {
+          actionProposal = mediaShare ? prepareActionProposal({ peer: cfg.channels?.qq?.peerId, text: content.text, cfg,
+            source: mediaShare.url, roundAt: topic.evidence?.at }) : null;
+          if (!actionProposal) {
+            d.decision = 'skip';
+            d.reason = 'NO_CONTENT';
+          }
+        }
+        if (d.decision === 'send' && mediaShare && !actionProposal) {
           const url = publicExplorationUrl(mediaShare.url);
           if (!url || /https?:\/\//i.test(content.text) ||
               (topic.evidence?.loginSite && /密码|验证码|cookie|口令|账号/i.test(content.text))) {
@@ -560,6 +617,11 @@ export async function tick({
   //    这里只拦真要发的那一刻，命中就记 skip，配额一律不动。
   //    桥正发到一半（last-out.json firstAt 有、lastAt=0）也算「正在应」，别插进去。
   let guardHit = null;
+  if (d.decision === 'send' && (topic?.slot === 'reply' || topic?.slot === 'forward') &&
+      ctx?.her?.lastChannel === 'qq' && bridgeOwnsReply(ctx.her.lastTs)) {
+    d.decision = 'skip';
+    d.reason = 'REPLY_ALREADY_ANSWERED';
+  }
   if (d.decision === 'send' && (topic?.slot === 'reply' || topic?.slot === 'forward') && cfg.rules?.replyGuard !== false) {
     const flight = bridgeInFlight({ now, maxMs: Number(cfg.rules?.qqTiming?.inFlightSec ?? 180) * 1000 });
     if (flight) {
@@ -597,6 +659,7 @@ export async function tick({
         herChars: String(ctx?.her?.lastText || '').length,
         split: cfg.send?.split ?? {},
         timeoutMs: cfg.send?.timeoutMs,
+        actionProposal,
       });
       delivery = {
         attempted: true,
@@ -811,6 +874,7 @@ export async function tick({
     if (topic?.slot === 'share') {
       st.content.lastShareAt = now;
       st.content.lastShareLine = String(ctx?.self?.line || '').slice(0, 80);
+      if (!useSim && delivery?.ok && actionProposal) st.content.lastRetryProposalAt = topic.evidence?.at;
       if (!useSim && delivery?.ok && topic.evidence?.discoveryId) {
         st.content.sharedExplorationIds = [...new Set([
           ...(st.content.sharedExplorationIds || []), topic.evidence.discoveryId,

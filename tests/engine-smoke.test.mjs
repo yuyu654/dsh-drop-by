@@ -5,7 +5,7 @@
 // 改 engine.js 时漏了 import，而 187 个单元测试一个都没碰到这条路径
 // （它们都在测零件，没人把 engine.tick 当整体跑一次）。
 // 这个用例用固定内容模式 + 临时目录跑一整拍：不联网、不叫模型、不碰真配置，
-// 但会经过 probe → decide → 发送分支（dryRun）→ 写日志/状态。
+// 但会用固定的桌面在场信号跑 decide → 发送分支（dryRun）→ 写日志/状态。
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -42,7 +42,8 @@ fs.writeFileSync(
   }),
 );
 
-const { tick } = await import('../src/engine.js');
+const { tick: engineTick } = await import('../src/engine.js');
+const tick = (options) => engineTick({ ...options, probeSystem: async () => ({ idle_ms: 0 }) });
 
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
 

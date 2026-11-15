@@ -166,6 +166,26 @@ export function detectPhone(cfg, opts = {}) {
   return { kind: 'mail', enabled, ready, user: user ? user.replace(/^([^@]{1,2})[^@]*(@.*)$/, '$1***$2') : '', ageMin, note };
 }
 
+/** 情绪插件：emotion-state-portrait 在不在，入口 qq-emotion.mjs 能不能找到。 */
+export function detectEmotionPortrait(opts = {}) {
+  const home = opts.dshHome || dshHome(opts.env || process.env);
+  const plugin = detectPlugin('emotion-state-portrait', { ...opts, dshHome: home });
+  const entry = plugin.installed && exists(path.join(plugin.dir, 'qq-emotion.mjs'));
+  const note = !plugin.installed
+    ? '没装 emotion-state-portrait'
+    : !entry
+      ? '插件在，但缺 qq-emotion.mjs'
+      : '已装 emotion-state-portrait';
+  return {
+    plugin: 'emotion-state-portrait',
+    installed: plugin.installed,
+    version: plugin.version,
+    entry,
+    ready: plugin.installed && entry,
+    note,
+  };
+}
+
 /** 三条链路一次问清。设置页、状态接口、tick 的降级都用这一份。 */
 export function detectSources(cfg, opts = {}) {
   const qq = detectQq(opts);

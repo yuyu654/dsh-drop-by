@@ -15,8 +15,8 @@ export const MEMORY_PLUGINS = {
   'fish-memory': {
     label: '鱼的记忆（dsh-fish-memory）',
     dir: () => path.join(dshHome(), 'fish-memory'),
-    // 一个会话一个文件：session-<id>.json
-    match: /^session-(.+)\.json$/,
+    // 会话模式：session-<id>.json；工作区模式：ws_<slug>.json
+    match: /^(session-|ws_)(.+)\.json$/,
   },
 };
 
@@ -55,7 +55,15 @@ export function listSessions(dir, plugin = 'fish-memory') {
     } catch {
       continue;
     }
-    out.push({ file, name, session: m[1], mtime: st.mtimeMs, bytes: st.size });
+    out.push({
+      file,
+      name,
+      id: name.replace(/\.json$/, ''),
+      kind: m[1] === 'ws_' ? 'workspace' : 'session',
+      session: m[2],
+      mtime: st.mtimeMs,
+      bytes: st.size,
+    });
   }
   return out.sort((a, b) => b.mtime - a.mtime);
 }
@@ -88,8 +96,12 @@ function bigrams(s) {
  *  为什么不用对称的 Jaccard：真的重复条目常常是「短的那条被长的那条包住」（一条带规则、一条不带），
  *  对称算分会因为长度差被稀释。实测重复写法 0.59，不同的事 0.14。 */
 export function similarMemory(a, b) {
-  const A = bigrams(norm(a));
-  const B = bigrams(norm(b));
+  const na = norm(a);
+  const nb = norm(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  const A = bigrams(na);
+  const B = bigrams(nb);
   if (!A.size || !B.size) return false;
   let hit = 0;
   for (const g of A) if (B.has(g)) hit++;
@@ -120,19 +132,38 @@ export function readMemory({ cfg, now = Date.now() } = {}) {
   const sessions = listSessions(dir, plugin);
   if (!sessions.length) return { ok: false, plugin, dir, reason: 'MEMORY_EMPTY', items: [] };
 
-  // 选哪一份：session 填了就用那份（支持 id 前缀），填 all 就全合并，留空 = 最近改过的那份。
+  const parsedCache = new Map();
+  const loadOne = (file) => {
+    if (!parsedCache.has(file)) parsedCache.set(file, readOne(file));
+    return parsedCache.get(file);
+  };
+  const hasMemories = (s) => {
+    const d = loadOne(s.file);
+    return Boolean(d && d.memories.some((m) => m && m.text && !d.deleted.has(m.id)));
+  };
+
+  // 选哪一份：session 填了就按前缀锁定（支持 session id 或 ws_ 前缀）；all 全合并；
+  // 留空：工作区模式下同时取最近有记忆的 ws_*.json 与最近有记忆的 session-*.json（按文本去重）。
   const want = String(c.session || '').trim();
   let picked = sessions;
   let mode = 'newest';
   if (want === 'all') {
     mode = 'all';
   } else if (want) {
-    const hit = sessions.filter((s) => s.session.startsWith(want));
+    const hit = sessions.filter((s) => s.session.startsWith(want) || s.id?.startsWith(want) || s.name.startsWith(want));
     if (!hit.length) return { ok: false, plugin, dir, reason: 'MEMORY_SESSION_NOT_FOUND', items: [] };
     picked = hit;
     mode = 'session';
   } else {
-    picked = sessions.slice(0, 1);
+    const wsFiles = sessions.filter((s) => s.kind === 'workspace');
+    if (wsFiles.length) {
+      const sessFiles = sessions.filter((s) => s.kind !== 'workspace');
+      const newestWs = wsFiles.find(hasMemories) || wsFiles[0];
+      const newestSess = sessFiles.find(hasMemories) || null;
+      picked = [newestWs, newestSess].filter(Boolean);
+    } else {
+      picked = sessions.slice(0, 1);
+    }
   }
 
   const max = Math.min(8, Math.max(1, Number(c.max) || 3));
@@ -141,7 +172,7 @@ export function readMemory({ cfg, now = Date.now() } = {}) {
 
   const items = [];
   for (const s of picked) {
-    const data = readOne(s.file);
+    const data = loadOne(s.file);
     if (!data) continue;
     for (const m of data.memories) {
       if (!m || !m.text || data.deleted.has(m.id)) continue;
@@ -198,4 +229,174 @@ export function memoryLine(mem) {
   }
   const n = mem.items.length;
   return `${mem.plugin} ${n} 条（${mem.files.join(', ')}）`;
+}
+
+function readRawJson(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function activeEntries(raw) {
+  if (!raw || typeof raw !== 'object') return [];
+  const memories = Array.isArray(raw.memories) ? raw.memories : [];
+  const deleted = new Set((Array.isArray(raw.deleted) ? raw.deleted : []).map((d) => (typeof d === 'string' ? d : d?.id)).filter(Boolean));
+  return memories.filter((m) => m && m.text && !deleted.has(m.id));
+}
+
+/** 给设置页与工具返回可用工作区/会话文件、当前生效文件及合并预览。 */
+export function inspectMemory({ cfg, now = Date.now() } = {}) {
+  const c = memoryCfg(cfg);
+  const plugin = String(c.plugin || 'fish-memory');
+  const dir = memoryDir(cfg);
+  const sessions = listSessions(dir, plugin);
+  const files = sessions.map((s) => {
+    const entries = activeEntries(readRawJson(s.file));
+    return {
+      id: s.id,
+      name: s.name,
+      kind: s.kind,
+      session: s.session,
+      mtime: s.mtime,
+      bytes: s.bytes,
+      count: entries.length,
+      stableCount: entries.filter((m) => m.category === 'stable_profile').length,
+      sample: entries.slice(-2).map((m) => String(m.text).replace(/\s+/g, ' ').trim().slice(0, 38)).filter(Boolean),
+      hasBackup: s.kind === 'workspace' && fs.existsSync(`${s.file}.bak-before-merge`),
+    };
+  });
+  const mem = readMemory({ cfg, now });
+  const wsFiles = files.filter((f) => f.kind === 'workspace');
+  const defaultTarget = (wsFiles.find((f) => f.count > 0) || wsFiles[0] || null)?.name || '';
+  const selectedWs = wsFiles.find((f) => f.name === c.session || f.id === c.session) || null;
+  const mergeTarget = selectedWs?.name || defaultTarget;
+  const mergeableSessions = files.filter((f) => f.kind === 'session' && f.count > 0).length;
+  const preview = mergeTarget && mergeableSessions > 0
+    ? mergeMemorySessions({ cfg, targetFile: mergeTarget, dryRun: true })
+    : null;
+  return {
+    ok: true,
+    enabled: c.enabled !== false,
+    plugin,
+    dir: dir || '',
+    sessionSetting: String(c.session || '').trim(),
+    active: {
+      ok: Boolean(mem.ok),
+      mode: mem.mode || '',
+      files: Array.isArray(mem.files) ? mem.files : [],
+      count: Array.isArray(mem.items) ? mem.items.length : 0,
+      reason: mem.reason || '',
+    },
+    files,
+    defaultTarget,
+    mergeTarget,
+    mergeableSessions,
+    mergePreview: preview?.ok ? { target: preview.target, added: preview.added, skipped: preview.skipped } : null,
+  };
+}
+
+/**
+ * 只增不删地把指定（或全部）历史 session-*.json 里的有效记忆合并进目标工作区 ws_*.json（按 ID 与文本去重，写前保留 .bak-before-merge）。
+ * dryRun=true 时只统计预计新增与跳过数，不写磁盘。原 session-*.json 完全不动。
+ */
+export function mergeMemorySessions({ cfg, targetFile = '', sourceFiles = null, backup = true, dryRun = false } = {}) {
+  const c = memoryCfg(cfg);
+  const plugin = String(c.plugin || 'fish-memory');
+  const dir = memoryDir(cfg);
+  const sessions = listSessions(dir, plugin);
+  const wsFiles = sessions.filter((s) => s.kind === 'workspace');
+  if (!wsFiles.length) return { ok: false, reason: 'NO_WORKSPACE_FILE', added: 0, skipped: 0 };
+
+  const want = String(targetFile || '').trim();
+  let target = null;
+  if (want) {
+    target = wsFiles.find((s) => s.name === want || s.id === want || s.file === want) || null;
+    if (!target) return { ok: false, reason: 'TARGET_WORKSPACE_NOT_FOUND', added: 0, skipped: 0 };
+  } else {
+    target = wsFiles.find((s) => activeEntries(readRawJson(s.file)).length > 0) || wsFiles[0];
+  }
+
+  const targetRaw = readRawJson(target.file);
+  if (!targetRaw || typeof targetRaw !== 'object') {
+    return { ok: false, reason: 'INVALID_TARGET_FILE', added: 0, skipped: 0 };
+  }
+
+  const baseList = Array.isArray(targetRaw.memories) ? targetRaw.memories.slice() : [];
+  const deletedIds = new Set((Array.isArray(targetRaw.deleted) ? targetRaw.deleted : []).map((d) => (typeof d === 'string' ? d : d?.id)).filter(Boolean));
+  const existingIds = new Set(baseList.map((m) => m?.id).filter(Boolean));
+  const existingTexts = baseList.filter((m) => m?.text && !deletedIds.has(m.id)).map((m) => String(m.text));
+
+  const allSess = sessions.filter((s) => s.kind === 'session');
+  const filterSet = Array.isArray(sourceFiles) ? new Set(sourceFiles.map((x) => String(x || '').trim()).filter(Boolean)) : null;
+  const sessFiles = filterSet
+    ? allSess.filter((s) => filterSet.has(s.name) || filterSet.has(s.id) || filterSet.has(s.session))
+    : allSess;
+
+  let added = 0;
+  let skipped = 0;
+  for (const src of sessFiles) {
+    const entries = activeEntries(readRawJson(src.file));
+    for (const m of entries) {
+      if ((m.id && (existingIds.has(m.id) || deletedIds.has(m.id))) ||
+          existingTexts.some((t) => similarMemory(t, m.text))) {
+        skipped += 1;
+        continue;
+      }
+      baseList.push(structuredClone(m));
+      if (m.id) existingIds.add(m.id);
+      existingTexts.push(String(m.text));
+      added += 1;
+    }
+  }
+
+  if (added > 0 && !dryRun) {
+    if (backup && !fs.existsSync(`${target.file}.bak-before-merge`)) {
+      fs.copyFileSync(target.file, `${target.file}.bak-before-merge`);
+    }
+    const tmp = `${target.file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, `${JSON.stringify({ ...targetRaw, memories: baseList }, null, 2)}\n`, 'utf8');
+    fs.renameSync(tmp, target.file);
+  }
+
+  return {
+    ok: true,
+    dryRun: Boolean(dryRun),
+    target: target.name,
+    targetFile: target.file,
+    scannedSessions: sessFiles.length,
+    selectedSessions: sessFiles.map((s) => s.name),
+    added,
+    skipped,
+    totalAfter: baseList.length,
+  };
+}
+
+/** 若存在 .bak-before-merge，将目标工作区记忆回滚到最近一次合并前的状态，并移除该一次性备份标记。 */
+export function restoreMemoryBackup({ cfg, targetFile = '' } = {}) {
+  const c = memoryCfg(cfg);
+  const plugin = String(c.plugin || 'fish-memory');
+  const dir = memoryDir(cfg);
+  const sessions = listSessions(dir, plugin);
+  const wsFiles = sessions.filter((s) => s.kind === 'workspace');
+  const want = String(targetFile || '').trim();
+  const target = want
+    ? wsFiles.find((s) => s.name === want || s.id === want || s.file === want) || null
+    : wsFiles.find((s) => fs.existsSync(`${s.file}.bak-before-merge`)) || null;
+  if (!target) return { ok: false, reason: 'TARGET_WORKSPACE_NOT_FOUND' };
+  const bak = `${target.file}.bak-before-merge`;
+  if (!fs.existsSync(bak)) return { ok: false, reason: 'NO_BACKUP_FOUND', target: target.name };
+  const bakRaw = readRawJson(bak);
+  if (!bakRaw || typeof bakRaw !== 'object') return { ok: false, reason: 'INVALID_BACKUP_FILE', target: target.name };
+  const tmp = `${target.file}.${process.pid}.restore.tmp`;
+  fs.copyFileSync(bak, tmp);
+  fs.renameSync(tmp, target.file);
+  fs.unlinkSync(bak);
+  return {
+    ok: true,
+    target: target.name,
+    targetFile: target.file,
+    totalRestored: activeEntries(bakRaw).length,
+  };
 }

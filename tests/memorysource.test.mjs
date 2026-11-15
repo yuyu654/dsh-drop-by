@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { readMemory, listSessions, memoryFacts, memoryLine, memoryDir, MEMORY_PLUGINS } from '../src/memorysource.js';
+import { readMemory, listSessions, memoryFacts, memoryLine, memoryDir, MEMORY_PLUGINS, inspectMemory, mergeMemorySessions, restoreMemoryBackup } from '../src/memorysource.js';
 import { buildPrompt } from '../src/compose.js';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pg-mem-'));
@@ -117,4 +117,128 @@ test('buildPrompt：记忆进了「已知事实」，但要求当背景、不许
   });
   assert.match(p, /我记得（\d{4}-\d{2}-\d{2}）：/);
   assert.match(p, /只能当背景/);
+});
+
+test('workspace mode：同时识别 ws_*.json 与 session-*.json，跳过空工作区文件并按文本去重', (t) => {
+  const wsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pg-mem-ws-'));
+  t.after(() => fs.rmSync(wsDir, { recursive: true, force: true }));
+  const writeRaw = (fileName, memories, ageSec) => {
+    const file = path.join(wsDir, fileName);
+    fs.writeFileSync(file, JSON.stringify({ version: 2, memories, deleted: [], traces: [] }));
+    const ts = new Date(Date.now() - ageSec * 1000);
+    fs.utimesSync(file, ts, ts);
+    return file;
+  };
+  const recent = new Date().toISOString();
+  writeRaw('ws_--empty--.json', [], 1); // 最新但是空的，应跳过
+  writeRaw('ws_--work--.json', [
+    { id: 'w1', text: '在当前工作区里调试 presence-gate', category: 'event', at: recent, importance: 0.7 },
+    { id: 'w2', text: '对方不喜欢冷淡的机器感', category: 'stable_profile', at: recent, importance: 0.9 },
+  ], 5);
+  writeRaw('ws_--other--.json', [
+    { id: 'w3', text: '另一个工作区的冷门记录', category: 'event', at: recent, importance: 0.5 },
+  ], 20);
+  writeRaw('session-549f.json', [
+    { id: 's1', text: '对方不喜欢冷淡的机器感', category: 'stable_profile', at: recent, importance: 0.9 },
+    { id: 's2', text: '会话里聊到周末去吃烤肉', category: 'event', at: recent, importance: 0.6 },
+  ], 10);
+
+  const list = listSessions(wsDir);
+  assert.equal(list.length, 4);
+  assert.equal(list[0].kind, 'workspace');
+  assert.equal(list.find((x) => x.name === 'session-549f.json')?.kind, 'session');
+
+  const cfgWs = (extra = {}) => ({ sources: { memory: { enabled: true, plugin: 'fish-memory', dir: wsDir, max: 8, ...extra } } });
+
+  // 默认留空：跳过 ws_--empty--.json，读取最新有记忆的 ws_--work--.json + session-549f.json，并去重
+  const defMem = readMemory({ cfg: cfgWs() });
+  assert.equal(defMem.ok, true);
+  assert.deepEqual(defMem.files, ['ws_--work--.json', 'session-549f.json']);
+  assert.equal(defMem.items.filter((i) => i.text.includes('冷淡的机器感')).length, 1);
+  assert.ok(defMem.items.some((i) => i.text.includes('调试 presence-gate')));
+  assert.ok(defMem.items.some((i) => i.text.includes('去吃烤肉')));
+  assert.equal(defMem.items.some((i) => i.text.includes('另一个工作区的冷门记录')), false);
+
+  // 按 ws_ 前缀锁定工作区文件
+  const locked = readMemory({ cfg: cfgWs({ session: 'ws_--other' }) });
+  assert.deepEqual(locked.files, ['ws_--other--.json']);
+  assert.equal(locked.items[0].text, '另一个工作区的冷门记录');
+
+  // all 合并全部工作区与会话文件并去重
+  const merged = readMemory({ cfg: cfgWs({ session: 'all' }) });
+  assert.equal(merged.files.length, 4);
+  assert.equal(merged.items.filter((i) => i.text.includes('冷淡的机器感')).length, 1);
+  assert.equal(merged.items.length, 4);
+});
+
+test('inspectMemory & mergeMemorySessions：只增不删地将历史会话并入目标工作区并备份', (t) => {
+  const wsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pg-mem-merge-'));
+  t.after(() => fs.rmSync(wsDir, { recursive: true, force: true }));
+  const nowIso = new Date().toISOString();
+  fs.writeFileSync(path.join(wsDir, 'ws_--main--.json'), JSON.stringify({
+    version: 2,
+    memories: [
+      { id: 'w1', text: '不喜欢半夜被查岗', category: 'stable_profile', at: nowIso, importance: 0.9 },
+    ],
+    deleted: ['del-1'],
+    traces: [],
+  }));
+  fs.writeFileSync(path.join(wsDir, 'session-old.json'), JSON.stringify({
+    version: 2,
+    memories: [
+      { id: 's-dup', text: '不喜欢半夜被查岗！', category: 'stable_profile', at: nowIso, importance: 0.9 },
+      { id: 'del-1', text: '已被删掉的条目不该再并入', category: 'event', at: nowIso, importance: 0.5 },
+      { id: 's-new', text: '平时喜欢喝无糖乌龙茶', category: 'stable_profile', at: nowIso, importance: 0.85 },
+    ],
+    deleted: [],
+    traces: [],
+  }));
+  const cfg = { sources: { memory: { enabled: true, plugin: 'fish-memory', dir: wsDir, max: 5 } } };
+
+  const info = inspectMemory({ cfg });
+  assert.equal(info.defaultTarget, 'ws_--main--.json');
+  assert.equal(info.mergeTarget, 'ws_--main--.json');
+  assert.equal(info.mergeableSessions, 1);
+  assert.deepEqual(info.mergePreview, { target: 'ws_--main--.json', added: 1, skipped: 2 });
+  assert.deepEqual(info.active.files, ['ws_--main--.json', 'session-old.json']);
+
+  // dryRun 只预演统计，不写目标文件、不建备份
+  const dry = mergeMemorySessions({ cfg, dryRun: true });
+  assert.equal(dry.ok, true);
+  assert.equal(dry.dryRun, true);
+  assert.equal(dry.added, 1);
+  assert.equal(fs.existsSync(path.join(wsDir, 'ws_--main--.json.bak-before-merge')), false);
+
+  const merged = mergeMemorySessions({ cfg });
+  assert.equal(merged.ok, true);
+  assert.equal(merged.dryRun, false);
+  assert.equal(merged.target, 'ws_--main--.json');
+  assert.equal(merged.added, 1);
+  assert.equal(merged.skipped, 2);
+  assert.equal(merged.totalAfter, 2);
+  assert.equal(fs.existsSync(path.join(wsDir, 'ws_--main--.json.bak-before-merge')), true);
+
+  // 原 session-old.json 丝毫未动，第二次合并幂等
+  const srcRaw = JSON.parse(fs.readFileSync(path.join(wsDir, 'session-old.json'), 'utf8'));
+  assert.equal(srcRaw.memories.length, 3);
+  const second = mergeMemorySessions({ cfg });
+  assert.equal(second.ok, true);
+  assert.equal(second.added, 0);
+
+  // 可从 .bak-before-merge 恢复并支持只挑指定 session 文件并入
+  const restored = restoreMemoryBackup({ cfg, targetFile: 'ws_--main--.json' });
+  assert.equal(restored.ok, true);
+  assert.equal(restored.totalRestored, 1);
+  assert.equal(fs.existsSync(path.join(wsDir, 'ws_--main--.json.bak-before-merge')), false);
+
+  fs.writeFileSync(path.join(wsDir, 'session-other.json'), JSON.stringify({
+    version: 2,
+    memories: [{ id: 's-other', text: '另一条未勾选的会话记忆', category: 'event', at: nowIso, importance: 0.7 }],
+    deleted: [],
+  }));
+  const selective = mergeMemorySessions({ cfg, targetFile: 'ws_--main--.json', sourceFiles: ['session-old.json'] });
+  assert.equal(selective.ok, true);
+  assert.deepEqual(selective.selectedSessions, ['session-old.json']);
+  assert.equal(selective.added, 1);
+  assert.equal(selective.totalAfter, 2);
 });

@@ -13,6 +13,7 @@ import { SLOTS } from './topics.js';
 import { signalFacts } from './signals.js';
 import { memoryFacts } from './memorysource.js';
 import { explorationToneHint } from './explore.js';
+import { ATTRIBUTION_RULE, falseAttribution } from './attribution.js';
 import { recentOutbound } from './outbound.js';
 import { slotStats } from './feedback.js';
 import { localStyle } from './local.js';
@@ -77,6 +78,9 @@ export function guard(text, cfg, ctx = null, opts = {}) {
   const maxChars = Math.max(10, Number(opts.maxChars ?? cfg?.content?.maxChars) || 60);
   const t = String(text || '').trim();
   const violations = [];
+  if (falseAttribution(t, ctx)) violations.push({
+    code: 'FALSE_ATTRIBUTION', why: '把未见于用户原话的细节归给了用户。按出处重写，自己的推演用第一人称。',
+  });
 
   // 随口说话专用：裸的「在吗」是兜底，不是默认（没有别的信息时它最像敷衍）。
   if (opts.bare === true && !opts.allowBare && /^(在吗|在么|在不在|睡了吗|睡着了没|人呢)[？?。！!~～\s]*$/.test(t)) {
@@ -569,6 +573,7 @@ export function buildPrompt({ ctx, topic, persona, cfg, feedback, st = {} }) {
     '---',
     '',
     '以上是背景人格。下面是这一次真正要写的东西，只按下面的要求写。',
+    ATTRIBUTION_RULE,
     '',
     `现在是 ${ctx.clock || ''}。在 QQ 上给「她」发一条消息，纯文字：没有表情、没有语音、不带解释。`,
     `这一条的由头：${topic.brief}`,
@@ -657,6 +662,7 @@ export function buildChitchatPrompt({ ctx, topic, persona, cfg, feedback, st = {
     '---',
     '',
     '以上是背景人格。下面是这一次真正要写的东西，只按下面的要求写。',
+    ATTRIBUTION_RULE,
     '',
     `现在是 ${ctx.clock || ''}。在 QQ 上给「她」发一条消息，纯文字：没有表情、没有语音、不带解释。`,
     '这一条**没有任何由头**：没有新闻、没有数据、没有她刚说的话。就是忽然想跟她说一句。',
@@ -729,7 +735,7 @@ export async function compose({ ctx, topic, persona, cfg, now, st = {}, generate
       lastText = text;
       // 裸「在吗」只在最后一轮才放行（而且当天只用一次）：前两轮先逼一个具体的东西，
       // 真写不出来再退回那句空的——它是兜底，不是默认。
-      const g = guard(text, cfg, null, {
+      const g = guard(text, cfg, ctx, {
         maxChars: topic.evidence?.maxChars,
         bare: true,
         allowBare: i === attempts - 1 && topic.evidence?.allowBare === true,

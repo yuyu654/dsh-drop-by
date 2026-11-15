@@ -6,7 +6,7 @@
 //
 // 数据来源：国务院办公厅每年的放假通知（2026 年为国办发明电〔2025〕7 号）。
 // 现在是硬编码的表：一年发一次，新一年加一项即可；漏了就用 content.holidays 手动补。
-import { dayKey } from './time.js';
+import { dayKey, hhmm, minutesOfDayOf } from './time.js';
 import { cachedSets } from './calendar.js';
 import { inBusy, lastWindowEnd } from './schedule.js';
 
@@ -82,4 +82,50 @@ export function busyNow(now, cfg = {}) {
 export function lastBusyEnd(now, cfg = {}) {
   if (isHoliday(now, cfg)) return 0;
   return lastWindowEnd(now, cfg?.busyHours, cfg?.timezone);
+}
+
+/** 北京时间下的星期几（1 = 周一 ... 6 = 周六, 7 = 周日）。 */
+function bjWeekday(bjDayKey) {
+  const dow = new Date(`${bjDayKey}T12:00:00+08:00`).getUTCDay();
+  return dow === 0 ? 7 : dow;
+}
+
+/**
+ * 依据 DeepSeek API 官方峰谷时说明与日历表判断此刻是否处于「谷时（空闲优惠时段）」：
+ *   · 固定按北京时间（Asia/Shanghai）判定（对应官方 UTC 01:00–04:00 / 06:00–10:00）。
+ *   · 高峰时段：工作日（周一至周五，且不属于日历法定节假日）的 09:00–12:00、14:00–18:00。
+ *   · 谷时（空闲时段）：
+ *       1) 工作日其余时段（00:00–09:00、12:00–14:00、18:00–24:00）；
+ *       2) 周中遇到中国法定节假日（来自内置表 + 节假日日历缓存 + 手动放假）→ 全天谷时；
+ *       3) 周末（周六、周日），包括「周末但是调休上班」的日期 → 按 DS 官方规则仍全天谷时。
+ */
+export function deepseekPeakStatus(now = Date.now(), cfg = {}) {
+  const bjTz = 'Asia/Shanghai';
+  const key = dayKey(now, bjTz);
+  const wd = bjWeekday(key);
+  const { off, work } = holidaySets(cfg);
+  const isWeekend = wd >= 6;
+  const isWorkdayWeekend = isWeekend && work.has(key);
+  const isWeekdayHoliday = !isWeekend && off.has(key);
+
+  if (isWorkdayWeekend) {
+    return { offPeak: true, peak: false, reason: 'WEEKEND_WORKDAY_OFF_PEAK', day: key, hhmm: hhmm(now, bjTz), label: '周末（含调休）全天谷时' };
+  }
+  if (isWeekend) {
+    return { offPeak: true, peak: false, reason: 'WEEKEND_OFF_PEAK', day: key, hhmm: hhmm(now, bjTz), label: '周末全天谷时' };
+  }
+  if (isWeekdayHoliday) {
+    return { offPeak: true, peak: false, reason: 'HOLIDAY_OFF_PEAK', day: key, hhmm: hhmm(now, bjTz), label: '法定节假日全天谷时' };
+  }
+  const min = minutesOfDayOf(now, bjTz);
+  const inPeak = (min >= 9 * 60 && min < 12 * 60) || (min >= 14 * 60 && min < 18 * 60);
+  if (inPeak) {
+    const span = min < 12 * 60 ? '09:00–12:00' : '14:00–18:00';
+    return { offPeak: false, peak: true, reason: 'WEEKDAY_PEAK', day: key, hhmm: hhmm(now, bjTz), label: `工作日高峰（${span}）` };
+  }
+  return { offPeak: true, peak: false, reason: 'WEEKDAY_OFF_PEAK', day: key, hhmm: hhmm(now, bjTz), label: '工作日非高峰谷时' };
+}
+
+export function offPeakNow(now = Date.now(), cfg = {}) {
+  return deepseekPeakStatus(now, cfg).offPeak;
 }

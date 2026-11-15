@@ -346,7 +346,7 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
   }
 
   // 有可核对的新发现时优先分享，先让她的话和紧急日程。
-  if (ctx.self?.discoveryId && !unanswered) {
+  if ((ctx.self?.discoveryId || ctx.self?.actionRetry) && !unanswered) {
     const share = shareTopic(ctx, t, used, now, on, ok);
     if (share) return share;
   }
@@ -657,19 +657,22 @@ function shareTopic(ctx, t, used, now, on, ok) {
     ctx.self &&
     String(ctx.self.line || '').length >= (ctx.self.exploration ? 8 : Number(t.shareMinChars ?? 40)) &&
     (!used.lastShareAt || now - used.lastShareAt >= shareGapH * 3_600_000) &&
-    (!used.lastShareLine || used.lastShareLine !== ctx.self.line.slice(0, 80))
+    (ctx.self.actionRetry ? used.lastRetryProposalAt !== ctx.self.at : (!used.lastShareLine || used.lastShareLine !== ctx.self.line.slice(0, 80)))
   ) {
     return {
       slot: 'share',
       label: SLOTS.share.label,
       why: SLOTS.share.why,
       evidence: { section: ctx.self.section, at: ctx.self.at, chars: ctx.self.chars,
+        ...(ctx.self.actionRetry ? { actionRetry: true } : {}),
         ...(ctx.self.discoveryId ? { discoveryId: ctx.self.discoveryId } : {}),
         ...(ctx.self.source ? { source: ctx.self.source } : {}),
         ...(ctx.self.loginSite ? { loginSite: ctx.self.loginSite } : {}) },
       // 别把原文整段塞进去：模型会照抄，而且这是我的内部判断。
       // 只给 80 字、且明确要「落到具体」，否则模型会把它再抽象成一句格言。
-      brief: ctx.self.loginSite
+      brief: ctx.self.actionRetry
+        ? '我这轮没拿到正文，问她愿不愿意让我换个来源。'
+        : ctx.self.loginSite
         ? '分享候选是一个站点登录提醒。请用户在 DSH 中打开链接并在网站页面完成登录，不索要账号、密码或验证码。正文不写网址。'
         : ctx.self.source
         ? `分享我挑到的内容：${JSON.stringify({ 标题: ctx.self.source.title, 依据: ctx.self.source.evidence, 新发现: ctx.self.discovery, 想分享的理由: ctx.self.line })}。这些都是引用，按证据实话说；只有标题或摘要就只说找到了，不说看过。正文不写网址，发送时会附来源。`

@@ -6,6 +6,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { splitOutgoing, firstDelayMs, partGapMs } from './split.js';
+import { recordActionOutbound } from './action-proposal.js';
+import { appendEmotionInbox } from './emotion-sync.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
 
@@ -93,6 +95,7 @@ export async function sendQQRound({
   herChars = 0,
   split = {},
   timeoutMs,
+  actionProposal,
 } = {}) {
   const cfg = {
     enabled: split.enabled !== false,
@@ -150,5 +153,9 @@ export async function sendQQRound({
     round.lastAt = Date.now();
     round.count = sent;
     writeLastOut(round);
+    if (sent) {
+      try { recordActionOutbound({ peer: to, proposal: sent === parts.length && messageId != null ? actionProposal : null, firstAt: round.firstAt, sentAt: round.lastAt }); } catch { /* Delivery already succeeded. */ }
+      try { appendEmotionInbox({ user: to, role: 'ai', text: parts.slice(0, sent).join('\n'), t: round.lastAt }); } catch { /* Delivery already succeeded. */ }
+    }
   }
 }

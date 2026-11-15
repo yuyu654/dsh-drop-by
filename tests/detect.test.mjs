@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { detectPlugin, detectQq, detectDouyin, detectPhone } from '../src/detect.js';
+import { detectPlugin, detectQq, detectDouyin, detectPhone, detectEmotionPortrait } from '../src/detect.js';
 
 function tmpHome() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pg-detect-'));
@@ -87,4 +87,28 @@ test('手机端：邮箱开关关着 → ready=false，不去看授权码', () =
   const d = detectPhone({ mail: { enabled: false, user: 'a@qq.com' } }, { dshHome: home, secretsPath: path.join(home, 'nope.json'), root: home });
   assert.equal(d.ready, false);
   assert.match(d.note, /邮箱没开/);
+});
+
+test('情绪插件：没装 / 缺入口 / 已装，分清状态和版本', () => {
+  const home = tmpHome();
+  const missing = detectEmotionPortrait({ dshHome: home, env: {} });
+  assert.equal(missing.installed, false);
+  assert.equal(missing.entry, false);
+  assert.equal(missing.ready, false);
+  assert.match(missing.note, /emotion-state-portrait/);
+
+  const dir = installPlugin(home, 'emotion-state-portrait', '1.0.5');
+  const noEntry = detectEmotionPortrait({ dshHome: home, env: {} });
+  assert.equal(noEntry.installed, true);
+  assert.equal(noEntry.entry, false);
+  assert.equal(noEntry.ready, false);
+  assert.match(noEntry.note, /qq-emotion\.mjs/);
+
+  fs.writeFileSync(path.join(dir, 'qq-emotion.mjs'), 'export default {};');
+  const ok = detectEmotionPortrait({ dshHome: home, env: {} });
+  assert.equal(ok.installed, true);
+  assert.equal(ok.entry, true);
+  assert.equal(ok.ready, true);
+  assert.equal(ok.version, '1.0.5');
+  assert.match(ok.note, /已装 emotion-state-portrait/);
 });

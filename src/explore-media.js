@@ -10,6 +10,36 @@ export function publicExplorationUrl(value) {
   } catch { return null; }
 }
 
+const PUBLIC_SITE_NAMES = [
+  ['知乎', 'zhihu.com'], ['CSDN', 'csdn.net'], ['GitHub', 'github.com'],
+  ['GitLab', 'gitlab.com'], ['掘金', 'juejin.cn'], ['博客园', 'cnblogs.com'],
+];
+
+export function guidedWebSearch(baseQuery, userGuidance = '') {
+  const guidance = userGuidance.trim().normalize('NFKC');
+  if (!guidance) return { query: baseQuery, preferredSites: [] };
+  let keywords = guidance;
+  const sites = [];
+  keywords = keywords.replace(/\b(?:www\.)?(?:[a-z0-9-]+\.)+[a-z]{2,}\b/giu, (domain) => {
+    const site = publicExplorationUrl('https://' + domain)?.hostname.replace(/^www\./, '');
+    if (site) sites.push(site);
+    return site ? '' : domain;
+  });
+  for (const [name, domain] of PUBLIC_SITE_NAMES) {
+    if (keywords.toLowerCase().includes(name.toLowerCase())) {
+      sites.push(domain);
+      keywords = keywords.replace(new RegExp(name, 'giu'), '');
+    }
+  }
+  const preferredSites = [...new Set(sites)].slice(0, 4);
+  if (!preferredSites.length) return { query: guidance, preferredSites };
+  const extra = keywords.replace(/^(?:重点|优先|请|去|上|在)+/u, '').replace(/(?:或者|以及|和|或|上|翻翻看|找找|看看|查查|搜索|搜搜|找正文|查正文|搜正文|找|翻)/gu, ' ')
+    .replace(/[、，,。\s]+/gu, ' ').trim();
+  const terms = extra ? baseQuery + ' ' + extra : baseQuery;
+  const scope = preferredSites.map((site) => 'site:' + site).join(' OR ');
+  return { query: terms + ' ' + (preferredSites.length === 1 ? scope : '(' + scope + ')'), preferredSites };
+}
+
 function videoTarget(url) {
   const host = url.hostname.replace(/^www\./, '');
   if (host === 'douyin.com' && /^\/video\/\d+$/.test(url.pathname)) return { id: url.pathname.split('/').at(-1) };
@@ -50,10 +80,19 @@ export function createExplorationMedia({ tools, web, video, watchDouyin, observe
   const videoReady = video && (searchAvailable || has('video_search'));
   if (!webReady && !videoReady) return null;
 
-  const search = async (query, kind) => {
+  const hostOf = (url) => url.hostname.replace(/^www\./, '');
+  const matchesSite = (host, site) => host === site || host.endsWith('.' + site);
+  const allowedSource = (url, { excluded, excludedUrls, preferredSites }) => {
+    const host = hostOf(url);
+    if (excludedUrls.includes(url.href)) return false;
+    if (preferredSites.length) return preferredSites.some((site) => matchesSite(host, site));
+    return !excluded.some((site) => matchesSite(host, site) || matchesSite(site, host));
+  };
+  const search = async (query, kind, options) => {
     const choices = kind === 'video'
       ? [['video_search', { query, maxResults: 5 }], ['advanced_search', { query, maxResults: 5 }], ['web_search', { queries: [query] }]]
       : [['advanced_search', { query, maxResults: 4 }], ['web_search', { queries: [query] }]];
+    if (options.excluded.length && kind === 'web') choices.reverse();
     for (const [name, args] of choices) {
       const result = await call(name, args);
       const seen = new Set();
@@ -61,7 +100,7 @@ export function createExplorationMedia({ tools, web, video, watchDouyin, observe
       for (const source of Array.isArray(result?.sources) ? result.sources.slice(0, 12) : []) {
         const url = publicExplorationUrl(source?.url);
         const target = url && kind === 'video' ? videoTarget(url) : null;
-        if (!url || (kind === 'video' && !target) || seen.has(url.href)) continue;
+        if (!url || !allowedSource(url, options) || (kind === 'video' && !target) || seen.has(url.href)) continue;
         seen.add(url.href);
         sources.push({ url: url.href, title: String(source.title || url.hostname).slice(0, 120),
           snippet: String(source.snippet || '').slice(0, 300), target });
@@ -75,13 +114,15 @@ export function createExplorationMedia({ tools, web, video, watchDouyin, observe
     calls,
     web: Boolean(webReady),
     video: Boolean(videoReady),
-    async collect(kind, query) {
+    async collect(kind, query, { excluded = [], excludedUrls = [], preferredSites = [] } = {}) {
       if ((kind === 'web' && !webReady) || (kind === 'video' && !videoReady)) return [];
-      const sources = await search(query, kind);
+      const options = { excluded, excludedUrls, preferredSites };
+      const sources = await search(query, kind, options);
       if (kind === 'web') {
         return Promise.all(sources.slice(0, 2).map(async ({ url, title, snippet }) => {
           const page = await call('web_fetch', { url });
           const finalUrl = publicExplorationUrl(page?.url);
+          if (finalUrl && !allowedSource(finalUrl, options)) return { url, title, evidence: '搜索摘要', content: snippet };
           if (page?.statusCode === 401 || (finalUrl && /(?:^|[./])(?:login|signin|passport)(?:[./]|$)/i.test(finalUrl.hostname + finalUrl.pathname))) {
             return { url, title, evidence: '需要登录', content: '请在 DSH 打开来源链接，在网站登录页完成登录。' };
           }

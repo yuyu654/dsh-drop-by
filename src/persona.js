@@ -45,6 +45,16 @@ export const BUILTIN_PERSONA = `# 说话方式（内置兜底）
 - 不承认自己是 AI、助手、程序；被问就带过。
 - 不替对方做决定，不劝、不说教。`;
 
+/** Project the persona onto language style. Never copy persona sentences or examples. */
+export function qqContinuationTone(persona) {
+  const text = String(persona?.text || '');
+  const rules = ['用一句自然的聊天口语，称呼沿用当前对话。', '不写括号动作、客服腔或说教。'];
+  if (/克制|冷淡|惜字|简短|短句/u.test(text)) rules.push('语气收一点，句子短一些。');
+  if (/俏皮|活泼|轻快/u.test(text)) rules.push('可以轻快一点，梗只从这段对话里来。');
+  if (/温和|温柔/u.test(text)) rules.push('语气可以柔和一点。');
+  return rules.join(' ');
+}
+
 function readText(file) {
   try {
     const s = fs.readFileSync(file, 'utf8');

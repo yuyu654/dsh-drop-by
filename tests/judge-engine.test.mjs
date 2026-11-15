@@ -18,7 +18,8 @@ process.env.PG_DSH_HOME = dir; // 记忆/课表/考试都别读真实的 ~/.dsh
 fs.mkdirSync(process.env.PG_LOG_DIR, { recursive: true });
 
 const { loadConfig, saveConfig, loadState, saveState } = await import('../src/config.js');
-const { tick } = await import('../src/engine.js');
+const { tick: engineTick } = await import('../src/engine.js');
+const tick = (options) => engineTick({ ...options, probeSystem: async () => ({ idle_ms: 0 }) });
 const { loadPersona } = await import('../src/persona.js');
 const { exploreRound, saveExploration } = await import('../src/explore.js');
 
@@ -217,4 +218,40 @@ test('judge 关着 → 一次判断都不叫，行为就是原来的规则链', 
   assert.equal(r.record.judge, null);
   assert.equal(r.record.decision, 'send');
   assert.equal(r.record.content.source, 'llm');
+});
+
+test('judge 打开且命中常规由头 → 快照后附带当前心情底色参考', async (t) => {
+  const emDir = path.join(dir, 'profiles', 'desktop', 'node_modules', 'emotion-state-portrait', 'emotion');
+  fs.mkdirSync(emDir, { recursive: true });
+  const qqDir = path.join(dir, 'qq-bridge');
+  fs.mkdirSync(qqDir, { recursive: true });
+  t.after(() => {
+    fs.rmSync(path.join(dir, 'profiles'), { recursive: true, force: true });
+    fs.rmSync(qqDir, { recursive: true, force: true });
+  });
+  fs.writeFileSync(path.join(path.dirname(emDir), 'package.json'), JSON.stringify({ name: 'emotion-state-portrait', version: '1.0.5' }));
+  fs.writeFileSync(path.join(emDir, 'state.json'), JSON.stringify({ updatedAt: Date.now() }));
+  fs.writeFileSync(path.join(path.dirname(emDir), 'mood-map.json'), JSON.stringify({
+    '42': '心情：轻快Lv1；对她：熟悉；硬规则：别直念',
+  }));
+  const threeDaysAgo = Date.now() - 3 * 86_400_000;
+  fs.writeFileSync(path.join(qqDir, 'last-in.json'), JSON.stringify({ peer: '42', peerKind: 'private', at: threeDaysAgo, text: '先去忙了' }));
+
+  writeConfig({
+    exploration: { portrait: true, mood: false },
+    content: { ...loadConfig().content, exams: { text: '' } },
+    channels: { ...loadConfig().channels, qq: { enabled: true, peerId: '42', read: true, send: false } },
+  });
+  let seenJudgePrompt = '';
+  const gen = async ({ prompt }) => {
+    if (prompt.includes('只输出一个 JSON 对象')) {
+      seenJudgePrompt = prompt;
+      return { ok: true, text: '{"say": true, "angle": "问她忙完没", "draft": "忙完这阵了没？", "why": "三天没说话，语气轻松点问候"}', ms: 5 };
+    }
+    return { ok: true, text: '忙完这阵了没？', ms: 5 };
+  };
+  const r = await tick({ persist: true, generate: gen, llmReady: true });
+  assert.equal(r.record.decision, 'send');
+  assert.match(seenJudgePrompt, /当前心情底色/);
+  assert.match(seenJudgePrompt, /轻快Lv1/);
 });

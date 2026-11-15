@@ -16,7 +16,8 @@ process.env.PG_DSH_HOME = dir;
 fs.mkdirSync(process.env.PG_LOG_DIR, { recursive: true });
 
 const { loadConfig, saveConfig, loadState } = await import('../src/config.js');
-const { tick } = await import('../src/engine.js');
+const { tick: engineTick } = await import('../src/engine.js');
+const tick = (options) => engineTick({ ...options, probeSystem: async () => ({ idle_ms: 0 }) });
 const { shadowEligible, shadowRate, runShadow, shadowLine } = await import('../src/shadow.js');
 const { recordDay } = await import('../src/retention.js');
 const NOW = Date.now();

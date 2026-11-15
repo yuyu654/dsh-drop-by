@@ -27,7 +27,7 @@ const DEFAULTS = {
   tickMinutes: 10,
 
   timezone: 'Asia/Shanghai',
-  exploration: { auto: false, offerShare: false, mood: false, portrait: false, web: false, video: false, leisureEvery: 3, interest: '', intervalMinutes: 180, recentDays: 3, moodHours: 2, portraitHours: 2, planTimeoutMs: 30000, roundTimeoutMs: 45000, toolTimeoutMs: 18000, storyboardTimeoutMs: 65000, storyboardSeconds: 60, moodReplyAgeMin: 30, moodDraftTimeoutMs: 15000, portraitTimeoutMs: 12000 },
+  exploration: { auto: false, offerShare: false, mood: false, portrait: false, web: false, video: false, leisureEvery: 3, interest: '', nextTopic: '', offPeakOnly: false, intervalMinutes: 180, recentDays: 3, moodHours: 2, portraitHours: 2, planTimeoutMs: 30000, roundTimeoutMs: 45000, toolTimeoutMs: 18000, storyboardTimeoutMs: 65000, storyboardSeconds: 60, moodReplyAgeMin: 30, moodDraftTimeoutMs: 15000, portraitTimeoutMs: 12000 },
   // 全局静默：这一段里所有功能都不读不发（含邮箱不联网）。多段、可跨零点。
   quietHours: [['22:30', '07:30']],
   quietHoursNote: '全局静默，多段，空数组=不静默',
@@ -48,7 +48,10 @@ const DEFAULTS = {
     judge: { enabled: false, attempts: 2, shadow: false, shadowSampleRate: 0.25, timeoutMs: 90000 },
     askProjectOnce: false,
     qqContinuation: false,
-    qqTiming: { pollSec: 2, windowSec: 180, pauseSec: 15, expireSec: 55, inFlightSec: 180, generationTimeoutMs: 20000 },
+    actionGate: { enabled: true, expiresMinutes: 15, ackWaitSec: 30 },
+    qqCommands: { enabled: true, intentTimeoutSec: 5, timeoutSec: 90, freshSec: 120 },
+    qqRollover: { enabled: true, thresholdPercent: 80, carryMessages: 10, prepareBindingFile: true },
+    qqTiming: { debounceMs: 3500, pollSec: 2, windowSec: 180, pauseSec: 15, expireSec: 55, inFlightSec: 180, generationTimeoutMs: 20000 },
     projectTiming: { memoryDays: 14, updateMin: 30, generationTimeoutMs: 20000 },
     // 随口说话：没有由头时，也可以说一句。**默认关**——要 judge 也开着才生效，
     // 因为它靠 judge 判「这一拍要不要说」。生成只走模型：模板写不出自然的无由头话，
