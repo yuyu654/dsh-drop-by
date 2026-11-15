@@ -27,11 +27,15 @@ test('首屏日常组保持精简清爽（其余组分类折叠）', () => {
   const daily = groups.find((g) => g.name === '日常');
   assert.ok(daily && !daily.foldable, '日常组常驻展开');
   assert.ok(daily.items.length <= 15, `日常首屏 ${daily.items.length} 行，保持清爽`);
-  for (const name of ['节奏', '说什么', '数据从哪来', '课表与考试', '高级']) {
+  for (const name of ['决定TA粘不粘人', '节奏', '说什么', '数据从哪来', '课表与考试', '高级']) {
     assert.ok(FOLDABLE_GROUPS.has(name), `${name} 组默认折叠`);
     const g = groups.find((x) => x.name === name);
     assert.ok(g.foldable, `${name} 应该是折叠卡片`);
     assert.ok(g.summary, `${name} 应该带概括人话摘要`);
+  }
+  const stickyPaths = groups.find((x) => x.name === '决定TA粘不粘人').items.map((i) => i.path);
+  for (const p of ['rules.dailyCap', 'rules.minGapMin', 'rules.adaptiveGap', 'rules.qqContinuation', 'rules.feedback.enabled', 'rules.judge.enabled', 'rules.chitchat.enabled', 'rules.gapByTier.enabled', 'rules.naturalTriggers.enabled']) {
+    assert.ok(stickyPaths.includes(p), `决定TA粘不粘人组里要有 ${p}`);
   }
 });
 

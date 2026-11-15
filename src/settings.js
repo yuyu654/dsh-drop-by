@@ -52,8 +52,8 @@ function detectHint(specPath, cfg, detCache) {
   return `｜检测：${d.note}${ver}`;
 }
 
-/** 分组顺序 = 设置页从上到下的顺序：先日常，再具体，最后是平时别动的。 */
-export const GROUP_ORDER = ['日常', '节奏', '说什么', '数据从哪来', '课表与考试', '时间间隔', '高级'];
+/** 分组顺序 = 设置页从上到下的顺序：先日常、粘人程度，再具体，最后是平时别动的。 */
+export const GROUP_ORDER = ['日常', '决定TA粘不粘人', '节奏', '说什么', '数据从哪来', '课表与考试', '时间间隔', '高级'];
 
 /**
  * 分组顶部的一条说明（灰底小字）。目前只有「日常」有：反作弊提醒。
@@ -65,7 +65,7 @@ export const GROUP_NOTES = {
     '带反作弊的游戏中：看屏幕（OCR）、看窗口和网页、抖音功能会自动避让或建议关闭；键鼠空闲不受影响。',
 };
 /** 这一组默认折起来：除了日常主控展开，其余各组默认折叠并显示人话摘要。 */
-export const FOLDABLE_GROUPS = new Set(['节奏', '说什么', '数据从哪来', '课表与考试', '时间间隔', '高级']);
+export const FOLDABLE_GROUPS = new Set(['决定TA粘不粘人', '节奏', '说什么', '数据从哪来', '课表与考试', '时间间隔', '高级']);
 
 /**
  * 子项跟着父开关走：父开关关着，这一行就不显示（值还留在 config.json 里，开回来就恢复）。
@@ -226,9 +226,25 @@ export const SCHEMA = [
   { group: '日常', path: 'content.workdays', label: '调休上班的周末', type: 'text', max: 200, rows: 2, hint: '调休上班日即使在周末也按工作日算，忙碌时段照常生效。逗号分隔，如 2027-02-07' },
   { group: '日常', path: 'content.calendar.url', label: '节假日日历接口', type: 'text', max: 300, rows: 2, hint: '填一个返回 JSON 的地址，{year} 会替换成4位年份；配好后让模型调 presence_holiday_calendar 刷新一次，缓存在 data/holidays-<年>.json。留空则只用内置表' },
 
+  // ================================================================ 决定TA粘不粘人
+  { group: '决定TA粘不粘人', path: 'rules.dailyCap', label: '每天最多几条', type: 'int', min: 0, max: 20, unit: '条', hint: '0 = 今天一条都不主动发。默认 3 条' },
+  { group: '决定TA粘不粘人', path: 'rules.minGapMin', label: '两条之间至少隔', type: 'int', min: 0, max: 1440, unit: '分钟', hint: '默认 240 分钟（四小时）。改小会明显变黏；下面开了「间隔按由头分档」后，这条只在分档关着时用' },
+  { group: '决定TA粘不粘人', path: 'rules.adaptiveGap', label: '没人应时自己少说点', type: 'bool', hint: '开（默认）：连着两条没回，之后两条之间自动多等一会儿（最多拖成三倍）；关：永远按上面那个固定间隔' },
+  { group: '决定TA粘不粘人', path: 'rules.qqContinuation', label: 'QQ 热聊补一句', type: 'bool', hint: '刚来回聊了几轮，普通回复发完并等待设定时长后，可以顺着话题再补一句。有新消息就取消；没内容或没回应就停。遵守静默、忙碌时段和每日上限。' },
+  { group: '决定TA粘不粘人', path: 'rules.feedback.enabled', label: '按TA的反应调由头', type: 'bool', hint: '开（默认）：记下哪一类发出去TA接住了、哪一类老没人应，老不接的先压几天；关：所有由头一视同仁' },
+  { group: '决定TA粘不粘人', path: 'rules.judge.enabled', label: '让模型自己决定说不说', type: 'bool', hint: '关（默认）：规则挑到由头就写。开：规则只提一条建议，把整份处境交给模型——它可以说不说，也可以换个角度；它写好的句子仍要过长度/口吻/防重复那些护栏，判坏了就退回规则链' },
+  { group: '决定TA粘不粘人', path: 'rules.chitchat.enabled', label: '没什么事也可以说一句', type: 'bool', hint: '关（默认）：没有由头就不说话。开：别的由头都挑不出来时，让模型判一句「随口话」（「在吗」那种空招呼不算）——只走模型，写不出来就不发。一天最多几条在下面的「随口话一天最多几条」里自己设；不说时段跟着全局静默和TA睡着的那段走。要「让模型自己决定说不说」也开着才生效' },
+  { group: '决定TA粘不粘人', path: 'rules.chitchat.perDay', label: '随口话一天最多几条', type: 'int', min: 1, max: 10, unit: '条', dep: dep('rules.chitchat.enabled', true), hint: '默认 3 条。这是上限：设 5 也不会一天真发 5 条——实际从 1 条起，最近TA接得住才往上放，老被晾着就收回 1 条。独立计数，但照旧计入每天总上限' },
+  { group: '决定TA粘不粘人', path: 'rules.gapByTier.enabled', label: '间隔按由头分档', type: 'bool', hint: '关（默认）：所有由头共用 minGapMin 一刀切。开：回TA/接转发/追问 5 分钟，事件类（刚回来、深夜、久坐、self.md 新写入）60 分钟，其余闲聊 240 分钟——跨档至少隔回复档那么久' },
+  { group: '决定TA粘不粘人', path: 'rules.gapByTier.replyMin', label: '回复档间隔', type: 'int', min: 1, max: 240, unit: '分钟', dep: ON_TIER, hint: '只在分档开着时生效：回TA、接住TA转来的东西、追问之间至少隔这么久（默认 5 分钟）。它也是所有档的全局地板' },
+  { group: '决定TA粘不粘人', path: 'rules.gapByTier.eventMin', label: '事件档间隔', type: 'int', min: 1, max: 1440, unit: '分钟', dep: ON_TIER, hint: '只在分档开着时生效：刚回来、深夜、久坐、self.md 新写入这类事件由头之间至少隔这么久（默认 60 分钟）' },
+  { group: '决定TA粘不粘人', path: 'rules.gapByTier.chatMin', label: '闲聊档间隔', type: 'int', min: 1, max: 1440, unit: '分钟', dep: ON_TIER, hint: '只在分档开着时生效：睡眠、压力、步数、屏幕、课表、考试这类闲聊由头之间至少隔这么久（默认 240 分钟）' },
+  { group: '决定TA粘不粘人', path: 'rules.naturalTriggers.enabled', label: '事件也能挑开我', type: 'bool', hint: '关（默认）：只看时钟。开：一段活干完、刚下课、刚在 self.md 写一条，这几种时刻也算「可以开口」——静默、忙碌、离开、每日上限一概照旧拦着，间隔要不要让路看下面那条' },
+  { group: '决定TA粘不粘人', path: 'rules.naturalTriggers.takeGap', label: '事件拍可以让间隔让路', type: 'bool', dep: ON_NATURAL, hint: '关（默认）：事件只是把开口提前到发生的那一秒，两条之间仍隔满 minGap。开：事件拍可以越过 minGap，但仍要隔够「事件拍最短间隔」——不会因为下课就紧跟着再说一句' },
+  { group: '决定TA粘不粘人', path: 'rules.naturalTriggers.floorMin', label: '事件拍最短间隔', type: 'int', min: 1, max: 240, unit: '分钟', dep: ON_NATURAL, hint: '只在上面那条开着时生效：事件拍两次开口之间至少隔这么久（默认 20 分钟）。比 minGap 短，但仍是个地板' },
+  { group: '决定TA粘不粘人', path: 'rules.presenceSignal.enabled', label: '人不在只当信号', type: 'bool', dep: ON_JUDGE, hint: '关（默认）：电脑判定TA不在就不主动开口。开：不再拦截，改成写进快照让 judge 自己判断（电脑不在证明不了TA不在手机前）。只在 judge 也开着时生效——没有软决策层就不放开硬闸' },
+
   // ================================================================ 节奏
-  { group: '节奏', path: 'rules.dailyCap', label: '每天最多几条', type: 'int', min: 0, max: 20, unit: '条', hint: '0 = 今天一条都不主动发。默认 3 条' },
-  { group: '节奏', path: 'rules.minGapMin', label: '两条之间至少隔', type: 'int', min: 0, max: 1440, unit: '分钟', hint: '默认 240 分钟（四小时）。改小会明显变黏；「高级」里开了间隔分档后，这条只在分档关着时用' },
   { group: '节奏', path: 'rules.replyCooldownMin', label: 'TA说完话先等几分钟', type: 'int', min: 0, max: 120, unit: '分钟', hint: '默认 5 分钟。TA刚说完你就回，等于抢话' },
   { group: '节奏', path: 'send.split.enabled', label: '一句一条分开发', type: 'bool', hint: '开（默认）：正文里空一行就算另一条，发的时候一条一条发，像人连着说几句。关：整段并成一条' },
   { group: '节奏', path: 'send.split.maxParts', label: '一轮最多拆几条', type: 'int', min: 1, max: 4, unit: '条', dep: dep('send.split.enabled', true), hint: '默认 4 条；多出来的并进最后一条' },
@@ -236,10 +252,7 @@ export const SCHEMA = [
   { group: '节奏', path: 'send.split.minGapMs', label: '分段之间至少隔几秒', type: 'num', scale: 1000, min: 0, max: 120, unit: '秒', dep: dep('send.split.enabled', true), hint: '默认 1.2 秒。按字数和随机量增加，上限可另设。' },
   { group: '节奏', path: 'send.split.maxRoundMs', label: '一轮最多发多久', type: 'int', scale: 1000, min: 1, max: 300, unit: '秒', dep: dep('send.split.enabled', true), hint: '默认 90 秒。拆得太多、快超时了，剩下的几条并成一条发' },
   { group: '节奏', path: 'rules.proactive', label: '我会主动找你', type: 'bool', hint: '开（默认）：没人说话的时候也会按由头找你。关：只回你的话，不主动开口（安静模式）' },
-  { group: '节奏', path: 'rules.qqContinuation', label: 'QQ 热聊补一句', type: 'bool', hint: '刚来回聊了几轮，普通回复发完并等待设定时长后，可以顺着话题再补一句。有新消息就取消；没内容或没回应就停。遵守静默、忙碌时段和每日上限。' },
   { group: '节奏', path: 'rules.autoReply', label: 'TA说话我自动回', type: 'bool', hint: '开（默认）：TA说完、隔了冷却时间就回。关：TA的话不自动回，只按「主动找TA」那条轨道走' },
-  { group: '节奏', path: 'rules.feedback.enabled', label: '按TA的反应调由头', type: 'bool', hint: '开（默认）：记下哪一类发出去TA接住了、哪一类老没人应，老不接的先压几天；关：所有由头一视同仁' },
-  { group: '节奏', path: 'rules.adaptiveGap', label: '没人应时自己少说点', type: 'bool', hint: '开（默认）：连着两条没回，之后两条之间自动多等一会儿（最多拖成三倍）；关：永远按上面那个固定间隔' },
 
   // ================================================================ 说什么
   { group: '说什么', path: 'content.enabled', label: '允许生成内容', type: 'bool', hint: '关掉 = 只判定不写句子（排障时用）' },
@@ -247,9 +260,7 @@ export const SCHEMA = [
   { group: '说什么', path: 'content.maxChars', label: '一句话最多', type: 'int', min: 10, max: 200, unit: '字', hint: '默认 60 字。超过这个长度 guard 会打回重写' },
   { group: '说什么', path: 'content.forward.enabled', label: '转发视频真的看', type: 'bool', hint: '开：下载转发视频。画面需要 dsh-video-storyboard 插件和支持图片的模型；画面不可用时用口播，缓存注明证据来源' },
   { group: '说什么', path: 'content.forward.asrAutostart', label: '转写服务按需起', type: 'bool', dep: dep('content.forward.enabled', true), hint: '开：要转写时自己拉起 whisper，转完立刻关掉（常驻会和 Breeze 一起把内存吃满）；关：只在服务本来就在跑时才转写' },
-  // —— 随口说话：没有由头时也可以说一句。主开关放首屏，细节收进高级。
-  { group: '说什么', path: 'rules.chitchat.enabled', label: '没什么事也可以说一句', type: 'bool', hint: '关（默认）：没有由头就不说话。开：别的由头都挑不出来时，让模型判一句「随口话」（「在吗」那种空招呼不算）——只走模型，写不出来就不发。一天最多几条在下面的「随口话一天最多几条」里自己设；不说时段跟着全局静默和TA睡着的那段走。要「让模型自己决定说不说」也开着才生效' },
-  { group: '高级', path: 'rules.chitchat.perDay', label: '随口话一天最多几条', type: 'int', min: 1, max: 10, unit: '条', dep: dep('rules.chitchat.enabled', true), hint: '默认 3 条。这是上限：设 5 也不会一天真发 5 条——实际从 1 条起，最近TA接得住才往上放，老被晾着就收回 1 条。独立计数，但照旧计入每天总上限' },
+  // —— 随口说话细节参数仍收进高级；主开关与每天几条放在「决定TA粘不粘人」。
   { group: '高级', path: 'rules.chitchat.dayStart', label: '最早几点', type: 'int', min: 0, max: 1439, unit: '分钟（从 0 点算）', dep: dep('rules.chitchat.enabled', true), hint: '默认 480 分钟（= 08:00）。也受休息时段限制，相关参数见「时间间隔」' },
   { group: '高级', path: 'rules.chitchat.dayEnd', label: '最晚几点', type: 'int', min: 0, max: 1439, unit: '分钟（从 0 点算）', dep: dep('rules.chitchat.enabled', true), hint: '默认 1410 分钟（= 23:30）；同时受「休息时段」限制（--health 能看到推导结果）' },
   { group: '高级', path: 'rules.chitchat.maxChars', label: '随口话最多几个字', type: 'int', min: 10, max: 80, unit: '字', dep: dep('rules.chitchat.enabled', true), hint: '默认 40 字。写在硬要求里，也要过 guard；超了打回重写，再超就不发' },
@@ -301,20 +312,11 @@ export const SCHEMA = [
   { group: '高级', path: 'rules.backfill', label: '补记静默里说的话', type: 'bool', hint: '开（默认）：静默/断线期间TA说过的话，下一拍补算成「接住了我上一条」。关：只认这一拍之后的新消息' },
   { group: '高级', path: 'rules.backfillWindowMin', label: '补记往回找多久', type: 'int', min: 5, max: 120, unit: '分钟', dep: dep('rules.backfill', true), hint: '默认 30 分钟。TA的话离现在超过这么久就不补记了——太久以前的一句，接住也没意义' },
   { group: '高级', path: 'rules.replyGuard', label: '发之前再查一遍TA回没回', type: 'bool', hint: '开（默认）：开口前再查一遍 QQ / 抖音的最新出站记录，另一个值班会话已经回过了就不再回一次；关：只看这一拍开头读到的数据' },
-  { group: '高级', path: 'rules.judge.enabled', label: '让模型自己决定说不说', type: 'bool', hint: '关（默认）：规则挑到由头就写。开：规则只提一条建议，把整份处境交给模型——它可以说不说，也可以换个角度；它写好的句子仍要过长度/口吻/防重复那些护栏，判坏了就退回规则链' },
   { group: '高级', path: 'rules.judge.attempts', label: '判坏了再问几次', type: 'int', min: 1, max: 3, unit: '次', dep: ON_JUDGE, hint: '模型偶尔会把「判断」直接写成一句回话（不是 JSON），那一次算判坏、再问一次；问这么多次还不行就退回规则链。设 1 = 不重试' },
   { group: '高级', path: 'rules.judge.shadow', label: '被拦的拍子也预演一次', type: 'bool', dep: ON_JUDGE, hint: '关（默认）：护栏拦下就结束。开：被拦的拍子按比例再问模型一次「你会不会说、会说什么」，只记不发——用来攒 judge 的真实判断分布。结果不进接住率（TA根本没收到）' },
   { group: '高级', path: 'rules.judge.shadowSampleRate', label: '预演采样比例', type: 'num', min: 0, max: 1, dep: ON_JUDGE, hint: '只在预演开着时生效（默认 0.25）：被拦的拍子只有这个比例会真问模型，其余直接丢——别一天烧一百次调用' },
-  { group: '高级', path: 'rules.naturalTriggers.enabled', label: '事件也能挑开我', type: 'bool', hint: '关（默认）：只看时钟。开：一段活干完、刚下课、刚在 self.md 写一条，这几种时刻也算「可以开口」——静默、忙碌、离开、每日上限一概照旧拦着，间隔要不要让路看下面那条' },
-  { group: '高级', path: 'rules.naturalTriggers.takeGap', label: '事件拍可以让间隔让路', type: 'bool', dep: ON_NATURAL, hint: '关（默认）：事件只是把开口提前到发生的那一秒，两条之间仍隔满 minGap。开：事件拍可以越过 minGap，但仍要隔够「事件拍最短间隔」——不会因为下课就紧跟着再说一句' },
-  { group: '高级', path: 'rules.naturalTriggers.floorMin', label: '事件拍最短间隔', type: 'int', min: 1, max: 240, unit: '分钟', dep: ON_NATURAL, hint: '只在上面那条开着时生效：事件拍两次开口之间至少隔这么久（默认 20 分钟）。比 minGap 短，但仍是个地板' },
   { group: '高级', path: 'rules.naturalTriggers.courseWindowMin', label: '课上完之后算多久', type: 'int', min: 1, max: 60, unit: '分钟', dep: ON_NATURAL, hint: '这一段的课都上完后的这段时间里都算「课上完了」（默认 20 分钟）。最后一节下课你可能正在收拾东西、在路上，窗口只有 5 分钟会天天错过。同一个时间段一天只算一次' },
   { group: '高级', path: 'rules.naturalTriggers.courseSplitMin', label: '上午和下午的分界', type: 'int', min: 0, max: 1440, unit: '分钟（从 0 点算）', dep: ON_NATURAL, hint: '默认 720 分钟（= 12:00）：开始时间在这之前算上午的课，之后算下午和晚上的课；上午的课上完提一句，剩下的课上完再提一句' },
-  { group: '高级', path: 'rules.gapByTier.enabled', label: '间隔按由头分档', type: 'bool', hint: '关（默认）：所有由头共用 minGapMin 一刀切。开：回TA/接转发/追问 5 分钟，事件类（刚回来、深夜、久坐、self.md 新写入）60 分钟，其余闲聊 240 分钟——跨档至少隔回复档那么久' },
-  { group: '高级', path: 'rules.gapByTier.replyMin', label: '回复档间隔', type: 'int', min: 1, max: 240, unit: '分钟', dep: ON_TIER, hint: '只在分档开着时生效：回TA、接住TA转来的东西、追问之间至少隔这么久（默认 5 分钟）。它也是所有档的全局地板' },
-  { group: '高级', path: 'rules.gapByTier.eventMin', label: '事件档间隔', type: 'int', min: 1, max: 1440, unit: '分钟', dep: ON_TIER, hint: '只在分档开着时生效：刚回来、深夜、久坐、self.md 新写入这类事件由头之间至少隔这么久（默认 60 分钟）' },
-  { group: '高级', path: 'rules.gapByTier.chatMin', label: '闲聊档间隔', type: 'int', min: 1, max: 1440, unit: '分钟', dep: ON_TIER, hint: '只在分档开着时生效：睡眠、压力、步数、屏幕、课表、考试这类闲聊由头之间至少隔这么久（默认 240 分钟）' },
-  { group: '高级', path: 'rules.presenceSignal.enabled', label: '人不在只当信号', type: 'bool', dep: ON_JUDGE, hint: '关（默认）：电脑判定TA不在就不主动开口。开：不再拦截，改成写进快照让 judge 自己判断（电脑不在证明不了TA不在手机前）。只在 judge 也开着时生效——没有软决策层就不放开硬闸' },
   { group: '高级', path: 'content.llm.attempts', label: '写歪了重写几次', type: 'int', min: 1, max: 3, unit: '次', dep: ON_CONTENT, hint: '默认 2 次。重写一次大约多花一次生成的时间' },
   { group: '高级', path: 'content.prompt.recentOutbound', label: '让TA看见我最近说过什么', type: 'bool', dep: ON_CONTENT, hint: '开（默认）：写新的一句时，把我最近真发出去的 5 条也摆给模型看，免得连着几天一个开头、一个话题；关：当这些记录不存在，行为和没加这段之前一样' },
   { group: '高级', path: 'content.prompt.slotStats', label: '让TA看见话题接住率', type: 'bool', dep: ON_CONTENT, hint: '开（默认）：告诉模型哪类由头TA接住了、哪类老没人应；关：不摆这些数字，行为和没加这段之前一样' },
@@ -619,11 +621,20 @@ function groupSummary(cfg, name, items = []) {
   if (name === '高级') {
     return `${items.length} 项 · 平时不用动`;
   }
-  if (name === '节奏') {
+  if (name === '决定TA粘不粘人') {
     const cap = cfg?.rules?.dailyCap ?? 3;
-    const gap = cfg?.rules?.minGapMin ?? 240;
+    const tiered = cfg?.rules?.gapByTier?.enabled === true;
+    const gap = tiered
+      ? `分档 ${cfg?.rules?.gapByTier?.eventMin ?? 60}/${cfg?.rules?.gapByTier?.chatMin ?? 240} 分钟`
+      : `至少隔 ${cfg?.rules?.minGapMin ?? 240} 分钟`;
+    const chitchat = cfg?.rules?.chitchat?.enabled === true ? ' · 可随口搭话' : '';
+    return `每天最多 ${cap} 条 · ${gap}${chitchat}`;
+  }
+  if (name === '节奏') {
+    const wait = cfg?.rules?.replyCooldownMin ?? 5;
     const auto = cfg?.rules?.autoReply !== false ? '自动回TA' : '不自动回';
-    return `每天最多 ${cap} 条 · 至少隔 ${gap} 分钟 · ${auto}`;
+    const split = cfg?.send?.split?.enabled !== false ? '一句一条分开发' : '整段一次发';
+    return `回复先等 ${wait} 分钟 · ${auto} · ${split}`;
   }
   if (name === '说什么') {
     const t = cfg?.content?.topics || {};
