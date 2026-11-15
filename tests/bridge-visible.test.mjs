@@ -7,8 +7,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { bridgeLastOut, bridgeLastIn, bridgeInFlight, qqLastOutbound, answeredAlready } from '../src/outbound.js';
+import { bridgeLastOut, bridgeLastIn, bridgeInFlight, qqLastOutbound, answeredAlready, recentTurns, recentOutbound } from '../src/outbound.js';
 import { readQq } from '../src/channels/qq.js';
+import { pickTopic } from '../src/topics.js';
 
 function home(files = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pg-bridge-'));
@@ -101,4 +102,29 @@ test('没有 last-in.json → lastUserTs 仍按 qq-history（空就是 null）�
   home();
   const ch = readQq({ peerId: '10001' }, 1_700_000_600_000, 'Asia/Shanghai');
   assert.equal(ch.lastUserTs, null);
+});
+
+test('qq-history 为空但桥刚有过 QQ 对话：buildContext 看到她刚说话，不会误判 catchup 一天没出声', async () => {
+  const now = 1_794_752_526_655;
+  const twoDaysAgo = new Date(now - 2 * 86_400_000).toISOString();
+  const dir = home({
+    'autonomy/qq-history.json': { turns: [] },
+    'qq-bridge/last-in.json': { peer: '10001', peerKind: 'private', at: now - 40 * 60_000, text: '我回你了哦' },
+    'qq-bridge/last-out.json': marker({ firstAt: now - 39 * 60_000, lastAt: now - 39 * 60_000, count: 1, text: '好，看到了。' }),
+    'douyin-duty/memory/dm-old.json': {
+      messages: [{ from: 'them', at: twoDaysAgo, text: '旧抖音视频' }],
+    },
+  });
+  const { buildContext } = await import(`../src/context.js?bridge=${now}`);
+  const cfg = { channels: { qq: { peerId: '10001' } }, content: { topics: { catchup: true, catchupDays: 1, share: false } } };
+  const ch = readQq({ peerId: '10001' }, now, 'Asia/Shanghai');
+  const ctx = buildContext({ cfg, now, st: {}, ch, sys: {}, tz: 'Asia/Shanghai' });
+  assert.equal(ctx.her.lastChannel, 'qq');
+  assert.equal(ctx.her.lastText, '我回你了哦');
+  assert.equal(ctx.her.answeredOnOwnChannel, true);
+  assert.ok(ctx.her.lastAgoSec >= 2390 && ctx.her.lastAgoSec <= 2410);
+  const picked = pickTopic(ctx, cfg, now, {});
+  assert.notEqual(picked?.slot, 'catchup');
+  assert.equal(recentTurns({ dsh: dir }).map((r) => r.text).includes('我回你了哦'), true);
+  assert.equal(recentOutbound({ dsh: dir }).some((r) => r.text.includes('好，看到了')), true);
 });

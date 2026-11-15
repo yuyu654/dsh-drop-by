@@ -98,3 +98,22 @@ test('judgeDecision：attempts 可配，设成 1 就不重试', async () => {
   assert.equal(r.reason, 'JUDGE_NOT_JSON');
   assert.equal(n, 1);
 });
+
+test('judgeDecision / judgePrompt：给出足够输出预算，并约束 share 不说黑话、看兴趣、留接话口子', async () => {
+  let seen = null;
+  const r = await judgeDecision({
+    snapshot,
+    persona,
+    cfg: {},
+    generate: async (args) => {
+      seen = args;
+      return { ok: true, text: '{"say": false, "why": "对方不感兴趣"}' };
+    },
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.say, false);
+  assert.ok(seen.minOutputTokens >= 512, `minOutputTokens=${seen.minOutputTokens}`);
+  assert.match(seen.prompt, /大白话/);
+  assert.match(seen.prompt, /接话/);
+  assert.match(seen.prompt, /她接过我哪类话/);
+});

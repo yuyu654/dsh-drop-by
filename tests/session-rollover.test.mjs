@@ -100,6 +100,13 @@ test('conversation extraction ignores context envelopes, empty messages, and thi
   assert.deepEqual(extractHandoffMessages(history, 2, stripQqSourceHeader), [
     { role: 'user', text: '最新问题\n补充一句' }, { role: 'assistant', text: '最后的回答' },
   ]);
+  const xmlWrapped = [
+    user('<qq_reply_context>\n【dsh-drop-by 角色背景】\n{}\n</qq_reply_context>\n\n真正的提问'),
+    assistant('正常回复'),
+  ];
+  assert.deepEqual(extractHandoffMessages(xmlWrapped, 2, stripQqSourceHeader), [
+    { role: 'user', text: '真正的提问' }, { role: 'assistant', text: '正常回复' },
+  ]);
   assert.deepEqual(extractHandoffMessages(history, 0), []);
 });
 

@@ -254,7 +254,19 @@ export function recentTurns({ limit = 6, env = process.env, dsh = null } = {}) {
     if (t?.user) out.push({ who: 'her', text: String(t.user).replace(/\s+/g, ' ').trim().slice(0, 80), ts });
     if (t?.reply) out.push({ who: 'me', text: String(t.reply).replace(/\s+/g, ' ').trim().slice(0, 80), ts });
   }
-  return out;
+  const bi = bridgeLastIn({ env, dsh: home });
+  const bo = bridgeLastOut({ env, dsh: home });
+  const extra = [];
+  if (bi.ts && bi.text && !out.some((r) => r.who === 'her' && Math.abs(r.ts - bi.ts) <= 2000)) {
+    extra.push({ who: 'her', text: bi.text, ts: bi.ts });
+  }
+  if (bo.ts && bo.text && !out.some((r) => r.who === 'me' && Math.abs(r.ts - bo.ts) <= 2000)) {
+    extra.push({ who: 'me', text: bo.text, ts: bo.ts });
+  }
+  if (!extra.length) return out;
+  return [...out, ...extra]
+    .sort((a, b) => a.ts - b.ts || (a.who === b.who ? 0 : a.who === 'her' ? -1 : 1))
+    .slice(-n * 2);
 }
 
 /**
@@ -273,6 +285,11 @@ export function recentOutbound({ limit = 5, env = process.env, dsh = null, cfg =
     const ts = Number(t?.at) || 0;
     const text = flat(t?.reply);
     if (ts && text) rows.push({ ts, channel: 'qq', text });
+  }
+  const bo = bridgeLastOut({ env, dsh: home });
+  const boText = flat(bo.text);
+  if (bo.ts && boText && !rows.some((r) => r.channel === 'qq' && Math.abs(r.ts - bo.ts) <= 2000)) {
+    rows.push({ ts: bo.ts, channel: 'qq', text: boText });
   }
 
   // 抖音通道关着时 dm 记忆是陈的（没人盯梢更新），别拿旧话冒充「我最近说的」。

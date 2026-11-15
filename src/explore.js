@@ -180,6 +180,7 @@ export async function exploreRound({ persona, previous, interest = '', focusTopi
     const planPrompt = [
       '替角色选这一轮的方向。research 是推进自己的小问题，leisure 是照人设找点感兴趣的东西看看，不用产出研究结论。',
       '兴趣栏可以指定长期追的小说、漫画或网站，也可以补事实。按作品和上次进度查找新一话或新线索。研究方向也可以是娱乐兴趣。只有明确是工作任务时，休闲轮才另选内容。',
+      '兴趣栏（interest）有内容时优先贴近对方在意的方向；就算没指定，也优先挑能落到生活体验、双方能搭上话的题，避开太偏门枯燥的纯公式推演。',
       '只返回 JSON {"mode":"research 或 leisure","kind":"web、video 或 none","query":"一条简短的公开关键词"}。没有合适的外部资料时用 none。查询不要包含人设中的私人信息、账号、聊天原文或本机路径。',
       JSON.stringify({ persona: persona.text.slice(0, 16_000), interest: line(interest, 160), thread: old.thread,
         lastLeisure: old.leisure?.topic, lastMode: prior?.lastMode, streak: prior?.modeStreak,
@@ -208,6 +209,7 @@ export async function exploreRound({ persona, previous, interest = '', focusTopi
       : '本轮只有文字推演和已有探索笔记，没有网页浏览、视频、图像、文件执行或发消息能力。可以比较想法、想一个反例、细化未解问题；不能声称查过、看过、运行过或向任何人发过东西。把猜想明确说成猜想。',
     ...(mode === 'leisure' ? ['这轮是休闲。挑自己感兴趣的东西，写一个真实的印象或为什么想看。遇到喜欢的可留一句分享，没意思就留空；不用给研究线写进度，next 可以留空。'] : []),
     '可另填 checkpoint（本轮确实读到哪）、discovery（本轮真正新增的发现）、waitingFor（还等什么）。没有新进展就不生成分享。',
+    'share 是准备发给用户的聊天钩子：用外行朋友听得懂的大白话讲，不要写公式或专业黑话，并且要留出一句她能接话的问句或话题；要是这轮太偏门没法轻松聊起，就把 share 留空。',
     ...(sources.length ? ['progress 引用本轮资料时，填写 progressSourceIndex（从 0 开始，只能对应一条实际取得的来源）。纯推演填 null。只凭标题或摘要可以写为何感兴趣，不可写读到具体章节或看完内容；本轮没有运行实验的能力。'] : []),
     (requestedResearch || pinnedTopic) ? '这是用户明确要求推进的一轮研究。若 requestedTopic 有值，只做这一题；没有证据就如实区分推演。' : '',
     retry ? '本轮已确认换源，只处理刚才同一个检索主题。有原研究题就继续，拿不到正文时诚实记录，可选择 skip。' :

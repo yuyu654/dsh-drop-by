@@ -1,7 +1,7 @@
 // compose.test.mjs —— 清洗、红线、模板、模式回落。全部不联网、不调模型。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { clean, guard, renderTemplate, compose, buildPrompt, styleSamples, coarseMin } from '../src/compose.js';
+import { clean, guard, renderTemplate, compose, composeDraft, buildPrompt, styleSamples, coarseMin } from '../src/compose.js';
 
 const cfgOf = (o = {}) => ({
   content: { mode: 'template', maxChars: 60, ...o, topics: {} },
@@ -549,4 +549,66 @@ test('compose：模型两次都只吐「那条」→ 要么不发，要么退回
   } else {
     assert.equal(r.reason, 'GUARD_REJECTED');
   }
+});
+
+test('composeDraft / compose：share 探索内容拦公式黑话和无接话口子的独白，有接话口子的大白话放行', async () => {
+  const cfg = { content: { mode: 'llm', maxChars: 60, topics: {} } };
+  const exploreTopic = topicOf('share', { section: '探索', at: Date.now() });
+
+  // 1. 纯独白定论（无问句、无接话邀请）被 SHARE_NO_HOOK 拦掉
+  const closed = composeDraft({
+    ctx: ctxOf(),
+    topic: exploreTopic,
+    cfg,
+    draft: '插排上那只功率计量，别只盯着超没超线——把超出的那点攒成热量，先热起来的才先跳。',
+  });
+  assert.equal(closed.ok, false);
+  assert.equal(closed.violations.some((v) => v.code === 'SHARE_NO_HOOK'), true);
+
+  // 2. 带公式符号被 SHARE_TOO_TECHNICAL 拦掉
+  const formula = composeDraft({
+    ctx: ctxOf(),
+    topic: exploreTopic,
+    cfg,
+    draft: '热记忆方程 ds/dt=(P/Pn)^A-1，你看懂了吗？',
+  });
+  assert.equal(formula.ok, false);
+  assert.equal(formula.violations.some((v) => v.code === 'SHARE_TOO_TECHNICAL'), true);
+
+  // 3. 大白话 + 留接话口子放行
+  const good = composeDraft({
+    ctx: ctxOf(),
+    topic: exploreTopic,
+    cfg,
+    draft: '要是插排按超负荷攒的热量慢慢跳闸，你在宿舍遇见过一开吹风机就断电不？',
+  });
+  assert.equal(good.ok, true);
+
+  // 4. compose 重试闭环：第一版给无钩子独白被退回，第二版改出问句通过
+  let turn = 0;
+  const retried = await compose({
+    ctx: ctxOf(),
+    topic: exploreTopic,
+    persona: { kind: 'local', text: '# 人格', sources: [] },
+    cfg,
+    now: Date.now(),
+    llmReady: true,
+    generate: async () => {
+      turn += 1;
+      return turn === 1
+        ? { ok: true, text: '插排功率计量其实按发热累积来算才准。', ms: 3 }
+        : { ok: true, text: '宿舍插排老是忽然跳闸挺烦的，你那边也这样吗？', ms: 3 };
+    },
+  });
+  assert.equal(retried.ok, true);
+  assert.equal(retried.source, 'llm-retry');
+
+  // 5. actionRetry / loginSite 不受 share 接话钩子限制误伤
+  const retryDraft = composeDraft({
+    ctx: ctxOf(),
+    topic: topicOf('share', { actionRetry: true, at: Date.now() }),
+    cfg,
+    draft: '刚才那条没打开发现被挡住了，换个站点查查。',
+  });
+  assert.equal(retryDraft.ok, true);
 });

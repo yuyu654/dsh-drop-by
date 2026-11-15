@@ -22,10 +22,20 @@ function textContent(content) {
 
 function stripUserEnvelope(text, stripSourceHeader) {
   let user = text.trim();
-  while (INJECTED_HEADS.some((head) => user.startsWith(head))) {
-    const end = user.indexOf('\n\n');
-    if (end < 0) return '';
-    user = user.slice(end + 2).trimStart();
+  while (true) {
+    if (user.startsWith('<qq_reply_context>')) {
+      const close = user.indexOf('</qq_reply_context>');
+      if (close < 0) return '';
+      user = user.slice(close + '</qq_reply_context>'.length).trimStart();
+      continue;
+    }
+    if (INJECTED_HEADS.some((head) => user.startsWith(head))) {
+      const end = user.indexOf('\n\n');
+      if (end < 0) return '';
+      user = user.slice(end + 2).trimStart();
+      continue;
+    }
+    break;
   }
   return stripSourceHeader(user).trim();
 }

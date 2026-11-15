@@ -53,6 +53,8 @@ ${p}
     '· draft 只许说快照里这一件事：不翻旧账、不拽只有你们两个知道的生活梗当理由。要关心就直接问她这一件，别追加一句预设立场的数落（「别又…」「又不好好…」）。',
     '· 材料里的旧话带日期（今天／昨天／N 天前）：只有标着「今天」的才能说成「今天」「刚才」，「昨天」的才是昨晚；标着更早的，不许说成昨晚、今早、刚才——要提就直接说那件事，别提时间。',
     '· 别围着「她在电脑前」转：快照里「最近发出去的几条」要是已经在说屏幕、坐着、硬撑，这一拍就换别的事——她刚说过的话、没回的那条、我自己这边的判断。同一个观察一天说一次就够，反复提会像监视。',
+    '· 若要聊自己琢磨的事或分享内容（share / 我的探索近况）：先对照「她接过我哪类话」「我记得的事」看她是不是真感兴趣；明显偏门、她近期常冷处理或你自己没法翻译成日常聊天的话，就写 "say": false。',
+    '· 这类 share 的 draft 严禁出现公式、字母代号、专业黑话或教科书式定论——一定译成外行朋友一听就懂的大白话，并且必须留出她能接话的口子（顺口问她看法、经历或丢个问题过去），别只讲完一句自己的结论就收尾。',
     '',
     ...contract,
     '',
@@ -114,7 +116,7 @@ export async function judgeDecision({ snapshot, persona, cfg, generate, llmReady
         base;
     let r = null;
     try {
-      r = await generate({ prompt, cfg, timeoutMs, tail: 'json' });
+      r = await generate({ prompt, cfg, timeoutMs, tail: 'json', minOutputTokens: 600 });
     } catch (e) {
       return { ok: false, reason: 'JUDGE_ERROR', note: String(e?.message || e).slice(0, 160), ms: Date.now() - t0 };
     }

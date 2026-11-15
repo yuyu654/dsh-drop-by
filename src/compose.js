@@ -55,7 +55,7 @@ const BANNED = [
   { code: 'META_TALK', re: /(人格|人设|设定|按你的要求|根据.{0,6}资料|我(已经)?分析|思考过程)/, why: '把生成过程说出来了' },
   { code: 'LISTY', re: /(^|\s)(?:[-*·]|\d+[.)、])\s+/, why: '写成清单了' },
   { code: 'HEADING', re: /^#{1,6}\s/, why: '写成标题了' },
-  { code: 'LEAK', re: /[A-Za-z]:\\|\.json\b|\.md\b|presence-gate|dsh-|AGENT\.md|self\.md/, why: '泄露内部路径/文件名' },
+  { code: 'LEAK', re: /[A-Za-z]:\\|\.json\b|\.md\b|presence-gate|dsh-|AGENT\.md|self\.md|【dsh-drop-by|【来源归属|<qq_reply_context>|Current runtime context|MNEMON RUNTIME/, why: '泄露内部路径/文件名/上下文标记' },
   { code: 'GREETING', re: /^(亲爱的|宝贝|老婆|主人)/, why: '称呼越界' },
   // 「虚拟不虚拟的另说。你先告诉我…」——把她说的事一句推开，再换自己的题，等于没接住。
   { code: 'BRUSH_OFF', re: /(另说|先不说这个|不说这个|扯远了|回头再说|这个先放放|说点别的)/, why: '把她说的事一句推开了：要接就接，不接就别提' },
@@ -156,6 +156,25 @@ export function guard(text, cfg, ctx = null, opts = {}) {
   // 「不是 A，是 B」的对偶说理：带着「你」还能算在跟她说话，没有「你」就是自我抒情
   if (!/你/.test(t) && /(不是|并非|不在于)[^，。！？]{1,26}[，,]\s*(?:而?是)/.test(t)) {
     violations.push({ code: 'ANTITHESIS', why: '对偶说理，而且全句没有「你」' });
+  }
+  if (
+    opts.shareTechnical &&
+    /(?:d[a-zA-Z]\s*\/\s*d[a-zA-Z]|[a-zA-Z][a-zA-Z0-9_]*\s*=\s*[^，。！？\s]*[/*^+\-()]|\)\s*\^|[A-Za-z]\s*\/\s*[A-Za-z][a-z]|[αβγδθλμπσφψωΣΔ])/.test(t)
+  ) {
+    violations.push({
+      code: 'SHARE_TOO_TECHNICAL',
+      why: '带了公式、字母符号或偏专业的表达式；改用外行朋友一听就懂的大白话讲那件具体的事',
+    });
+  }
+  if (
+    opts.shareNeedHook &&
+    !/[？?]/.test(t) &&
+    !/(?:你觉得|你怎么看|你想|你那|你有|你会|你用过|你遇|试过|聊聊|说说|猜猜|好奇|算不算|像不像|是不是|对不对|行不行|怎么样|咋样|咋看|怎么说)/.test(t)
+  ) {
+    violations.push({
+      code: 'SHARE_NO_HOOK',
+      why: '只顾着自己下结论，没留给她接话的口子；加上一句问她看法、经历或顺手把话题抛给她',
+    });
   }
 
   // 照抄我自己上一句（连续 8 个字一模一样）：看着像接话，其实是把旧句子搬过来再拼一半。
@@ -486,6 +505,12 @@ export function buildPrompt({ ctx, topic, persona, cfg, feedback, st = {} }) {
         : '- 这是我自己琢磨出来的一条判断，别说成道理，落到今天具体看见的一件小事上。',
       '- 不许出现「人」「大家」，只能说「你」或者具体的事。',
       '- 不许照搬原句、不许加引号、不许提「我记过」「来源」。',
+      ...(topic.evidence?.actionRetry || topic.evidence?.loginSite
+        ? []
+        : [
+            '- 说给外行朋友听：严禁公式、字母代号和冷门专业黑话，一定要翻译成生活里听得懂的大白话。',
+            '- 必须留出她能接话的口子（顺口问她看法、问她遇到过没有或把话头抛给她），别只下完自己的结论就结束。',
+          ]),
     ],
     reply: ['- 先接住她那句话：她说了什么就应什么，别自顾自换话题。'],
     noReply: [
@@ -703,6 +728,17 @@ export function buildChitchatPrompt({ ctx, topic, persona, cfg, feedback, st = {
 
 // ---------------------------------------------------------------- 主入口
 
+function shareGuardOpts(topic) {
+  const ev = topic?.evidence || {};
+  const isRealShare = topic?.slot === 'share' && !ev.actionRetry && !ev.loginSite &&
+    Boolean(ev.at || ev.discoveryId || ev.source || ev.section);
+  return {
+    topicLabel: topic?.label,
+    shareTechnical: isRealShare,
+    shareNeedHook: isRealShare && !ev.source,
+  };
+}
+
 /**
  * 生成一句话。
  * 返回 { ok, text, source, slot, reason?, violations?, meta? }
@@ -791,7 +827,7 @@ export async function compose({ ctx, topic, persona, cfg, now, st = {}, generate
         }
         ms += Number(r.ms) || 0;
         const text = clean(r.text);
-        const g = guard(text, cfg, ctx, { topicLabel: topic?.label });
+        const g = guard(text, cfg, ctx, shareGuardOpts(topic));
         if (g.ok) {
           return {
             ok: true,
@@ -806,7 +842,7 @@ export async function compose({ ctx, topic, persona, cfg, now, st = {}, generate
       }
 
       const tpl = renderTemplate(topic, ctx);
-      const tg = tpl ? guard(tpl, cfg, ctx, { topicLabel: topic?.label }) : { ok: false };
+      const tg = tpl ? guard(tpl, cfg, ctx, shareGuardOpts(topic)) : { ok: false };
       const envFail = Boolean(lastFail?.reason && lastFail.reason !== 'GUARD_REJECTED');
       if (tg.ok) {
         return {
@@ -869,7 +905,7 @@ export function composeDraft({ ctx, draft, cfg, topic = null }) {
   if (!raw) return { ok: false, source: 'judge', reason: 'JUDGE_EMPTY_DRAFT', slot: topic?.slot, violations: [] };
   const text = clean(raw);
   if (!text) return { ok: false, source: 'judge', reason: 'JUDGE_EMPTY_DRAFT', slot: topic?.slot, violations: [] };
-  const g = guard(text, cfg, ctx, { topicLabel: topic?.label });
+  const g = guard(text, cfg, ctx, shareGuardOpts(topic));
   return {
     ok: g.ok,
     text,

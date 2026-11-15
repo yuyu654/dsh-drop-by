@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { LATEST_PATH } from './fishmail.js';
 import { dshHome } from './detect.js';
-import { recentTurns } from './outbound.js';
+import { bridgeLastIn, bridgeLastOut, recentTurns } from './outbound.js';
 import { agoSec } from './time.js';
 import { loadPersona } from './persona.js';
 import { actionProposalCandidate } from './action-proposal.js';
@@ -69,7 +69,7 @@ function readDouyinDialogue(limit = 6) {
   return all.length ? all : null;
 }
 
-/** QQ：autonomy/qq-history.json 的 turns[{user, reply, at}]。 */
+/** QQ：autonomy/qq-history.json 的 turns[{user, reply, at}]，并合并 qq-bridge/last-in.json & last-out.json。 */
 function readQqDialogue(limit = 6) {
   const j = readJson(path.join(DSH, 'autonomy', 'qq-history.json'), null);
   const turns = Array.isArray(j?.turns) ? j.turns : [];
@@ -81,6 +81,14 @@ function readQqDialogue(limit = 6) {
     // 免得抖音值班回了别人私信、把 QQ 上这条还没回的消息也算成「已经应过」。
     if (t.user) all.push({ ts, from: 'her', text: String(t.user).slice(0, 300), kind: 'text', channel: 'qq' });
     if (t.reply) all.push({ ts: ts + 1, from: 'me', text: String(t.reply).slice(0, 300), kind: 'text', channel: 'qq' });
+  }
+  const bi = bridgeLastIn({ dsh: DSH });
+  if (bi.ts && !all.some((m) => m.from === 'her' && Math.abs(m.ts - bi.ts) <= 2000)) {
+    all.push({ ts: bi.ts, from: 'her', text: bi.text, kind: 'text', channel: 'qq' });
+  }
+  const bo = bridgeLastOut({ dsh: DSH });
+  if (bo.ts && !all.some((m) => m.from === 'me' && Math.abs(m.ts - bo.ts) <= 2000)) {
+    all.push({ ts: bo.ts, from: 'me', text: bo.text, kind: 'text', channel: 'qq' });
   }
   all.sort((a, b) => a.ts - b.ts);
   return all.length ? all.slice(-limit) : null;
