@@ -154,6 +154,10 @@ const DEFAULTS = {
     // holidays = 额外放假的日子；workdays = 调休上班的周末（优先于 holidays）。
     holidays: '',
     workdays: '',
+    // 节假日日历接口：URL 里 {year} 会替换成四位数年份。
+    // 配好之后让模型调 presence_holiday_calendar(action=refresh) 拉一次，写进 data/holidays-<年>.json；
+    // 留空 = 只用 src/holidays.js 内置表 + 上面手填的日期。
+    calendar: { url: '', auto: true },
     // 写给模型的素材，各自一个开关（默认开）。关掉那一段就整段不进 prompt，行为和加它之前完全一样。
     // recentOutbound：我最近真发出去的 5 条（防连着几天一个开头、一个话题）。
     // slotStats：每类由头的接住率（她接没接）。后者还受 rules.feedback.enabled 约束。

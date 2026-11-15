@@ -28,7 +28,8 @@ import { tick, tickQqContinuation, qqContinuationEnabled } from './engine.js';
 import { readBridgeDialogue } from './outbound.js';
 import { createQqContinuation } from './qq-continuation.js';
 import { inQuiet } from './schedule.js';
-import { busyNow } from './holidays.js';
+import { busyNow, builtinYears } from './holidays.js';
+import { calendarStatus, refreshCalendar } from './calendar.js';
 import { loadPersona } from './persona.js';
 import { exploreRound, explorationStatus, explorationMood, loadExploration, saveExploration } from './explore.js';
 import { makeHostLlm } from './hostllm.js';
@@ -627,7 +628,35 @@ export function apply(ctx, config = {}) {
             },
           }));
           if (typeof disposeWatch === 'function') (c?.effect || ctx.effect)(() => disposeWatch);
-          noteMount('tool: presence_status、presence_watch_video 已挂上');
+          const disposeCalendar = tools.register(spec({
+            name: 'presence_holiday_calendar',
+            description:
+              '看 / 刷新 dsh-drop-by 的节假日日历缓存（忙碌时段在法定节假日整天不生效）。' +
+              'action="status" 看今年有没有缓存、内置表覆盖到哪一年；' +
+              'action="refresh" 按设置里的「节假日日历接口」拉一次，把放假/调休写进 data/holidays-<年>.json。' +
+              '用户说「更新一下今年的节假日」「明年放假表出来了」时用 refresh。',
+            parameters: {
+              action: { type: 'string', enum: ['status', 'refresh'], description: 'status=只看（默认）；refresh=联网拉一次并写缓存' },
+              year: { type: 'number', description: '哪一年，默认今年' },
+              url: { type: 'string', description: '临时指定接口地址（留空用设置里的），{year} 会替换成年份' },
+            },
+            async execute(args) {
+              const cfg = loadConfig();
+              const action = String(args?.action || 'status');
+              const year = Number(args?.year) || new Date().getFullYear();
+              if (action === 'refresh') {
+                const r = await refreshCalendar({ year, url: String(args?.url || cfg?.calendar?.url || ''), cfg });
+                return { ...r, builtin: builtinYears(), status: calendarStatus(cfg) };
+              }
+              return { builtin: builtinYears(), ...calendarStatus(cfg) };
+            },
+            output: {
+              schema: { type: 'object', additionalProperties: true },
+              render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+            },
+          }));
+          if (typeof disposeCalendar === 'function') (c?.effect || ctx.effect)(() => disposeCalendar);
+          noteMount('tool: presence_status、presence_watch_video、presence_holiday_calendar 已挂上');
         } catch (e) {
           toolMounted = false;
           noteMount(`tool: 挂载失败 ${String(e?.message || e).slice(0, 160)}`);
@@ -650,6 +679,17 @@ export function apply(ctx, config = {}) {
       nextAt = 0;
     },
   };
+
+  // 跨年了、内置表还没覆盖到今年：启动时补一次日历接口（失败只记日志，不挡拍）。
+  try {
+    const c0 = loadConfig();
+    const yr = new Date().getFullYear();
+    if (c0?.calendar?.auto !== false && c0?.calendar?.url && !builtinYears().includes(yr)) {
+      void refreshCalendar({ year: yr, url: c0.calendar.url, cfg: c0 })
+        .then((r) => log.info(r.ok ? `节假日日历：已缓存 ${r.year}（放假 ${r.off} / 调休 ${r.work}）` : `节假日日历没拉到：${r.reason}`))
+        .catch((e) => log.warn(`节假日日历出错：${String(e?.message || e).slice(0, 120)}`));
+    }
+  } catch {}
 
   const firstDelay = Math.max(0, Number(loadConfig().startupDelaySec ?? opt.startupDelaySec) || 0) * 1000;
   schedule(firstDelay);

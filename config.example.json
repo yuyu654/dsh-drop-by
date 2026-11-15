@@ -228,6 +228,7 @@
     "maxChars": 60,
     "holidays": "",
     "workdays": "",
+    "calendar": { "url": "", "auto": true },
     "prompt": {
       "recentOutbound": true,
       "slotStats": true

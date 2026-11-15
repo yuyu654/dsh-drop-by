@@ -7,6 +7,7 @@
 // 数据来源：国务院办公厅每年的放假通知（2026 年为国办发明电〔2025〕7 号）。
 // 现在是硬编码的表：一年发一次，新一年加一项即可；漏了就用 content.holidays 手动补。
 import { dayKey } from './time.js';
+import { cachedSets } from './calendar.js';
 import { inBusy, lastWindowEnd } from './schedule.js';
 
 const TABLE = {
@@ -30,6 +31,11 @@ const TABLE = {
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
+/** 内置表里有哪些年份（给状态/提示用）。 */
+export function builtinYears() {
+  return Object.keys(TABLE).map(Number).sort((a, b) => a - b);
+}
+
 /** 逗号/空格/顿号分隔的日期串或数组，都认。 */
 function list(v) {
   if (Array.isArray(v)) return v.map((x) => String(x).trim()).filter((x) => DATE.test(x));
@@ -47,8 +53,14 @@ export function holidaySets(cfg = {}) {
     for (const d of y.off) off.add(d);
     for (const d of y.work) work.add(d);
   }
+  // 日历接口写下来的缓存（data/holidays-<年>.json）也并进来：它比手填省事，
+  // 但优先级低于手填（手填是当天临时调整，覆盖远程表）。
+  const cached = cachedSets(cfg);
+  for (const d of cached.off) off.add(d);
+  for (const d of cached.work) work.add(d);
   for (const d of list(cfg?.content?.holidays)) off.add(d);
   for (const d of list(cfg?.content?.workdays)) work.add(d);
+  for (const d of work) off.delete(d);
   return { off, work };
 }
 
