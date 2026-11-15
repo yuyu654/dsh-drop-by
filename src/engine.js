@@ -397,6 +397,7 @@ export async function tick({
             seed: seed?.text || '',
             seedId: seed?.id || '',
             seedKind: seed?.kind || '',
+            seedEntities: Array.isArray(seed?.entities) ? seed.entities : [],
             conversation: conversationLine(ctx),
           });
           st.chitchat = g.state;

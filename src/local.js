@@ -9,7 +9,8 @@
 //   {
 //     "taboos":  [{ "code": "CATCHPHRASE", "pattern": "别多想", "flags": "", "why": "用滥了" }],
 //     "notes":   ["胃病、不能喝冰的、胃药都是我自己的事，不是她的"],
-//     "samples": ["跑完了。第三行那个报错是路径写错，改了。"]
+//     "samples": ["跑完了。第三行那个报错是路径写错，改了。"],
+//     "names":   ["逸遐", "艾栩"]        // 专有名词：种子里的名字必须照抄，不许改字
 //   }
 //
 // taboo.pattern 是正则源码字符串；写错了就跳过这一条，不让一个坏正则把整个发送链路带死。
@@ -17,7 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT } from './config.js';
 
-const EMPTY = { taboos: [], notes: [], samples: [] };
+const EMPTY = { taboos: [], notes: [], samples: [], names: [] };
 
 export function localStylePath(cfg) {
   const f = String(cfg?.local?.file || process.env.PG_LOCAL_STYLE || 'local-style.json');
@@ -40,7 +41,7 @@ function normalize(o) {
     })
     .filter(Boolean);
   const clean = (arr) => (Array.isArray(arr) ? arr : []).map((s) => String(s || '').trim()).filter(Boolean);
-  return { taboos, notes: clean(o?.notes), samples: clean(o?.samples) };
+  return { taboos, notes: clean(o?.notes), samples: clean(o?.samples), names: clean(o?.names) };
 }
 
 // 按 mtime+size 缓存：这一跳每 10 分钟一次，没必要每次读盘。
@@ -67,5 +68,6 @@ export function localStyle(cfg) {
     taboos: [...fromFile.taboos, ...inline.taboos],
     notes: [...fromFile.notes, ...inline.notes],
     samples: [...fromFile.samples, ...inline.samples],
+    names: [...fromFile.names, ...inline.names],
   };
 }

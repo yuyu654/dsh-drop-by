@@ -169,7 +169,7 @@ test('睡着时段从鱼鱼数据来：她睡到 09:00，08:00 也不说', () =>
   assert.equal(chitchatGate({ cfg, now: at(9, 40), st: {}, ctx: ctxOf(), tz: TZ, rest }).ok, true);
 });
 
-test('随口话的 prompt 里带起点和最近聊到哪；起点写成「素材，不是任务」', () => {
+test('随口话的 prompt：起点写成「素材，不是任务」，有起点时不再塞最近聊到哪', () => {
   const cfg = cfgOf();
   const topic = chitchatTopic(cfg, {
     seed: '停电只证明了拉了这个开关',
@@ -178,8 +178,12 @@ test('随口话的 prompt 里带起点和最近聊到哪；起点写成「素材
   });
   const prompt = buildPromptFor(topic, cfg);
   assert.match(prompt, /这一句的起点（是素材，不是任务）：停电只证明了拉了这个开关/);
-  assert.match(prompt, /你们最近聊到的：她 20 分钟前说：「今天好累」/);
   assert.match(prompt, /素材/);
+  // 素材互斥：一拍只有一个锚点，种子在就不给「最近聊到的」
+  assert.doesNotMatch(prompt, /你们最近聊到的：/);
+
+  const noSeed = buildPromptFor(chitchatTopic(cfg, { conversation: '她 20 分钟前说：「今天好累」' }), cfg);
+  assert.match(noSeed, /你们最近聊到的：她 20 分钟前说：「今天好累」/);
 });
 
 test('任务书里的四个被拦码都在：名字一致、都有解释', () => {

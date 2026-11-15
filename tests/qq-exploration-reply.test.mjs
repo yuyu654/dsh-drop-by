@@ -21,3 +21,16 @@ test('QQ reply gets relevant exploration context only for the configured private
   assert.equal(qqReplyContext({ ...input, peer: '43' }), '');
   assert.equal(qqReplyContext({ ...input, persona: { ok: true, text: '另一角色' } }), '');
 });
+
+test('QQ 背景里的「当前感受」只留情绪，不把探索的业务词带进私聊', async () => {
+  const persona = { ok: true, text: '喜欢推理' };
+  const cfg = { channels: { qq: { peerId: '42' } }, exploration: { mood: true } };
+  const at = 2_000_000;
+  const { state } = await exploreRound({ persona, now: at, includeMood: true, generate: async () => ({
+    ok: true, text: JSON.stringify({ action: 'start', topic: '推理短篇', progress: '想到一个反例',
+      next: '再试一遍', mood: '术语对上了，但人都还没进去，卡在这儿不上不下，有点闷。' }),
+  }) });
+  const context = qqReplyContext({ kind: 'private', peer: '42', cfg, state, persona, now: at + 1000 });
+  assert.match(context, /有点闷/);
+  for (const w of ['术语', '不上不下']) assert.equal(context.includes(w), false, w);
+});

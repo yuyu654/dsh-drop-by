@@ -94,6 +94,22 @@ export function guard(text, cfg, ctx = null, opts = {}) {
   } else if (t.length > maxChars) {
     violations.push({ code: 'TOO_LONG', why: `超过 ${maxChars} 字（${t.length}）` });
   }
+
+  // 探索里的心情原话不许整段抄出来（2026-11-15：把「术语对上了，卡在这儿不上不下」
+  // 缝进一句发给了她）。比的是去掉标点后的 4 字以上连续片段——换个说法就过，
+  // 照抄就拦；只拿 raw，不拿脱敏后的短情绪。
+  const rawMood = String(ctx?.explorationMood?.raw || '').trim();
+  if (rawMood && t) {
+    const flat = t.replace(/[\s\p{P}]+/gu, '');
+    const flatMood = rawMood.replace(/[\s\p{P}]+/gu, '');
+    for (let i = 0; i + 4 <= flatMood.length; i += 1) {
+      const frag = flatMood.slice(i, i + 4);
+      if (flat.includes(frag)) {
+        violations.push({ code: 'MOOD_LEAK', why: `抄了探索里的心情原话（${frag}）：换成自己的说法，别念状态` });
+        break;
+      }
+    }
+  }
   // 2026-11-10 的坑：模型重写时只吐了两个字「那条」。但**不能拿长度卡**——
   // 用户当天就说过「主动开口不必多于六字，比如在吗、在干嘛」：短句本身不废。
   // 所以阈值仍按「只剩一个字」算；「那条」由下面的 ECHO_TOPIC 精确拦（它是由头标签的一半）。
@@ -621,7 +637,13 @@ export function buildChitchatPrompt({ ctx, topic, persona, cfg, feedback, st = {
     : '';
   const seed = topic?.evidence?.seed || null;
   const seedBlock = seed ? `这一句的起点（是素材，不是任务）：${seed}` : '';
-  const conv = topic?.evidence?.conversation || '';
+  const names = Array.isArray(topic?.evidence?.seedEntities) ? topic.evidence.seedEntities : [];
+  const nameBlock = names.length
+    ? `种子里的名字必须照抄：${names.join('、')}。不许改字、不许写成同音的别的名字、不许新编一个。`
+    : '';
+  // 素材互斥：这一拍已经有一个种子当锚点，就不再塞「最近聊到的」和探索 mood——
+  // 两个素材同一拍，模型最爱干的事就是缝成一句。
+  const conv = seed ? '' : (topic?.evidence?.conversation || '');
   const convBlock = conv ? `你们最近聊到的：${conv}` : '';
   const samples = styleSamples(ctx, 2, cfg);
   const mins = (() => {
@@ -639,11 +661,12 @@ export function buildChitchatPrompt({ ctx, topic, persona, cfg, feedback, st = {
     `现在是 ${ctx.clock || ''}。在 QQ 上给「她」发一条消息，纯文字：没有表情、没有语音、不带解释。`,
     '这一条**没有任何由头**：没有新闻、没有数据、没有她刚说的话。就是忽然想跟她说一句。',
     seedBlock,
+    nameBlock,
     convBlock,
     recentOutBlock,
     '',
     '【这一条要写成什么样】',
-    explorationToneHint(ctx),
+    seed ? '' : explorationToneHint(ctx),
     `1. 一到两句，总共不超过 ${maxChars} 字。短是这条的全部。想分成两条说，两段中间空一行（每条各自不超过 ${maxChars} 字，最多两条）。`,
     '2. 必须落在一个具体的东西上：一件小事、一个念头、一个她身上的细节、一个时间点。「想你了」这种空句不算。',
     '3. 不要总结、不要讲道理、不要提问轰炸；最多一个轻问，或者干脆只是陈述。',

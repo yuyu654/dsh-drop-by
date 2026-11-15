@@ -1,6 +1,6 @@
 import { loadConfig } from './config.js';
 import { loadPersona } from './persona.js';
-import { explorationStatus, explorationMood, loadExploration, recentExploration } from './explore.js';
+import { explorationStatus, explorationMood, loadExploration, recentExploration, toneOf } from './explore.js';
 import { makeHostLlm } from './hostllm.js';
 import { portraitMood, updatePortraitMood } from './emotion-portrait.js';
 
@@ -21,7 +21,8 @@ export function qqReplyContext({ peer, kind, cfg = loadConfig(), now = Date.now(
     ...(recent(thread) ? { 研究进展: describe(thread) } : {}),
     ...(recent(leisure) ? { 休闲发现: describe(leisure) } : {}),
     ...(recent(candidate) && !candidate.loginSite ? { 分享线索: { topic: candidate.section, line: candidate.line, evidence: candidate.source?.evidence } } : {}),
-    ...(mood ? { 当前感受: mood.text } : {}),
+    // 只放情绪，不把探索里的业务词（术语、参数、标题）带进私聊：语气层不外泄事实
+    ...(mood && toneOf(mood.text) ? { 当前感受: toneOf(mood.text) } : {}),
     ...(portrait ? { 私聊延续的心情: portrait } : {}),
   };
   if (!Object.keys(context).length) return '';

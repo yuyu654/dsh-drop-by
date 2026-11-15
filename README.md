@@ -70,6 +70,8 @@ dsh plugin --profile web add github:<you>/dsh-drop-by
 
 「高级 → 探索心情（试用）」默认关闭。开启后，探索可在同一次模型调用里记一句有缘由的感受，两小时后不再使用。支持 `dsh-drop-by/qq-reply` 的 QQ 桥会给配置收件人的普通私聊提供近三天探索进展和有效心情。回复仍优先接住当前消息。
 
+心情只做语气，不做素材——注入前先把业务词剥掉（术语、参数、标题、推导都不进 prompt），只留「有点闷」「挺顺」这种状态；私聊背景里的「当前感受」同样只留情绪。正在说的那一句来自记忆种子时，这一拍不再叠探索心情，也不塞「最近聊到的」，一拍只给一个锚点。写出来的话若直接抄了心情原话，guard 会以 `MOOD_LEAK` 打回。种子里的专有名词（书名、引号里的名字、`local-style.json` 的 `names`）会单独标出来，要求照抄，不许改写或另编。
+
 「高级 → 延续 QQ 聊天的心情」需要安装 `emotion-state-portrait` 插件，并使用支持 `dsh-drop-by/qq-reply` 接口的 QQ 桥。此功能使用 DSH 的宿主模型判断私聊中的情绪变化，复用情绪插件的词库、叠加和回落逻辑。
 
 课上完了、刚回到电脑前、久坐、睡前、熬夜、没回消息、压力高、明天的安排、考试临近……每一项都能单独关，也能改间隔。完整清单与默认值见 `config.example.json` 的 `content.topics`。
@@ -95,6 +97,7 @@ dsh plugin --profile web add github:<you>/dsh-drop-by
 
 ```json
 {
+  "names": ["逸遐", "艾栩"],
   "taboos": [{ "code": "CATCHPHRASE", "pattern": "别多想", "why": "说滥了" }],
   "notes": ["胃不好的是我，不是她——别倒过来查她"],
   "samples": ["跑完了。第三行那个报错是路径写错，改了。"]

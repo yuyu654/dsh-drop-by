@@ -9,12 +9,27 @@
 //   · 我自己标了「不给她看」的条目**绝不拿来当种子**（那是瞒着她的东西，
 //     拿去搭话等于自己拆自己的台）。方向别搞反：是我不给她看，不是她瞒着我。
 import { readMemory } from './memorysource.js';
+import { localStyle } from './local.js';
 
 const DAY = 86_400_000;
 
 // 判断收在 private.js 里（与 context.js 的 self.md 标记同一套），
 // 单独成模块是为了 seeds 不必依赖 douyin 目录，也不会两边规则漂移。
 import { PRIVATE_MARK as PRIVATE } from './private.js';
+
+/**
+ * 种子里的专有名词：书名/引号里的话直接从原文取，人名来自 local-style.json 的 names
+ * （人名属于本机私有内容，不写死在插件里）。
+ * 用途只有一个：写进 prompt，要求「这些名字照抄，不许改字、不许编」。
+ */
+export function seedEntities(text, cfg) {
+  const s = String(text || '');
+  const out = new Set();
+  for (const m of s.matchAll(/《([^》]{1,30})》/g)) out.add(`《${m[1]}》`);
+  for (const m of s.matchAll(/「([^」]{1,20})」/g)) out.add(m[1]);
+  for (const n of localStyle(cfg).names) if (n && s.includes(n)) out.add(n);
+  return [...out].slice(0, 6);
+}
 
 /** 稳定短 id（同样的文字永远同一个 id），用来做「最近用过」的去重环。 */
 export function seedId(kind, text) {
@@ -43,7 +58,7 @@ export function memoryPool({ cfg, now = Date.now(), seedDays = 30 } = {}) {
     if (!text) continue;
     if (it.at && it.at < horizon) continue;
     if (skipPrivate && PRIVATE.test(text)) continue;
-    pool.push({ id: seedId('m', text), kind: 'memory', text: text.slice(0, 80), day: it.day || '' });
+    pool.push({ id: seedId('m', text), kind: 'memory', text: text.slice(0, 80), day: it.day || '', entities: seedEntities(text, cfg) });
   }
   return { pool, why: pool.length ? null : 'MEMORY_SEED_EMPTY' };
 }
