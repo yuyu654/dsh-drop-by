@@ -37,5 +37,6 @@ test('window titles and old memory do not authorize troubleshooting; a fresh dir
   const ctx = { activity: { fgTitle: '插件报错排查' }, her: { lastChannel: 'qq', lastTs: now - 120_000, lastText: '早安' } };
   assert.equal(proactiveProjectBlock(text, ctx, now), 'PROJECT_HELP_WITHOUT_REQUEST');
   assert.equal(proactiveProjectBlock(text, { ...ctx, her: { ...ctx.her, lastText: '我卡住了，你帮我看看' } }, now), null);
+  assert.equal(proactiveProjectBlock(text, { ...ctx, her: { ...ctx.her, lastChannel: 'douyin', lastText: '我卡住了，你帮我看看' } }, now, { channels: { primary: 'douyin' } }), null);
   assert.equal(proactiveProjectBlock('最近在忙什么项目呀？', ctx, now), 'PROJECT_QUESTION_OUTSIDE_SLOT');
 });

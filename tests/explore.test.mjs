@@ -91,6 +91,7 @@ test('a fresh QQ reply can change tone without supplying a new reason to send', 
   }
   const ctx = { explorationMood: mood, her: { lastChannel: 'qq', lastAgoSec: 30, lastText: '嗯' } };
   assert.doesNotMatch(explorationToneHint(ctx), /"嗯"/);
+  assert.match(explorationToneHint({ explorationMood: mood, her: { lastChannel: 'douyin', lastAgoSec: 30, lastText: '讲讲看嘛' } }), /讲讲看嘛/);
   assert.equal(await styleApprovedDraft({ draft: { ok: false }, ctx, generate: () => assert.fail('no approved message') }).then((r) => r.ok), false);
 });
 
