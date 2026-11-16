@@ -37,12 +37,19 @@ test('首屏日常组保持精简清爽（其余组分类折叠）', () => {
   for (const p of ['rules.dailyCap', 'rules.minGapMin', 'rules.adaptiveGap', 'rules.qqContinuation', 'rules.feedback.enabled', 'rules.judge.enabled', 'rules.chitchat.enabled', 'rules.gapByTier.enabled', 'rules.naturalTriggers.enabled']) {
     assert.ok(stickyPaths.includes(p), `决定TA粘不粘人组里要有 ${p}`);
   }
-  const expItems = explorationItemsForUi(cfg());
+  const offExp = cfg();
+  offExp.exploration = { ...offExp.exploration, auto: false };
   assert.deepEqual(
-    expItems.map((i) => i.path),
+    explorationItemsForUi(offExp).map((i) => i.path),
+    ['exploration.auto', 'exploration.nextTopic', 'exploration.interest', 'exploration.offerShare']
+  );
+  const autoExp = cfg();
+  autoExp.exploration = { ...autoExp.exploration, auto: true };
+  assert.deepEqual(
+    explorationItemsForUi(autoExp).map((i) => i.path),
     ['exploration.auto', 'exploration.intervalMinutes', 'exploration.offPeakOnly', 'exploration.nextTopic', 'exploration.interest', 'exploration.offerShare']
   );
-  for (const p of expItems.map((i) => i.path)) {
+  for (const p of explorationItemsForUi(autoExp).map((i) => i.path)) {
     assert.ok(!daily.items.some((i) => i.path === p), `日常里不再重复出现 ${p}`);
   }
 });
@@ -127,4 +134,47 @@ test('数据从哪来：展示情绪插件名称与实时检测状态', () => {
     else process.env.PG_DSH_HOME = prevHome;
     fs.rmSync(home, { recursive: true, force: true });
   }
+});
+
+test('所有从属子项跟随对应主功能开关显隐（日常、内容、预演、时间间隔）', () => {
+  const base = cfg();
+  base.rules.judge = { ...base.rules.judge, enabled: false, shadow: false };
+  base.content.topics = { ...base.content.topics, followCasualSilence: false };
+  base.sources.douyin = { ...base.sources.douyin, enabled: false };
+  base.rules.qqContinuation = false;
+  base.exploration = { ...base.exploration, mood: false, auto: false };
+  assert.equal(has(base, 'rules.judge.shadowSampleRate'), false);
+  assert.equal(has(base, 'content.topics.noReplyDouyin'), false);
+  assert.equal(has(base, 'rules.qqTiming.pauseSec'), false);
+  assert.equal(has(base, 'exploration.moodHours'), false);
+
+  const on = cfg();
+  on.rules.judge.enabled = true;
+  on.rules.judge.shadow = true;
+  on.content.topics.followCasualSilence = true;
+  on.sources.douyin.enabled = true;
+  on.rules.qqContinuation = true;
+  on.exploration.mood = true;
+  assert.equal(has(on, 'rules.judge.shadowSampleRate'), true);
+  assert.equal(has(on, 'content.topics.noReplyDouyin'), true);
+  assert.equal(has(on, 'rules.qqTiming.pauseSec'), true);
+  assert.equal(has(on, 'exploration.moodHours'), true);
+
+  // content.enabled 关闭时收起内容配置和视频转发子项
+  const noContent = cfg();
+  noContent.content.enabled = false;
+  assert.equal(has(noContent, 'content.mode'), false);
+  assert.equal(has(noContent, 'content.maxChars'), false);
+  assert.equal(has(noContent, 'content.forward.enabled'), false);
+  assert.equal(has(noContent, 'content.forward.asrAutostart'), false);
+
+  // 手机与邮箱都关闭时隐藏邮箱和睡眠阈值
+  const noMailOrPhone = cfg();
+  noMailOrPhone.sources.phone.enabled = false;
+  noMailOrPhone.mail.enabled = false;
+  assert.equal(has(noMailOrPhone, 'mail.user'), false);
+  assert.equal(has(noMailOrPhone, 'mail.timeoutMs'), false);
+  assert.equal(has(noMailOrPhone, 'content.topics.sleepShortMin'), false);
+  noMailOrPhone.mail.enabled = true;
+  assert.equal(has(noMailOrPhone, 'mail.user'), true);
 });

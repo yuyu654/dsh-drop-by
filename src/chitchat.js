@@ -32,11 +32,12 @@ export function chitchatToday(st, now, tz) {
   const day = dayKey(now, tz);
   const cur = st?.chitchat;
   if (cur && cur.day === day) return cur;
-  // 跨天：计数归零、裸招呼放行额度重置，但「最近用过的种子」和熔断要带过去——
+  // 跨天：计数归零、裸招呼次数清零，但「最近用过的种子」和熔断要带过去——
   // 否则零点一过，同一条记忆又能被拿来当素材。
   return {
     day,
     count: 0,
+    bareCount: 0,
     recentSeeds: Array.isArray(cur?.recentSeeds) ? cur.recentSeeds.slice(-3) : [],
     ...(cur?.days && typeof cur.days === 'object' ? { days: cur.days } : {}),
     ...(Number(cur?.ignored) > 0 ? { ignored: cur.ignored } : {}),
@@ -148,6 +149,7 @@ export function chitchatTopic(cfg, extra = {}) {
     evidence: {
       kind: 'chitchat',
       allowBare: false,
+      barePerDay: bareLimit(cfg),
       maxChars: Math.max(10, Math.min(80, Number(c.maxChars) || 40)),
       ...extra,
     },
@@ -156,22 +158,40 @@ export function chitchatTopic(cfg, extra = {}) {
 
 const BARE = /^(在吗|在么|在不在|睡了吗|睡着了没|人呢)[？?。！!~～\s]*$/;
 
-/** 这一拍允不允许写裸「在吗」：当天还没用过才给一次。 */
-export function allowBareToday(st, now, tz) {
+/** 轻招呼每天最多放行几次（默认 1，可设 0–10）。 */
+export function bareLimit(cfg) {
+  const raw = cfg?.rules?.chitchat?.barePerDay;
+  const n = raw == null || raw === '' ? 1 : Number(raw);
+  return Number.isFinite(n) ? Math.max(0, Math.min(10, Math.round(n))) : 1;
+}
+
+/** 今天还剩几次轻招呼额度。 */
+export function bareRemainingToday(st, now, tz, cfg) {
+  const day = dayKey(now, tz);
   const sc = chitchatToday(st, now, tz);
-  return sc.bareDay !== dayKey(now, tz);
+  const used = Number(sc.bareCount) || (sc.bareDay === day ? 1 : 0);
+  return Math.max(0, bareLimit(cfg) - used);
+}
+
+/** 这一拍允不允许写裸「在吗」：当天还没用到上限才给。 */
+export function allowBareToday(st, now, tz, cfg) {
+  return bareRemainingToday(st, now, tz, cfg) > 0;
 }
 
 /** 真发出去一条才记数（dryRun / 被 guard 拦下都不算）。 */
 export function noteChitchatSent(st, now, tz, text = '', seedId = '', opts = {}) {
+  const day = dayKey(now, tz);
   const sc = chitchatToday(st, now, tz);
-  st.chitchat = { ...sc, day: dayKey(now, tz), count: (Number(sc.count) || 0) + 1 };
-  if (BARE.test(String(text || '').trim())) st.chitchat.bareDay = dayKey(now, tz);
+  const prevBare = Number(sc.bareCount) || (sc.bareDay === day ? 1 : 0);
+  st.chitchat = { ...sc, day, count: (Number(sc.count) || 0) + 1, ...(prevBare > 0 ? { bareCount: prevBare } : {}) };
+  if (BARE.test(String(text || '').trim())) {
+    st.chitchat.bareDay = day;
+    st.chitchat.bareCount = prevBare + 1;
+  }
   const id = String(seedId || '').trim();
   if (id) st.chitchat.recentSeeds = [...(Array.isArray(sc.recentSeeds) ? sc.recentSeeds : []), id].slice(-3);
   // 测试期（feedback.testMode）的发送不进密度样本：她没回不算没接住，也就不能算「接不住」。
   if (opts.test === true) return st.chitchat;
-  const day = dayKey(now, tz);
   const days = { ...(sc.days && typeof sc.days === 'object' ? sc.days : {}) };
   const row = days[day] && typeof days[day] === 'object' ? days[day] : { sent: 0, replied: 0 };
   days[day] = { sent: (Number(row.sent) || 0) + 1, replied: Number(row.replied) || 0 };

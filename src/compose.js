@@ -676,6 +676,8 @@ export function buildChitchatPrompt({ ctx, topic, persona, cfg, feedback, st = {
   const conv = seed ? '' : (topic?.evidence?.conversation || '');
   const convBlock = conv ? `你们最近聊到的：${conv}` : '';
   const samples = styleSamples(ctx, 2, cfg);
+  const allowBare = topic?.evidence?.allowBare === true;
+  const bareMax = Math.max(1, Number(topic?.evidence?.barePerDay ?? cfg?.rules?.chitchat?.barePerDay ?? 1) || 1);
   const mins = (() => {
     try { return Number(String(ctx.clock || '').slice(0, 2)) * 60 + Number(String(ctx.clock || '').slice(3, 5)); } catch { return 12 * 60; }
   })();
@@ -705,7 +707,9 @@ export function buildChitchatPrompt({ ctx, topic, persona, cfg, feedback, st = {
       ? '4. 现在偏晚：写成陈述句，不要问句——她要是睡了，早上看到是暖的；醒着也不被问题压着。'
       : '4. 白天可以带一句轻问（问她这会儿在干什么、吃了没），但只问一件。',
     '5. 主语只能是「你」或「我」。不许用「人」「大家」「我们」当主语。',
-    '6. 不许「在吗」「睡了吗」单独成句——那是空的招呼，不是话。',
+    allowBare
+      ? `6. 如果一时想不出具体小事，或者就想轻敲她一下看看人在不在，也可以直接发一句简单的轻招呼（如「在吗」「在干嘛」「人呢」「睡了没」），每天最多 ${bareMax} 次，不必硬找借口。`
+      : '6. 不许「在吗」「睡了吗」单独成句——那是空的招呼，不是话。',
     '7. 不写括号动作、不列 1/2/3、不写标题、不说自己是 AI、不喊「亲爱的/宝贝」。',
     '8. 不许凭空引入旧梗和旧账：这一拍没给的事实（某件旧事、某句旧话、某个只有我们知道的梗）不许拿来当理由。',
     ...(localNotes.length ? ['', '【本机补充（只这台机器适用）】', ...localNotes.map((n) => `· ${n}`)] : []),
@@ -714,7 +718,7 @@ export function buildChitchatPrompt({ ctx, topic, persona, cfg, feedback, st = {
     ...samples.map((x) => `· ${x}`),
     '',
     '【写成这样就废了】',
-    '✗ 在吗  ← 空的，什么信息都没有',
+    allowBare ? '' : '✗ 在吗  ← 空的，什么信息都没有',
     '✗ 我最近总在想，人是不是都需要一点自己的空间。  ← 说理，没有「你」',
     '✗ 今天过得怎么样呀，有没有好好吃饭，记得早点休息哦。  ← 三连问候，像客服',
     '',
@@ -769,12 +773,11 @@ export async function compose({ ctx, topic, persona, cfg, now, st = {}, generate
       ms += Number(r.ms) || 0;
       const text = clean(r.text);
       lastText = text;
-      // 裸「在吗」只在最后一轮才放行（而且当天只用一次）：前两轮先逼一个具体的东西，
-      // 真写不出来再退回那句空的——它是兜底，不是默认。
+      // 没有记忆种子且当天裸招呼额度还在时，第一轮就放行轻招呼；有种子时先逼一轮具体内容，写不出来再兜底。
       const g = guard(text, cfg, ctx, {
         maxChars: topic.evidence?.maxChars,
         bare: true,
-        allowBare: i === attempts - 1 && topic.evidence?.allowBare === true,
+        allowBare: topic.evidence?.allowBare === true && (!topic.evidence?.seed || i === attempts - 1),
       });
       if (g.ok) {
         return {
@@ -905,7 +908,10 @@ export function composeDraft({ ctx, draft, cfg, topic = null }) {
   if (!raw) return { ok: false, source: 'judge', reason: 'JUDGE_EMPTY_DRAFT', slot: topic?.slot, violations: [] };
   const text = clean(raw);
   if (!text) return { ok: false, source: 'judge', reason: 'JUDGE_EMPTY_DRAFT', slot: topic?.slot, violations: [] };
-  const g = guard(text, cfg, ctx, shareGuardOpts(topic));
+  const guardOpts = topic?.slot === 'chitchat'
+    ? { ...shareGuardOpts(topic), maxChars: topic.evidence?.maxChars, bare: true, allowBare: topic.evidence?.allowBare === true }
+    : shareGuardOpts(topic);
+  const g = guard(text, cfg, ctx, guardOpts);
   return {
     ok: g.ok,
     text,

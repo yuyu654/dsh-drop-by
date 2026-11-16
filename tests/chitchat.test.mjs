@@ -1,11 +1,12 @@
 // chitchat.test.mjs —— 随口说话（阶段 1）：没有由头时那一条候选的产出条件与生成纪律。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chitchatGate, chitchatTopic, noteChitchatSent, chitchatToday, chitchatYield, chitchatJudgeNo } from '../src/chitchat.js';
+import { chitchatGate, chitchatTopic, noteChitchatSent, chitchatToday, chitchatYield, chitchatJudgeNo, allowBareToday, bareRemainingToday, bareLimit } from '../src/chitchat.js';
 import { REASONS } from '../src/decide.js';
-import { compose, guard, buildChitchatPrompt } from '../src/compose.js';
+import { compose, composeDraft, guard, buildChitchatPrompt } from '../src/compose.js';
+import { buildSnapshot } from '../src/snapshot.js';
 import { noteSent, settle, sweep, slotStats } from '../src/feedback.js';
-import { SCHEMA } from '../src/settings.js';
+import { SCHEMA, applyChange } from '../src/settings.js';
 
 const TZ = 'Asia/Shanghai';
 const HOUR = 3_600_000;
@@ -222,4 +223,75 @@ test('设置页的主开关说明不写死条数和时段，指到下面的设�
   const perDay = SCHEMA.find((s) => s.path === 'rules.chitchat.perDay');
   assert.ok(perDay, '条数得能自己设');
   assert.ok(perDay.min >= 1 && perDay.max >= 3);
+});
+
+test('放开轻招呼口子：allowBare=true 且无种子时允许「在吗」一次，当天再次尝试仍拦截', async () => {
+  const allowTopic = chitchatTopic(cfgOf(), { allowBare: true });
+  const denyTopic = chitchatTopic(cfgOf(), { allowBare: false });
+
+  const promptAllow = buildChitchatPrompt({ ctx: ctxOf({ now: NOON }), topic: allowTopic, persona: null, cfg: cfgOf(), st: {} });
+  assert.match(promptAllow, /也可以直接发一句简单的轻招呼/);
+  assert.doesNotMatch(promptAllow, /✗ 在吗/);
+
+  const promptDeny = buildChitchatPrompt({ ctx: ctxOf({ now: NOON }), topic: denyTopic, persona: null, cfg: cfgOf(), st: {} });
+  assert.match(promptDeny, /不许「在吗」「睡了吗」单独成句/);
+  assert.match(promptDeny, /✗ 在吗/);
+
+  let calls = 0;
+  const r1 = await compose({
+    ctx: ctxOf({ now: NOON }),
+    topic: allowTopic,
+    persona: null,
+    cfg: cfgOf(),
+    now: NOON,
+    st: {},
+    generate: async () => { calls += 1; return { ok: true, text: '在吗', ms: 1 }; },
+    llmReady: true,
+  });
+  assert.equal(r1.ok, true);
+  assert.equal(r1.text, '在吗');
+  assert.equal(calls, 1);
+
+  const d1 = composeDraft({ ctx: ctxOf({ now: NOON }), draft: '在吗', cfg: cfgOf(), topic: allowTopic });
+  assert.equal(d1.ok, true);
+  const d2 = composeDraft({ ctx: ctxOf({ now: NOON }), draft: '在吗', cfg: cfgOf(), topic: denyTopic });
+  assert.equal(d2.ok, false);
+  assert.ok(d2.violations.some((v) => v.code === 'CHITCHAT_BARE'));
+
+  const snapAllow = buildSnapshot({ ctx: ctxOf({ now: NOON }), topic: allowTopic, cfg: cfgOf(), st: {}, now: NOON, tz: TZ });
+  assert.match(snapAllow, /无事轻招呼的额度/);
+  const snapDeny = buildSnapshot({ ctx: ctxOf({ now: NOON }), topic: denyTopic, cfg: cfgOf(), st: {}, now: NOON, tz: TZ });
+  assert.doesNotMatch(snapDeny, /无事轻招呼的额度/);
+});
+
+test('轻招呼每日次数上限可由 rules.chitchat.barePerDay 配置与校验（0–10）', () => {
+  const spec = SCHEMA.find((s) => s.path === 'rules.chitchat.barePerDay');
+  assert.ok(spec, '设置页要有轻招呼每日次数设置项');
+  assert.equal(spec.min, 0);
+  assert.equal(spec.max, 10);
+
+  const base = cfgOf();
+  assert.equal(applyChange(base, 'rules.chitchat.barePerDay', 0).value, 0);
+  assert.equal(applyChange(base, 'rules.chitchat.barePerDay', 2).value, 2);
+  assert.equal(applyChange(base, 'rules.chitchat.barePerDay', -1).ok, false);
+  assert.equal(applyChange(base, 'rules.chitchat.barePerDay', 11).ok, false);
+
+  const cfg0 = cfgOf({ rules: { chitchat: { enabled: true, perDay: 3, barePerDay: 0 } } });
+  assert.equal(bareLimit(cfg0), 0);
+  assert.equal(allowBareToday({}, NOON, TZ, cfg0), false);
+
+  const cfg2 = cfgOf({ rules: { chitchat: { enabled: true, perDay: 3, barePerDay: 2 } } });
+  const st = {};
+  assert.equal(bareRemainingToday(st, NOON, TZ, cfg2), 2);
+  noteChitchatSent(st, NOON, TZ, '在吗');
+  assert.equal(bareRemainingToday(st, NOON + 60_000, TZ, cfg2), 1);
+  assert.equal(allowBareToday(st, NOON + 60_000, TZ, cfg2), true);
+  noteChitchatSent(st, NOON + 120_000, TZ, '在干嘛'); // 非 BARE 不耗裸招呼次数
+  assert.equal(bareRemainingToday(st, NOON + 180_000, TZ, cfg2), 1);
+  noteChitchatSent(st, NOON + 240_000, TZ, '人呢');
+  assert.equal(bareRemainingToday(st, NOON + 300_000, TZ, cfg2), 0);
+  assert.equal(allowBareToday(st, NOON + 300_000, TZ, cfg2), false);
+
+  // 跨天重置计数
+  assert.equal(bareRemainingToday(st, NOON + DAY, TZ, cfg2), 2);
 });

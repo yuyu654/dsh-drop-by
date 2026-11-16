@@ -311,9 +311,15 @@ export function buildSnapshot({ ctx = {}, topic = null, cfg = {}, st = {}, now =
   if (topic?.slot === 'chitchat') {
     // 随口说话跟别的由头不一样：这一拍没有任何数据在推着我说，
     // 所以要把这件事说清楚，judge 才不会假装自己在接某件事。
+    const bareLeft = Number(topic.evidence?.bareLeft);
+    const bareCount = Number.isFinite(bareLeft) && bareLeft > 0 ? bareLeft : 1;
+    const bareHint = topic.evidence?.allowBare === true
+      ? `今天还留着 ${bareCount} 次无事轻招呼的额度：如果确实没什么具体话好聊、又隔了一阵想自然轻敲一下她看看人在不在，也可以直接写 "say": true，draft 只写一句「在吗」「在干嘛」或「人呢」；如果刚聊过或觉得此刻打扰，照常写 "say": false。`
+      : '';
     blocks.push([
       '规则建议（可参考也可不用）：这一拍没有任何数据由头。这是一次「随口说话」的候选——' +
-        '没有新闻、没有她刚说的话、没有一条数据。要不要说、说什么，你自己判。',
+        '没有新闻、没有她刚说的话、没有一条数据。要不要说、说什么，你自己判。' +
+        bareHint,
     ]);
   } else if (topic) {
     blocks.push([`规则建议（可参考也可不用）：${topic.label || topic.slot}——${String(topic.brief || topic.why || '').slice(0, 160)}`]);

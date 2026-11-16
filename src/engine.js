@@ -26,7 +26,7 @@ import { recordActionOutbound } from './action-proposal.js';
 import { appendEmotionInbox } from './emotion-sync.js';
 import { buildContext, selfMtime, lastHerMessage } from "./context.js";
 import { pickTopic, withForwardContent, fishStale, tierOfSlot, answerableOn } from "./topics.js";
-import { chitchatGate, chitchatTopic, noteChitchatSent, allowBareToday, chitchatYield, chitchatJudgeNo } from "./chitchat.js";
+import { chitchatGate, chitchatTopic, noteChitchatSent, bareRemainingToday, chitchatYield, chitchatJudgeNo } from "./chitchat.js";
 import { restFor } from "./bedtime.js";
 import { pickSeed, conversationLine } from "./seeds.js";
 import { detectTriggers } from "./triggers.js";
@@ -426,8 +426,10 @@ export async function tick({
           // 阶段 2：起点。记忆里挑一条（最近 3 次用过的跳过），挑不到就只用「最近聊到哪」。
           const pk = pickSeed({ cfg, now, st, tz });
           const seed = pk.seed;
+          const bareLeft = bareRemainingToday(st, now, tz, cfg);
           topic = chitchatTopic(cfg, {
-            allowBare: allowBareToday(st, now, tz),
+            allowBare: bareLeft > 0,
+            bareLeft,
             seed: seed?.text || '',
             seedId: seed?.id || '',
             seedKind: seed?.kind || '',

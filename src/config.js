@@ -61,6 +61,7 @@ const DEFAULTS = {
     chitchat: {
       enabled: false,
       perDay: 3,
+      barePerDay: 1,
       dayStart: 480,
       dayEnd: 1410,
       maxChars: 40,

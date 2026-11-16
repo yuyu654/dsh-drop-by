@@ -104,7 +104,7 @@ test('设置口：读、写、拒绝、以及不碰真配置', async (t) => {
   assert.equal(groups.length, 8);
   assert.deepEqual(
     got.json.explorationItems.map((i) => i.path),
-    ['exploration.auto', 'exploration.intervalMinutes', 'exploration.offPeakOnly', 'exploration.nextTopic', 'exploration.interest', 'exploration.offerShare']
+    ['exploration.auto', 'exploration.nextTopic', 'exploration.interest', 'exploration.offerShare']
   );
   assert.deepEqual(
     got.json.channelItems.map((i) => i.path),

@@ -268,10 +268,16 @@ test('忙碌时段与追问：都在界面上，忙碌时段按多段解析', ()
 
 test('每个独立功能都有开关：轨道、回填、通道读发', () => {
   const c = cfg();
-  const cDouyin = { ...c, channels: { ...c.channels, primary: 'douyin' } };
+  const cDouyin = {
+    ...c,
+    channels: { ...(c.channels || {}), primary: 'douyin' },
+    sources: { ...(c.sources || {}), douyin: { ...(c.sources?.douyin || {}), enabled: true } },
+    content: { ...(c.content || {}), topics: { ...(c.content?.topics || {}), followCasualSilence: true } },
+  };
   const ui = listForUi(c);
   const all = [
     ...ui.flatMap((g) => g.rows || g.items || []),
+    ...listForUi(cDouyin).flatMap((g) => g.rows || g.items || []),
     ...channelItemsForUi(c),
     ...channelItemsForUi(cDouyin),
   ];
