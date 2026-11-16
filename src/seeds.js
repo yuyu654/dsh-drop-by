@@ -41,9 +41,11 @@ export function seedId(kind, text) {
   return `${kind}:${h.toString(36)}`;
 }
 
+const MEMORY_META = /(?:[A-Za-z]:\\|\/Users\/|\/home\/|\.(?:json|jsonl|mjs|js|py|md|txt)\b|规则[:：]|参考图|官方形象|自主探索每|配置项|prompt|AGENT\.md|persona\.md)/iu;
+
 /**
  * 记忆种子池。返回 { pool, why }。
- * 过滤顺序：太老（seedDays）→ 我自己标了不给她看的 → 空文本。
+ * 过滤顺序：太老（seedDays）→ 我自己标了不给她看的 → 路径/规则/设定等元信息 → 空文本。
  */
 export function memoryPool({ cfg, now = Date.now(), seedDays = 30 } = {}) {
   const c = cfg?.rules?.chitchat || {};
@@ -58,26 +60,94 @@ export function memoryPool({ cfg, now = Date.now(), seedDays = 30 } = {}) {
     if (!text) continue;
     if (it.at && it.at < horizon) continue;
     if (skipPrivate && PRIVATE.test(text)) continue;
+    if (MEMORY_META.test(text)) continue;
     pool.push({ id: seedId('m', text), kind: 'memory', text: text.slice(0, 80), day: it.day || '', entities: seedEntities(text, cfg) });
   }
   return { pool, why: pool.length ? null : 'MEMORY_SEED_EMPTY' };
 }
 
 /**
+ * 角色人设里的自身生活/习惯/偏好种子池。
+ * 作用：让随口说话不只是翻记忆或围着用户转，也能从「我」自己的体质、嘴馋、毛病和爱好自然开口。
+ */
+const SKIP_PERSONA_SECTION = /说话方式|工作模式|什么时候|角色对照|是什么样的人|关于(?:对方|用户)|对你[（(]|发语音|示例|禁忌|底线|原则|边界|规则|规范|写法/u;
+const PREFER_PERSONA_SECTION = /我是谁|关于我|个人设定|人设|习惯|日常|喜好|偏好|体质|生活|性格/u;
+const PERSONA_META_OR_RULE = /[「」]?(?:我|你)\s*=|提示词|不许|禁用|禁止|不得|不承认|不写括号|别在|别总|别老|别问|不带|不骂|不拿|^台阶[:：]|node\s|\.mjs|https?:\/\//iu;
+const PERSONA_TRAIT_CUE = /胃|体|睡|熬夜|犯|吃|喝|甜|冰|咖啡|奶茶|茶|零食|喜欢|爱|讨厌|怕|常让|顺手|嘴硬|习惯|偏好|爱好|兴趣|日常|看番|二创|二次元|游戏|音乐|画|折腾/u;
+
+export function personaPool({ persona, cfg } = {}) {
+  const raw = typeof persona === 'string' ? persona : persona?.text;
+  const text = String(raw || '').trim();
+  if (!text) return [];
+  const skipPrivate = cfg?.rules?.chitchat?.seedSkipPrivate !== false;
+  const pool = [];
+  const seen = new Set();
+  let heading = '';
+  let inCode = false;
+  for (const rawLine of text.split(/\r?\n/)) {
+    const t = rawLine.trim();
+    if (/^```/.test(t)) {
+      inCode = !inCode;
+      continue;
+    }
+    if (inCode || !t || t.startsWith('|') || t.startsWith('>')) continue;
+    if (/^#{1,6}\s+/.test(t)) {
+      heading = t.replace(/^#{1,6}\s+/, '').trim();
+      continue;
+    }
+    if (heading && SKIP_PERSONA_SECTION.test(heading)) continue;
+    const isBullet = /^[-*·]\s+/.test(t) || /^\d+[.、]\s+/.test(t);
+    if (!isBullet && !PREFER_PERSONA_SECTION.test(heading)) continue;
+    const clean = t
+      .replace(/^[-*·]\s+/, '')
+      .replace(/^\d+[.、]\s+/, '')
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (clean.length < 6 || PERSONA_META_OR_RULE.test(clean)) continue;
+    if (skipPrivate && PRIVATE.test(clean)) continue;
+    if (!PERSONA_TRAIT_CUE.test(clean)) continue;
+    const clipped = clean.slice(0, 80);
+    if (seen.has(clipped)) continue;
+    seen.add(clipped);
+    const entities = seedEntities(clipped, cfg).filter((w) => !['你', '我', '他', '她', '它'].includes(w));
+    pool.push({ id: seedId('p', clipped), kind: 'persona', text: clipped, day: '', entities });
+  }
+  return pool;
+}
+
+/**
  * 挑一个这一拍可用的种子。
+ *   · 同时看记忆种子池与角色人设自身生活种子池（传了 persona 才提取）；
  *   · 先排除最近 3 次用过的（state.chitchat.recentSeeds，环形 3）；
- *   · 随机取一个；rnd 可注入（测试用），默认 Math.random；
+ *   · 两者都有新鲜种子时按「上次类型轮替 + 随机」抽取，避免记忆条数多就把角色自己淹没；
  *   · 池子被用空 → 返回 null（这一拍没有种子，不硬凑）。
  */
-export function pickSeed({ cfg, now = Date.now(), st = {}, tz = 'Asia/Shanghai', seedDays = null, rnd = Math.random } = {}) {
+export function pickSeed({ cfg, persona = null, now = Date.now(), st = {}, tz = 'Asia/Shanghai', seedDays = null, rnd = Math.random } = {}) {
   const c = cfg?.rules?.chitchat || {};
   const days = seedDays ?? Number(c.seedDays ?? 30);
-  const { pool, why } = memoryPool({ cfg, now, seedDays: days });
+  const { pool: memPool, why } = memoryPool({ cfg, now, seedDays: days });
+  const pPool = personaPool({ persona, cfg });
   const ring = Array.isArray(st?.chitchat?.recentSeeds) ? st.chitchat.recentSeeds.slice(-3).map(String) : [];
-  const fresh = pool.filter((s) => !ring.includes(s.id));
-  if (!fresh.length) return { seed: null, why: pool.length ? 'SEED_ALL_USED' : why, poolSize: pool.length };
-  const i = Math.min(fresh.length - 1, Math.max(0, Math.floor(Number(rnd()) * fresh.length)));
-  return { seed: fresh[i], why: null, poolSize: pool.length };
+  const memFresh = memPool.filter((s) => !ring.includes(s.id));
+  const personaFresh = pPool.filter((s) => !ring.includes(s.id));
+
+  let chosenPool = [];
+  if (personaFresh.length && memFresh.length) {
+    const lastId = ring.at(-1) || '';
+    const preferPersona = !lastId.startsWith('p:');
+    chosenPool = preferPersona ? personaFresh : memFresh;
+  } else {
+    chosenPool = personaFresh.length ? personaFresh : memFresh;
+  }
+
+  const totalPoolSize = memPool.length + pPool.length;
+  if (!chosenPool.length) {
+    return { seed: null, why: totalPoolSize ? 'SEED_ALL_USED' : why, poolSize: totalPoolSize };
+  }
+  const i = Math.min(chosenPool.length - 1, Math.max(0, Math.floor(Number(rnd()) * chosenPool.length)));
+  return { seed: chosenPool[i], why: null, poolSize: totalPoolSize };
 }
 
 /**

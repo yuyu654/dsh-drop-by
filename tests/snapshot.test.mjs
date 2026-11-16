@@ -133,3 +133,25 @@ test('snapshot：主动发送缓存 recentSends 即使没有 recentOutbound 也�
   assert.match(s, /「刚刚主动发的：早点睡别熬了」（本插件近期主动发出）/);
   assert.equal(s.match(/已经记在通道历史里的句子/g)?.length, 1);
 });
+
+test('snapshot：随口说话（chitchat）把人设自身起点送进 judge 快照', () => {
+  const s = buildSnapshot({
+    ctx: { tz: TZ },
+    topic: {
+      slot: 'chitchat',
+      evidence: {
+        kind: 'chitchat',
+        seedKind: 'persona',
+        seed: '明知胃不好，还是爱喝冰饮料，常让对方顺手带一杯。',
+        allowBare: true,
+        bareLeft: 1,
+      },
+    },
+    cfg: { timezone: TZ },
+    st: {},
+    now: NOW,
+    tz: TZ,
+  });
+  assert.match(s, /这一拍可用「我」自己的日常起点.*爱喝冰饮料/);
+  assert.match(s, /站在「我」的第一人称当下开口/);
+});

@@ -310,7 +310,13 @@ export function buildSnapshot({ ctx = {}, topic = null, cfg = {}, st = {}, now =
   // —— 规则建议（降级成 hint）
   if (topic?.slot === 'chitchat') {
     // 随口说话跟别的由头不一样：这一拍没有任何数据在推着我说，
-    // 所以要把这件事说清楚，judge 才不会假装自己在接某件事。
+    // 所以要把选出来的起点和轻招呼额度一并摆给 judge，它才知道还可以从角色自己的生活开口。
+    const seed = String(topic.evidence?.seed || '').trim();
+    const seedLine = seed
+      ? (topic.evidence?.seedKind === 'persona'
+          ? `这一拍可用「我」自己的日常起点（角色自身习惯/体质/喜好，不是去盘问她的）：${seed}。适合时就站在「我」的第一人称当下开口（例如想让人顺手带一杯想喝的、犯点小毛病嘴硬带过、或聊自己喜欢的东西），别拐成对她的关心或说教，也别虚构「已经放桌上了」。`
+          : `这一拍可用的记忆起点（仅作素材，别照念）：${seed}`)
+      : (topic.evidence?.conversation ? `这一拍可用的对话衔接：${topic.evidence.conversation}` : '');
     const bareLeft = Number(topic.evidence?.bareLeft);
     const bareCount = Number.isFinite(bareLeft) && bareLeft > 0 ? bareLeft : 1;
     const bareHint = topic.evidence?.allowBare === true
@@ -319,7 +325,8 @@ export function buildSnapshot({ ctx = {}, topic = null, cfg = {}, st = {}, now =
     blocks.push([
       '规则建议（可参考也可不用）：这一拍没有任何数据由头。这是一次「随口说话」的候选——' +
         '没有新闻、没有她刚说的话、没有一条数据。要不要说、说什么，你自己判。' +
-        bareHint,
+        (seedLine ? `\n${seedLine}` : '') +
+        (bareHint ? `\n${bareHint}` : ''),
     ]);
   } else if (topic) {
     blocks.push([`规则建议（可参考也可不用）：${topic.label || topic.slot}——${String(topic.brief || topic.why || '').slice(0, 160)}`]);

@@ -90,6 +90,7 @@ test('judge 说「说」→ 草稿过 guard 后原样发出（不再走 compose 
   const r = await tick({ persist: true, generate: gen, llmReady: true });
 
   assert.equal(r.record.decision, 'send');
+  assert.equal(r.record.content_ok, true);
   assert.equal(r.record.judge.say, true);
   assert.equal(r.record.judge.fallback, false);
   assert.equal(r.record.judge.why, '她昨天只睡五个小时');
@@ -254,4 +255,34 @@ test('judge 打开且命中常规由头 → 快照后附带当前心情底色参
   assert.equal(r.record.decision, 'send');
   assert.match(seenJudgePrompt, /当前心情底色/);
   assert.match(seenJudgePrompt, /轻快Lv1/);
+});
+
+test('无由头且随口话不可用时（如额度用完）：不进 judge、不绕过 NO_TOPIC 发送', async () => {
+  const personaPath = path.join(dir, 'no-topic-persona.md');
+  fs.writeFileSync(personaPath, '说话简短。');
+  writeConfig({
+    persona: { enabled: true, localFile: personaPath, dshHome: dir },
+    content: { ...loadConfig().content, mode: 'llm', exams: { text: '' } },
+    rules: {
+      ...loadConfig().rules,
+      judge: { enabled: true },
+      minGapMin: 0,
+      dailyCap: 10,
+      replyCooldownMin: 0,
+      chitchat: { enabled: true, perDay: 1, dayStart: 0, dayEnd: 1439, maxChars: 40 },
+    },
+  });
+  const now = Date.now();
+  const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date(now));
+  saveState({ chitchat: { day, count: 1 } });
+
+  const gen = fakeGen('{"say": true, "angle": "强行找话", "draft": "我到楼下了，下来拿吧。", "why": "绕过上限"}');
+  const r = await tick({ now, persist: true, generate: gen, llmReady: true });
+
+  assert.equal(r.record.decision, 'skip');
+  assert.equal(r.record.reason, 'NO_TOPIC');
+  assert.equal(r.record.chitchat.reason, 'NO_CHITCHAT_BUDGET');
+  assert.equal(r.record.content_ok, false);
+  assert.equal(r.delivery, null);
+  assert.deepEqual(gen.calls, []);
 });

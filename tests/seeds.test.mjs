@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { memoryPool, pickSeed, seedId, conversationLine, rememberSeed } from '../src/seeds.js';
+import { memoryPool, personaPool, pickSeed, seedId, conversationLine, rememberSeed } from '../src/seeds.js';
 import { noteChitchatSent } from '../src/chitchat.js';
 
 const TZ = 'Asia/Shanghai';
@@ -36,11 +36,13 @@ const memOf = (text, at = NOW - 3 * DAY, extra = {}) => ({
   ...extra,
 });
 
-test('记忆种子池：太老的、我自己标了「不给她看」的都不进来', () => {
+test('记忆种子池：太老的、我自己标了「不给她看」的、带路径或系统规则元信息的都不进来', () => {
   const dir = tmpMem([
     memOf('她今天说想学电机仿真'),
     memOf('这条不给她看：我其实有点慌', NOW - 2 * DAY),
     memOf('很久以前的一件小事', NOW - 40 * DAY),
+    memOf('规则：自主探索每 3 轮里做一次并写进 C:\\Users\\sonetto\\notes.md', NOW - DAY),
+    memOf('真奈给我定了官方形象参考图：银白长发', NOW - DAY),
   ]);
   const { pool, why } = memoryPool({ cfg: cfgOf(dir), now: NOW });
   assert.equal(pool.length, 1);
@@ -111,4 +113,33 @@ test('rememberSeed 是 noteChitchatSent 的简写，只写环', () => {
   rememberSeed(st, 'm:b');
   assert.deepEqual(st.chitchat.recentSeeds, ['m:a', 'm:b']);
   assert.equal(st.chitchat.count, 1);
+});
+
+test('personaPool 从人设提取角色自身生活/毛病/偏好种子，且 pickSeed 会与记忆轮替', () => {
+  const persona = {
+    ok: true,
+    text: [
+      '## 我是谁',
+      '- 我 = 示例角色：女，大三。',
+      '- 天生胃不好：紧张、熬夜就容易犯。犯的时候嘴硬只说「没事」。',
+      '- 明知胃不好还是爱喝冰饮料，常让人顺手带一杯。',
+      '## 说话方式',
+      '- 短：一到三句，不许说爱喝冰饮的套话。',
+      '## 对方是什么样的人',
+      '- 体寒怕冷，手总是凉的。',
+    ].join('\n'),
+  };
+  const pPool = personaPool({ persona });
+  assert.equal(pPool.length, 2);
+  assert.equal(pPool.every((s) => s.kind === 'persona' && s.id.startsWith('p:')), true);
+  assert.match(pPool[0].text, /胃不好/);
+  assert.match(pPool[1].text, /冰饮料/);
+
+  const dir = tmpMem([memOf('昨天去实验室调试板子')]);
+  const cfg = cfgOf(dir);
+  const first = pickSeed({ cfg, persona, now: NOW, st: {}, rnd: () => 0 });
+  assert.equal(first.seed?.kind, 'persona');
+  const st = { chitchat: { day: '2026-11-07', count: 1, recentSeeds: [first.seed.id] } };
+  const second = pickSeed({ cfg, persona, now: NOW, st, rnd: () => 0 });
+  assert.equal(second.seed?.kind, 'memory');
 });

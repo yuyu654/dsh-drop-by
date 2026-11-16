@@ -423,8 +423,8 @@ export async function tick({
         const rest = restFor({ cfg, now, tz, st });
         const g = chitchatGate({ cfg, now, st, ctx, tz, rest });
         if (g.ok) {
-          // 阶段 2：起点。记忆里挑一条（最近 3 次用过的跳过），挑不到就只用「最近聊到哪」。
-          const pk = pickSeed({ cfg, now, st, tz });
+          // 阶段 2：起点。记忆池 + 角色自身人设日常池（最近 3 次用过的跳过），挑不到就只用「最近聊到哪」。
+          const pk = pickSeed({ cfg, persona, now, st, tz });
           const seed = pk.seed;
           const bareLeft = bareRemainingToday(st, now, tz, cfg);
           topic = chitchatTopic(cfg, {
@@ -523,6 +523,11 @@ export async function tick({
       // —— 阶段 2：规则允许开口之后，先让模型看一眼整份处境，自己决定说不说。
       //    开关默认关；关着这一整段不执行，行为与加它之前完全一样。
       //    模型说「不说」→ 记 NO_TOPIC（这是它的决定，不是没由头）；判断失败 → 退回规则链。
+      // 随口说话已开启但被额度/睡眠窗口/冷却拦下时，不能让 topic=null 再绕进 judge 发一条 slot=null 漏网。
+      if (!topic && d.decision === 'send' && d.chitchat?.reason) {
+        d.decision = 'skip';
+        d.reason = 'NO_TOPIC';
+      }
       const mediaShare = topic?.slot === 'share' ? topic.evidence?.source : null;
       if (cfg.rules?.judge?.enabled === true && d.decision === 'send' && topic?.slot !== 'projectCheckIn') {
         const snapshot = buildSnapshot({ ctx, topic, cfg, st, now, tz, coarseDesktop: d.track === 'proactive' });
@@ -765,7 +770,7 @@ export async function tick({
     reason_text: REASONS[d.reason] || '',
     dry_run: useSim,
     delivery,
-    content_ok: false,
+    content_ok: Boolean(content?.ok),
     activity: activity
       ? { kind: activity.kind, speaking: activity.speaking, fg: activity.fgTitle, fg_name: activity.fgName }
       : null,

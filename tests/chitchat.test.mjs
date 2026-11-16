@@ -295,3 +295,16 @@ test('轻招呼每日次数上限可由 rules.chitchat.barePerDay 配置与校�
   // 跨天重置计数
   assert.equal(bareRemainingToday(st, NOON + DAY, TZ, cfg2), 2);
 });
+
+test('persona 类型随口话种子在 prompt 里强调第一人称自身生活而非围着用户转', async () => {
+  const { judgePrompt } = await import('../src/judge.js');
+  const pTopic = chitchatTopic(cfgOf(), {
+    seedKind: 'persona',
+    seed: '天生胃不好：熬夜就犯，但还是嘴馋爱喝冰的。',
+  });
+  const prompt = buildChitchatPrompt({ ctx: ctxOf({ now: NOON }), topic: pTopic, persona: null, cfg: cfgOf(), st: {} });
+  assert.match(prompt, /不必每条都围着她转/);
+  assert.match(prompt, /这是「我」自己人设里的身体、习惯或偏好/);
+  const jp = judgePrompt({ snapshot: '现在：12:00', persona: { text: '短句' } });
+  assert.match(jp, /不必每句话都围着她转/);
+});

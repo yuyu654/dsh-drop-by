@@ -612,3 +612,14 @@ test('composeDraft / compose：share 探索内容拦公式黑话和无接话口�
   });
   assert.equal(retryDraft.ok, true);
 });
+
+test('guard：去标点后与近期发送 recentSends 连续 8 字重复也判 ECHO_SELF', () => {
+  const cfg = cfgOf();
+  const ctx = {
+    ...ctxOf(),
+    recentSends: ['明天八点电力电子。这会儿就别再开新坑了，收一收，早点睡。'],
+  };
+  const r = guard('明早八点电力电子……这会儿别开新的了，早点睡。', cfg, ctx);
+  assert.equal(r.ok, false);
+  assert.equal(r.violations.some((v) => v.code === 'ECHO_SELF'), true);
+});

@@ -177,15 +177,22 @@ export function guard(text, cfg, ctx = null, opts = {}) {
     });
   }
 
-  // 照抄我自己上一句（连续 8 个字一模一样）：看着像接话，其实是把旧句子搬过来再拼一半。
-  // 主动由头里出现这种句子，逻辑一定断——上一句说的是别的事，这一句有自己的由头。
-  if (ctx?.me?.lastText) {
-    const src = String(ctx.me.lastText);
-    for (let i = 0; i + 8 <= src.length; i++) {
-      if (t.includes(src.slice(i, i + 8))) {
-        violations.push({ code: 'ECHO_SELF', why: '照搬了我上一句里的话' });
-        break;
+  // 照抄我自己上一句或近期发过的句子（去标点后连续 8 个字一模一样）：看着像接话，其实是把旧句子或几小时前的提醒搬回来再说一遍。
+  const normEcho = (s) => String(s || '').replace(/[\p{P}\p{S}\s]+/gu, '');
+  const normT = normEcho(t);
+  if (normT.length >= 8) {
+    const prevList = [ctx?.me?.lastText, ...(Array.isArray(ctx?.recentSends) ? ctx.recentSends.slice(-5) : [])].filter(Boolean);
+    let echoed = false;
+    for (const prev of prevList) {
+      const normSrc = normEcho(prev);
+      for (let i = 0; i + 8 <= normSrc.length; i++) {
+        if (normT.includes(normSrc.slice(i, i + 8))) {
+          violations.push({ code: 'ECHO_SELF', why: '照搬了我最近说过的同一段话' });
+          echoed = true;
+          break;
+        }
       }
+      if (echoed) break;
     }
   }
 
@@ -623,7 +630,7 @@ export function buildPrompt({ ctx, topic, persona, cfg, feedback, st = {} }) {
     '14. 你确实知道她在忙什么，但那是后台看来的，她没跟你说过。所以别把软件名、文件名、窗口名说出口，也别把它变成问句（「回来就写代码，WorkBuddy 那个？」就是废的）。知道就直接说事实——「回来就写代码」；要问就问得像真不知道——「回来就在忙？」「忙啥呢」。',
     '15. 一条只说一件事。你要是问了她在忙什么，这一条就问完，别接着讲你昨晚研究的东西、你自己的想法——她还没回，你就换了话题，像自说自话。想讲自己的事，等她接了话，或者另起一条。也不许把她说的事用「另说」「回头再说」一句推开：要接就接住，不接就别提。',
     ...(herElsewhere ? ['16. 她最后一句是在别的通道（抖音/主会话）说的，不是这条要回的话：只当背景。不许回应它、不许评价它、不许顺着它换话题，也不许在这条里提她那个话题——这条只说这个由头本身的事。'] : []),
-    '17. 我的事就是我的事：身体、习惯、毛病，都不许倒过来安到她头上查她。关心就关心她本人，别把自己的问题写成对她的盘问。',
+    '17. 我的事就是我的事：身体、习惯、毛病，都不许倒过来安到她头上查她。要说我自己的感受或小毛病，直接以「我」第一人称带出，别把自己的问题写成对她的盘问或关心。',
     '18. 说她发来的东西（视频/文章/新闻）时，就只说内容本身：好在哪、哪句假、我信不信。别在结尾挂一句查她、叮嘱她的话（「你没伸手去摸吧」「别又熬夜」）——话题在那件东西上，不在她身上；要关心她就单独说一句，别当尾巴。视频里的事就是视频里的事，不是我们这儿发生的：别把那边的场景当成屋里真有的东西，再拿它问她现实里干了什么。',
     ...(herAnsweredElsewhere ? ['19. 她最后那条已经在它自己的通道（抖音/主会话）里回过我了，那边已经答过。这条里一个字都别再答一遍、别再提那件事——只说这条由头本身的事。'] : []),
     '20. 短没关系——「在吗」「干嘛呢」「睡了」这种能独立成话的短句都行。但不许只剩一个指代不清的词（「那条」「视频」「晚上」）：那是个标签，不是一句话；也不许把上面「这一条的由头」里的字原样抄回来当回复。',
@@ -666,7 +673,15 @@ export function buildChitchatPrompt({ ctx, topic, persona, cfg, feedback, st = {
       ].join('\n')
     : '';
   const seed = topic?.evidence?.seed || null;
-  const seedBlock = seed ? `这一句的起点（是素材，不是任务）：${seed}` : '';
+  const isPersonaSeed = topic?.evidence?.seedKind === 'persona';
+  const seedBlock = seed
+    ? [
+        `这一句的起点（是素材，不是任务）：${seed}`,
+        isPersonaSeed
+          ? '这是「我」自己人设里的身体、习惯或偏好：站回「我」此刻的第一人称生活开口（例如胃有点犯了嘴硬带过、嘴馋想喝冰的让对方顺手带一杯、或聊起自己喜欢的爱好），不要写成关心或盘问她，也不要编造「饮料已经给你放桌上了」。'
+          : '',
+      ].filter(Boolean).join('\n')
+    : '';
   const names = Array.isArray(topic?.evidence?.seedEntities) ? topic.evidence.seedEntities : [];
   const nameBlock = names.length
     ? `种子里的名字必须照抄：${names.join('、')}。不许改字、不许写成同音的别的名字、不许新编一个。`
@@ -693,6 +708,7 @@ export function buildChitchatPrompt({ ctx, topic, persona, cfg, feedback, st = {
     '',
     `现在是 ${ctx.clock || ''}。在 QQ 上给「她」发一条消息，纯文字：没有表情、没有语音、不带解释。`,
     '这一条**没有任何由头**：没有新闻、没有数据、没有她刚说的话。就是忽然想跟她说一句。',
+    '不必每条都围着她转或问她在干嘛——可以从「我」自己的身体状态、嘴馋念想、顺手使唤或当下兴趣开口。',
     seedBlock,
     nameBlock,
     convBlock,
