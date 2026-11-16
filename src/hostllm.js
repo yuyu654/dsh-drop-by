@@ -92,7 +92,9 @@ export function makeHostLlm(ctx, { cfg, log = () => {} } = {}) {
   const target = pickTarget(ctx, prefer);
   if (!target) return { ready: false, reason: 'HOST_LLM_NO_MODEL' };
 
-  const maxTokens = Math.max(32, Number(cfg?.content?.llm?.maxTokens) || 220);
+  // 默认上限放宽到 1024：带思考/reasoning 的模型（如 deepseek-v4.1-flash）会把推理过程也计入 maxTokens，
+  // 220 极易在正文还没吐出前就被 max-tokens 截断。
+  const maxTokens = Math.max(32, Number(cfg?.content?.llm?.maxTokens) || 1024);
   const temperature = Number.isFinite(Number(cfg?.content?.llm?.temperature))
     ? Number(cfg.content.llm.temperature)
     : 0.85;
@@ -101,18 +103,21 @@ export function makeHostLlm(ctx, { cfg, log = () => {} } = {}) {
   async function attemptOnce({ prompt, timeoutMs, images, modelTarget = target, minOutputTokens = 0 } = {}) {
     const t0 = Date.now();
     let out = '';
+    let reasoningChars = 0;
+    let outputTokens = null;
     const ac = new AbortController();
     // 宿主没有超时保护的话，一句生成能把这一拍挂死。给个上限，别让 tick 叠在那儿。
     const ms = Math.max(1000, Number(timeoutMs) || Number(cfg?.content?.llm?.timeoutMs) || 60_000);
     const killer = setTimeout(() => ac.abort(new Error('HOST_LLM_TIMEOUT')), ms);
     killer.unref?.();
+    const effectiveMaxTokens = Math.max(maxTokens, Number(minOutputTokens) || 0);
 
     try {
       const stream = llm.stream({
         provider: modelTarget.provider,
         model: modelTarget.model,
         messages: [userMessage(prompt, images)],
-        maxTokens: Math.max(maxTokens, minOutputTokens),
+        maxTokens: effectiveMaxTokens,
         temperature,
         signal: ac.signal,
       });
@@ -121,6 +126,10 @@ export function makeHostLlm(ctx, { cfg, log = () => {} } = {}) {
         if (!chunk) continue;
         if (chunk.type === 'finish') finishKind = chunk.reason?.kind;
         if (chunk.type === 'text-delta' && typeof chunk.text === 'string') out += chunk.text;
+        if (chunk.type === 'reasoning-delta' && typeof chunk.text === 'string') reasoningChars += chunk.text.length;
+        if (chunk.type === 'usage' && chunk.usage && Number.isFinite(Number(chunk.usage.outputTokens))) {
+          outputTokens = Number(chunk.usage.outputTokens);
+        }
         if (chunk.type === 'finish' && chunk.reason && chunk.reason.kind === 'error') {
           const f = chunk.reason.failure || {};
           return {
@@ -133,8 +142,23 @@ export function makeHostLlm(ctx, { cfg, log = () => {} } = {}) {
         }
       }
       const text = String(out || '').trim();
-      if (!text) return { ok: false, reason: 'HOST_LLM_EMPTY', note: finishKind ? `finish=${finishKind}` : '',
-        provider: modelTarget.provider, model: modelTarget.model };
+      if (!text) {
+        const parts = [];
+        if (finishKind) parts.push(`finish=${finishKind}`);
+        if (reasoningChars > 0) parts.push(`reasoning=${reasoningChars}字`);
+        if (outputTokens != null) parts.push(`outTokens=${outputTokens}`);
+        parts.push(`maxTokens=${effectiveMaxTokens}`);
+        return {
+          ok: false,
+          reason: 'HOST_LLM_EMPTY',
+          note: parts.join(' · '),
+          finishKind,
+          reasoningChars,
+          maxTokens: effectiveMaxTokens,
+          provider: modelTarget.provider,
+          model: modelTarget.model,
+        };
+      }
       return { ok: true, text, ms: Date.now() - t0, provider: modelTarget.provider, model: modelTarget.model, via: 'host' };
     } catch (e) {
       const timeout = ac.signal.aborted;
@@ -154,15 +178,24 @@ export function makeHostLlm(ctx, { cfg, log = () => {} } = {}) {
   /**
    * 失败再试一次：模型侧偶发的报错/空文本，隔一两秒往往就好了（2026-11-09 17:24
    * 那拍就是一次服务端错误、一次空文本）。超时不重试——那一拍已经等得太久，
-   * 重试只会继续堵着 tick。次数由 content.llm.retries 控制，默认 1（多试一次）。
+   * 重试只会继续堵着 tick。若因思考耗尽 maxTokens 返回空，重试时顺手翻倍预算。
+   * 次数由 content.llm.retries 控制，默认 1（多试一次）。
    */
   const retries = Math.max(0, Math.min(3, Number(cfg?.content?.llm?.retries ?? 1)));
   async function generate(opts = {}) {
-    let r = await attemptOnce(opts);
+    let attemptOpts = { ...opts };
+    let r = await attemptOnce(attemptOpts);
     for (let i = 0; i < retries && !r.ok; i += 1) {
       if (r.reason === 'HOST_LLM_TIMEOUT') break;
+      if (r.reason === 'HOST_LLM_EMPTY' && (r.finishKind === 'max-tokens' || r.reasoningChars > 0)) {
+        const currentBudget = Math.max(maxTokens, Number(attemptOpts.minOutputTokens) || 0, 512);
+        attemptOpts = { ...attemptOpts, minOutputTokens: Math.min(8192, currentBudget * 2) };
+      }
       log(`生成失败（${r.reason}${r.note ? `：${r.note}` : ''}），重试第 ${i + 1} 次`);
-      r = await attemptOnce(opts);
+      r = await attemptOnce(attemptOpts);
+    }
+    if (!r.ok) {
+      log(`生成最终失败（${r.reason}${r.note ? `：${r.note}` : ''}，model=${target.provider}:${target.model}）`);
     }
     return r;
   }

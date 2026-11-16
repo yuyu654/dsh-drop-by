@@ -54,16 +54,17 @@ export function pendingFromFeedback(st, cfg, now, herTs = null) {
   const cutoff = Math.max(Number(herTs) || 0, lastFollowUpTime(st));
   const p = pend.filter((entry) => entry?.expect !== false && entry?.slot && entry.slot !== 'noReply' && !BACKGROUND_SLOTS.has(entry.slot) &&
     (cfg?.content?.topics?.followCasualSilence === true || !CASUAL_SLOTS.has(entry.slot)) &&
+    (!cfg?.channels?.primary || (entry.channel || 'qq') === cfg.channels.primary) &&
     Number(entry.ts) > cutoff && now - Number(entry.ts) >= thresholdMin(cfg) * MIN)
     .sort((a, b) => Number(b.ts) - Number(a.ts))[0];
   if (!p) return null;
   return {
-    channel: 'qq',
+    channel: p.channel || 'qq',
     at: Number(p.ts),
     slot: String(p.slot || ''),
     text: String(p.draft || p.text || ''),
     silenceMin: Math.round((now - Number(p.ts)) / MIN),
-    key: `qq:${Number(p.ts)}`,
+    key: `${p.channel || 'qq'}:${Number(p.ts)}`,
   };
 }
 
@@ -101,7 +102,7 @@ export function pickNoReply({ st, cfg, now, herTs = null, douyinOut = null, herO
   const cutoff = lastFollowUpTime(st);
   const list = [
     pendingFromFeedback(st, cfg, now, herTs),
-    cfg?.content?.topics?.followCasualSilence === true
+    !cfg?.channels?.primary && cfg?.content?.topics?.followCasualSilence === true
       ? pendingFromDouyin({ cfg, now, herTs, lastOut: douyinOut, herOnDouyin }) : null,
   ].filter((candidate) => candidate && candidate.at > cutoff);
   if (!list.length) return null;

@@ -8,6 +8,8 @@ import path from 'node:path';
 import { splitOutgoing, firstDelayMs, partGapMs } from './split.js';
 import { recordActionOutbound } from './action-proposal.js';
 import { appendEmotionInbox } from './emotion-sync.js';
+import { loadConfig } from './config.js';
+import { chatChanging } from './channels/chat-switch.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
 
@@ -19,6 +21,7 @@ function dshDir() {
 const connPath = () => path.join(dshDir(), 'qq-bridge', 'connection.json');
 
 export function bridgeInfo() {
+  if (loadConfig().channels?.primary === 'douyin' || chatChanging()) return { ok: false, api: '', ws: '', selfId: '' };
   try {
     const c = JSON.parse(fs.readFileSync(connPath(), 'utf8'));
     return {
@@ -37,6 +40,7 @@ export function bridgeInfo() {
  * dryRun=true 时只回 payload，不联网——默认就应该走这条路。
  */
 export async function sendQQPrivate({ to, text, dryRun = true, timeoutMs = 8000 }) {
+  if (loadConfig().channels?.primary === 'douyin' || chatChanging()) return { ok: false, error: 'QQ 主通道未启用' };
   const info = bridgeInfo();
   const payload = { user_id: Number(to), message: String(text) };
 
@@ -78,6 +82,52 @@ function writeLastOut(round) {
   } catch {
     /* 写不进去不影响发送本身 */
   }
+}
+
+const companionOutPath = () => path.join(dshDir(), 'qq-bridge', 'companion-out.json');
+
+function readCompanionOut() {
+  try {
+    const j = JSON.parse(fs.readFileSync(companionOutPath(), 'utf8'));
+    return {
+      items: Array.isArray(j?.items) ? j.items : [],
+      syncedAt: j?.syncedAt && typeof j.syncedAt === 'object' ? j.syncedAt : {},
+    };
+  } catch {
+    return { items: [], syncedAt: {} };
+  }
+}
+
+function writeCompanionOut(data) {
+  const file = companionOutPath();
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(data));
+  } catch {
+    /* 写不进去不影响发送本身 */
+  }
+}
+
+function recordCompanionQqOutbound(peer, text, ts, now = Date.now()) {
+  const clean = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!peer || !clean || !ts) return;
+  const data = readCompanionOut();
+  const cutoff = now - 86_400_000;
+  const items = [...data.items.filter((m) => Number(m?.ts) > cutoff), { peer: String(peer), ts, text: clean }].slice(-12);
+  writeCompanionOut({ ...data, items });
+}
+
+export function consumeCompanionQqOutbound(peer, now = Date.now()) {
+  const key = String(peer || '');
+  if (!key) return '';
+  const data = readCompanionOut();
+  const cutoff = now - 86_400_000;
+  const since = Number(data.syncedAt[key]) || 0;
+  const fresh = data.items.filter((m) => m.peer === key && Number(m.ts) > since && Number(m.ts) > cutoff && m.text);
+  if (!fresh.length) return '';
+  const latest = fresh.at(-1).ts;
+  writeCompanionOut({ ...data, syncedAt: { ...data.syncedAt, [key]: Math.max(since, latest) } });
+  return fresh.slice(-6).map((m) => `我：${m.text}`).join('\n');
 }
 
 /**
@@ -154,8 +204,10 @@ export async function sendQQRound({
     round.count = sent;
     writeLastOut(round);
     if (sent) {
+      const sentText = parts.slice(0, sent).join('\n');
       try { recordActionOutbound({ peer: to, proposal: sent === parts.length && messageId != null ? actionProposal : null, firstAt: round.firstAt, sentAt: round.lastAt }); } catch { /* Delivery already succeeded. */ }
-      try { appendEmotionInbox({ user: to, role: 'ai', text: parts.slice(0, sent).join('\n'), t: round.lastAt }); } catch { /* Delivery already succeeded. */ }
+      try { appendEmotionInbox({ user: to, role: 'ai', text: sentText, t: round.lastAt }); } catch { /* Delivery already succeeded. */ }
+      try { recordCompanionQqOutbound(to, sentText, round.lastAt); } catch { /* Delivery already succeeded. */ }
     }
   }
 }

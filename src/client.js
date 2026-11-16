@@ -460,7 +460,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
             v: last && last.llm ? (last.llm.via === 'host' ? last.llm.model || '宿主模型' : '命令行 CLI') : '—',
             note: last && last.llm && last.llm.provider ? last.llm.provider : '',
           },
-          { k: 'QQ', v: st.send && st.send.peer ? st.send.peer : '没配', note: st.mail && st.mail.enabled ? '邮箱开着' : '邮箱关着' },
+          { k: st.externalChat && st.externalChat.primary === 'douyin' ? '抖音' : 'QQ', v: st.send && st.send.peer ? st.send.peer : '没配', note: st.mail && st.mail.enabled ? '邮箱开着' : '邮箱关着' },
         ];
 
         return h(
@@ -501,6 +501,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         var [state, setState] = useState(null);
         var [groups, setGroups] = useState([]);
         var [explorationItems, setExplorationItems] = useState([]);
+        var [channelItems, setChannelItems] = useState([]);
         var [error, setError] = useState('');
         var [toast, setToast] = useState(null);
         var [busy, setBusy] = useState(false);
@@ -523,7 +524,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           if (toastTimer.current) clearTimeout(toastTimer.current);
           toastTimer.current = setTimeout(function () {
             if (mounted.current) setToast(null);
-          }, 3000);
+          }, kind === 'err' ? 6000 : 3000);
         }, []);
 
         var load = useCallback(
@@ -535,6 +536,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
                 setState(r[0]);
                 setGroups(r[1].groups || []);
                 setExplorationItems(r[1].explorationItems || []);
+                setChannelItems(r[1].channelItems || []);
                 setError('');
               })
               .catch(function (e) {
@@ -570,9 +572,15 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
             apiSave({ path: path, value: value })
               .then(function (r) {
                 if (!mounted.current) return;
+                if (!r || r.ok === false) {
+                  flash((r && r.error) || '保存失败', 'err');
+                  load(true);
+                  return;
+                }
                 setState(r.state);
                 setGroups(r.groups || []);
                 if (Array.isArray(r.explorationItems)) setExplorationItems(r.explorationItems);
+                if (Array.isArray(r.channelItems)) setChannelItems(r.channelItems);
                 setError('');
                 var note = r.notes && r.notes.length ? r.notes[0] : '已保存，下一拍生效';
                 flash(note, 'ok');
@@ -642,9 +650,10 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
               INVALID_FIELDS: '重试后探索结果仍缺少有效的主题、进展或下一步，上轮进展已保留',
               CANCELLED: '探索已取消，结果未保存'
             };
+            var detail = r.note ? '（' + r.note + '）' : '';
             var message = r.ok
               ? (r.action === 'skip' ? '本轮已结束，角色选择跳过' : '本轮已结束，探索进展已保存')
-              : (labels[r.reason] || r.reason || '探索失败');
+              : ((labels[r.reason] || r.reason || '探索失败') + detail);
             setExploreResult({ text: message, error: !r.ok });
             if (r.ok && r.action !== 'skip') setShowExplorationDetails(true);
             load(true);
@@ -657,7 +666,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
 
         useEffect(function () {
           var list = state && Array.isArray(state.rollovers) ? state.rollovers : [];
-          if (!list.length) return;
+          if (!list.length || state.externalChat && state.externalChat.primary === 'douyin') return;
           var active = true;
           Promise.all(list.map(function (r) {
             return bridgeGet('/state?sessionId=' + encodeURIComponent(r.newSessionId))
@@ -679,6 +688,15 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         function onRebind(r) {
           if (!r || !r.newSessionId) return;
           setRebindId(r.newSessionId);
+          if (state.externalChat && state.externalChat.primary === 'douyin') {
+            apiPost('/rollover/switch', { sessionId: r.newSessionId }).then(function (result) {
+              if (!result.ok) throw new Error(result.error);
+              flash('已切换抖音共用会话，下一条消息会带上前情', 'ok');
+              load(true);
+            }).catch(function (error) { flash(error.message, 'err'); })
+              .finally(function () { if (mounted.current) setRebindId(''); });
+            return;
+          }
           bridgeGet('/state?sessionId=' + encodeURIComponent(r.oldSessionId))
             .catch(function () { return null; })
             .then(function (oldState) {
@@ -1103,11 +1121,12 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           })() : null,
           rollovers.length ? h('div', { className: 'pg-card' },
             h('div', { className: 'pg-card-head' },
-              h('div', { className: 'pg-card-title' }, 'QQ 会话续聊'),
+              h('div', { className: 'pg-card-title' }, '外部聊天会话续聊'),
               h('span', { className: 'pg-badge pg-badge-dry' }, '待切换 ' + rollovers.length)
             ),
             h('div', { className: 'pg-rows' }, rollovers.map(function (r) {
-              var switched = liveBridge[r.newSessionId] === true;
+              var dy = state.externalChat && state.externalChat.primary === 'douyin';
+              var switched = dy ? state.externalChat.sessionId === r.newSessionId : liveBridge[r.newSessionId] === true;
               var working = rebindId === r.newSessionId || rebindId === r.oldSessionId;
               var meta = [
                 '目标 ' + r.newSessionId.slice(0, 8),
@@ -1116,7 +1135,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
                 r.createdAt ? '创建于 ' + clockOf(r.createdAt) : '',
               ].filter(Boolean).join(' · ');
               var hint = switched
-                ? 'QQ 桥当前已绑定到该新会话，发一条 QQ 消息即可注入前情并完成切换'
+                ? '当前已绑定到该新会话，发一条私信即可注入前情并完成切换'
                 : (r.diskBound
                   ? '已写入磁盘等待重启生效；若不想重启 DSH，可点右侧立即切换当前连接'
                   : '新会话已创建，点击右侧即可停用旧绑定并切到新会话');
@@ -1200,6 +1219,31 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
               'div',
               { className: 'pg-rows pg-exp-rows' },
               explorationItems.map(function (item) {
+                return h(Row, { key: item.path, item: item, busy: busy, onSave: onSave });
+              })
+            ) : null
+          ) : null,
+          channelItems.length || (state && state.externalChat) ? h('div', { className: 'pg-card' },
+            h('div', { className: 'pg-card-head' },
+              h('div', { className: 'pg-card-title' }, '主聊天接口与通道开关'),
+              h('div', { className: 'pg-card-badges' },
+                h('span', {
+                  className: 'pg-badge ' + (state && state.externalChat && state.externalChat.primary === 'douyin' ? 'pg-badge-dry' : 'pg-badge-live')
+                }, state && state.externalChat && state.externalChat.primary === 'douyin' ? '当前：抖音私信' : '当前：QQ')
+              )
+            ),
+            state && state.externalChat && state.externalChat.primary === 'douyin' ? h('div', { className: 'pg-row-hint', style: { marginBottom: '8px' } }, state.externalChat.restartRequired
+              ? '旧收发已暂停，请重启 DSH 完成抖音接管。'
+              : '共用会话 ' + (state.externalChat.sessionId || '待绑定').slice(0, 8) +
+                (state.externalChat.polledAt ? ' · 上次读取 ' + clockOf(new Date(state.externalChat.polledAt).toISOString()) : ' · 等待轮询') +
+                (state.externalChat.status ? ' · ' + state.externalChat.status : '') +
+                (state.externalChat.retryAt && state.externalChat.status ? ' · 下次重试 ' + clockOf(new Date(state.externalChat.retryAt).toISOString()) : '') +
+                (state.externalChat.gap ? ' · 抖音历史窗口可能有缺口' : '')
+            ) : null,
+            channelItems.length ? h(
+              'div',
+              { className: 'pg-rows' },
+              channelItems.map(function (item) {
                 return h(Row, { key: item.path, item: item, busy: busy, onSave: onSave });
               })
             ) : null

@@ -1,3 +1,4 @@
+import { emotionPeer } from './channels/external.js';
 // emotion-sync.js —— 本机自动对齐 emotion-state-portrait 配置，并打通 QQ 对话投喂与状态回读。
 // 不硬编码任何用户路径，换电脑/换 DSH_HOME/换 profile 都按运行环境动态发现。
 import fs from 'node:fs';
@@ -222,7 +223,7 @@ export function inspectEmotionPlugin({ dshHome: homeArg, cfg, env = process.env 
   }, env);
   if (!keyOk) issues.push('当前配置读不到可用的 LLM Key');
 
-  const peer = String(cfg?.channels?.qq?.peerId || '').trim();
+  const peer = String(emotionPeer(cfg || {}) || '').trim();
   const ownerQq = String(emotionCfg.owner?.qq || '').trim();
   if (peer && (!ownerQq || ownerQq === AUTHOR_QQ)) {
     issues.push('owner.qq 尚未对齐你的 QQ 对象');
@@ -310,7 +311,7 @@ export function repairEmotionConfig({ dshHome: homeArg, cfg, env = process.env, 
     }
   }
 
-  const peer = String(cfg?.channels?.qq?.peerId || '').trim();
+  const peer = String(emotionPeer(cfg || {}) || '').trim();
   const curOwner = String(emotionCfg.owner.qq || '').trim();
   if (peer && (!curOwner || curOwner === AUTHOR_QQ || force) && curOwner !== peer) {
     emotionCfg.owner.qq = peer;
@@ -418,7 +419,7 @@ export function recordExplorationEmotion({ state, cfg, dshHome: homeArg, env = p
   if (cfg?.exploration?.portrait !== true && cfg?.exploration?.mood !== true) return '';
   const summary = formatExplorationMoodText(state);
   if (!summary) return '';
-  const targetUser = String(cfg?.channels?.qq?.peerId || 'exploration').trim() || 'exploration';
+  const targetUser = String(emotionPeer(cfg || {}) || 'exploration').trim() || 'exploration';
   appendEmotionInbox({
     dshHome: homeArg,
     env,

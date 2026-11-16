@@ -1,7 +1,7 @@
 // settings.test.mjs —— 设置页能改什么、改成什么样算合法。纯函数，不碰磁盘。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { SCHEMA, coerce, applyChange, listForUi, display, normalizeHm } from '../src/settings.js';
+import { SCHEMA, coerce, applyChange, listForUi, channelItemsForUi, display, normalizeHm } from '../src/settings.js';
 
 const cfg = () => ({
   enabled: true,
@@ -267,8 +267,14 @@ test('忙碌时段与追问：都在界面上，忙碌时段按多段解析', ()
 });
 
 test('每个独立功能都有开关：轨道、回填、通道读发', () => {
-  const ui = listForUi(cfg());
-  const all = ui.flatMap((g) => g.rows || g.items || []);
+  const c = cfg();
+  const cDouyin = { ...c, channels: { ...c.channels, primary: 'douyin' } };
+  const ui = listForUi(c);
+  const all = [
+    ...ui.flatMap((g) => g.rows || g.items || []),
+    ...channelItemsForUi(c),
+    ...channelItemsForUi(cDouyin),
+  ];
   const paths = all.map((r) => r.path);
   for (const p of [
     'rules.proactive',

@@ -7,6 +7,8 @@ import path from 'node:path';
 import { LATEST_PATH } from './fishmail.js';
 import { dshHome } from './detect.js';
 import { bridgeLastIn, bridgeLastOut, recentTurns } from './outbound.js';
+import { chatPeer } from './channels/external.js';
+import { douyinPrimary, douyinPeer, readDouyinState } from './channels/douyin-im.js';
 import { agoSec } from './time.js';
 import { loadPersona } from './persona.js';
 import { actionProposalCandidate } from './action-proposal.js';
@@ -98,8 +100,20 @@ function readQqDialogue(limit = 6) {
  * 阶段 2：她最后说的一句（QQ + 抖音合并）。
  * settle 在 buildContext 之前跑，所以要一个不建整份上下文的轻量入口。
  */
-export function lastHerMessage() {
-  const all = [...(readQqDialogue(50) || []), ...(readDouyinDialogue(50) || [])].filter((m) => m.from === 'her');
+function primaryDialogue(cfg) {
+  if (douyinPrimary(cfg)) {
+    const state = readDouyinState(douyinPeer(cfg));
+    const rows = cfg.channels.douyin.read === false ? [] : [
+      ...(state.dialogue || []), ...(state.pending || []).filter(m => !(state.flight?.ids || []).includes(m.id))
+        .map(m => ({ who: 'her', ts: m.ts, text: m.text, kind: m.kind, item: m.item })),
+    ];
+    return rows.map(item => ({ ...item, from: item.who, channel: 'douyin' }));
+  }
+  return [...(readQqDialogue() || []), ...(cfg?.channels?.primary === 'qq' ? [] : readDouyinDialogue() || [])];
+}
+
+export function lastHerMessage(cfg) {
+  const all = primaryDialogue(cfg).filter((m) => m.from === 'her');
   all.sort((a, b) => a.ts - b.ts);
   return all[all.length - 1] || null;
 }
@@ -173,10 +187,7 @@ export function hasAnsweredOnOwnChannel(lastHer, meMsgs = []) {
  * ch: readChannels 的返回；sys: probe 的返回。
  */
 export function buildContext({ cfg, now, st, ch, sys, tz }) {
-  const dialogue = readQqDialogue() || [];
-  const dy = readDouyinDialogue() || [];
-  // 两个渠道合并：她可能只在其中一个说过话
-  const merged = [...dialogue, ...dy].sort((a, b) => a.ts - b.ts);
+  const merged = primaryDialogue(cfg).sort((a, b) => a.ts - b.ts);
   const recent = merged.slice(-6);
 
   const herMsgs = merged.filter((m) => m.from === 'her');
@@ -243,13 +254,13 @@ export function buildContext({ cfg, now, st, ch, sys, tz }) {
     },
     recent,
     // 阶段 3：最近 6 轮对话（双方原文，旧的在前）——模型得知道「我们刚才聊到哪」
-    dialogueTurns: recentTurns({ limit: 6 }),
+    dialogueTurns: recentTurns({ limit: 6, cfg }),
     fish,
     myExploration: explorationProgress(exploration, persona, now, cfg?.exploration),
     ...(() => {
       const mem = readSelfMemory(tz);
       const candidate = cfg?.exploration?.offerShare === true
-        ? actionProposalCandidate({ cfg, peer: cfg?.channels?.qq?.peerId, now, state: exploration, persona }) ||
+        ? actionProposalCandidate({ cfg, peer: chatPeer(cfg), now, state: exploration, persona }) ||
           explorationShare(exploration, persona, now, cfg?.exploration)
         : null;
       const loginSent = candidate?.loginSite && st?.content?.explorationLoginNotices?.includes(candidate.loginSite);

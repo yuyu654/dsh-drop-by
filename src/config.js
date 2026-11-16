@@ -92,10 +92,11 @@ const DEFAULTS = {
     // 只在 judge 也开着时生效——没有软决策层就不许放开硬闸（防止规则裸奔）。
     presenceSignal: { enabled: false, recentChatMin: 30, recentReturnMin: 30, justActiveSec: 120 } },
   channels: {
+    primary: 'qq',
     // activeHours 空数组 = 全天；多段、可跨零点。与 quietHours 冲突会在 --windows 里报。
     qq: { enabled: true, read: true, send: true, peerId: '', activeHours: [] },
     main: { enabled: false, read: true, send: false, activeHours: [] },
-    douyin: { enabled: false, read: true, send: false, activeHours: [] },
+    douyin: { enabled: false, read: true, send: true, activeHours: [], peerSecUid: '', peerName: '', pollSec: 30, readTimeoutSec: 30, sendTimeoutSec: 240 },
   },
   // 三条链路的总闸（比 channels.*.enabled 高一层）：关掉就当这条链路不存在。
   // 手机端不是插件——手机 App 发 FISH 邮件 → 本机 IMAP 取回，所以它管的是睡眠/压力/屏幕这三类数据。
@@ -310,6 +311,7 @@ export function loadConfig() {
     raw = {};
   }
   const cfg = merge(DEFAULTS, raw);
+  if (cfg.channels.primary !== 'douyin') cfg.channels.primary = 'qq';
   // 老版本会钳制这两个门槛。第一次加载显示过去实际生效的数值。
   if (cfg.timingVersion !== 1) {
     cfg.content = { ...cfg.content, topics: { ...cfg.content.topics } };

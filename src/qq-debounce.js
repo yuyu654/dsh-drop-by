@@ -34,6 +34,8 @@ export function fullQqIncomingText(incoming) {
     entry.text.slice(0, 80).trim() === incoming.text ? entry.text : '';
 }
 
+export const QQ_CHANNEL_PAUSED = '[dsh-drop-by QQ paused]';
+
 function marker(entry) {
   const id = randomUUID();
   slots.set(id, entry);
@@ -120,6 +122,7 @@ export function installQqPromptMerge(controller, aroundPrompt) {
       return handler ? handler(nextPayload, signal, next) : next(nextPayload);
     };
     const text = payload?.content?.[0]?.text;
+    if (text?.startsWith(QQ_CHANNEL_PAUSED + '\n\n')) throw new Error('QQ_PRIMARY_CHANNEL_PAUSED');
     if (typeof text !== 'string' || !text.startsWith(PREFIX)) {
       return dispatch(payload);
     }
@@ -133,6 +136,7 @@ export function installQqPromptMerge(controller, aroundPrompt) {
     const content = payload.content;
     const body = text.slice(end + 2);
     entry.receive({ ...unpackText(body), attachments: content.slice(1), sessionId: payload.sessionId });
+    if (context === QQ_CHANNEL_PAUSED) throw new Error('QQ_PRIMARY_CHANNEL_PAUSED');
     if (superseded) throw new Error('MERGED_INTO_NEWER_QQ_MESSAGE');
 
     let mergedBody = body;

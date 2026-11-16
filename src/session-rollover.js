@@ -37,6 +37,7 @@ function stripUserEnvelope(text, stripSourceHeader) {
     }
     break;
   }
+  user = user.replace(/^【抖音私信原文】\s*/u, '');
   return stripSourceHeader(user).trim();
 }
 

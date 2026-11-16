@@ -8,6 +8,7 @@
 //
 // 只读文件，不联网，不发任何东西。
 import fs from 'node:fs';
+import { douyinPeer, douyinPrimary, readDouyinState } from './channels/douyin-im.js';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -149,6 +150,11 @@ export function qqLastOutbound({ env = process.env, dsh = null } = {}) {
  * 抖音通道关着的时候这些文件是陈的（没人盯梢更新），不能拿来当证据。
  */
 export function douyinLastOutbound({ env = process.env, dsh = null, cfg = {} } = {}) {
+  if (douyinPrimary(cfg)) {
+    const o = readDouyinState(douyinPeer(cfg)).outgoing;
+    return { ts: o?.lastAt || 0, text: o?.text || '', src: 'douyin-im', channel: 'douyin' };
+  }
+  if (cfg.channels?.primary === 'qq') return { ts: 0, channel: 'douyin', src: '' };
   if (cfg?.channels?.douyin?.enabled === false) return { ts: 0, channel: 'douyin', src: '' };
   const home = dsh || dshHome(env);
   const dir = path.join(home, 'douyin-duty', 'memory');
@@ -170,6 +176,11 @@ export function douyinLastOutbound({ env = process.env, dsh = null, cfg = {} } =
  * 不然她在抖音回过、却被 QQ 的旧时间戳当成没回（2026-11-07 她收到的那句追问就是这么来的）。
  */
 export function douyinLastInbound({ env = process.env, dsh = null, cfg = {} } = {}) {
+  if (douyinPrimary(cfg)) {
+    const i = readDouyinState(douyinPeer(cfg)).incoming;
+    return { ...i, ts: i?.ts || 0, src: 'douyin-im', channel: 'douyin' };
+  }
+  if (cfg.channels?.primary === 'qq') return { ts: 0, channel: 'douyin', src: '' };
   if (cfg?.channels?.douyin?.enabled === false) return { ts: 0, channel: 'douyin', src: '' };
   const home = dsh || dshHome(env);
   const dir = path.join(home, 'douyin-duty', 'memory');
@@ -211,6 +222,7 @@ function dmMemoryLastTs(dir, files, from) {
 
 /** 所有通道里最晚的一次出站（哪个通道无所谓：她已经听见了）。 */
 export function lastOutbound({ env = process.env, dsh = null, cfg = {} } = {}) {
+  if (douyinPrimary(cfg)) return douyinLastOutbound({ env, dsh, cfg });
   const a = qqLastOutbound({ env, dsh });
   const b = douyinLastOutbound({ env, dsh, cfg });
   return b.ts > a.ts ? b : a;
@@ -223,6 +235,7 @@ export function lastOutbound({ env = process.env, dsh = null, cfg = {} } = {}) {
  * 不知道渠道时才退回「所有通道取最晚」。
  */
 export function outboundFor(channel, opts = {}) {
+  if (douyinPrimary(opts.cfg || {})) return douyinLastOutbound(opts);
   if (channel === 'qq') return qqLastOutbound(opts);
   if (channel === 'douyin') return douyinLastOutbound(opts);
   return lastOutbound(opts);
@@ -243,7 +256,8 @@ export function answeredAlready({ herTs, out } = {}) {
  * 取 qq-history 的 turns[]，一轮里她说的话在前、我的回复在后；各截 80 字。
  * 读不到就返回空数组，快照整段省略。
  */
-export function recentTurns({ limit = 6, env = process.env, dsh = null } = {}) {
+export function recentTurns({ limit = 6, env = process.env, dsh = null, cfg = {} } = {}) {
+  if (douyinPrimary(cfg)) return (readDouyinState(douyinPeer(cfg)).dialogue || []).slice(-limit * 2);
   const home = dsh || dshHome(env);
   const hist = readJson(path.join(home, 'autonomy', 'qq-history.json'));
   const turns = Array.isArray(hist?.turns) ? hist.turns : [];
@@ -275,6 +289,8 @@ export function recentTurns({ limit = 6, env = process.env, dsh = null } = {}) {
  * 只读文件；两个来源都读不到就返回空数组（compose 那边整段省略，不留空标题）。
  */
 export function recentOutbound({ limit = 5, env = process.env, dsh = null, cfg = {} } = {}) {
+  if (douyinPrimary(cfg)) return (readDouyinState(douyinPeer(cfg)).dialogue || [])
+    .filter(r => r.who === 'me').slice(-limit).reverse().map(r => ({ ...r, channel: 'douyin' }));
   const home = dsh || dshHome(env);
   const rows = [];
   // 视频标题/回复里常有换行，带进 prompt 会把一条挤成好几行——压成一行再截断。
@@ -293,7 +309,7 @@ export function recentOutbound({ limit = 5, env = process.env, dsh = null, cfg =
   }
 
   // 抖音通道关着时 dm 记忆是陈的（没人盯梢更新），别拿旧话冒充「我最近说的」。
-  if (cfg?.channels?.douyin?.enabled !== false) {
+  if (cfg?.channels?.primary !== 'qq' && cfg?.channels?.douyin?.enabled !== false) {
     const dir = path.join(home, 'douyin-duty', 'memory');
     let files = [];
     try {

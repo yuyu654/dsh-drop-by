@@ -1,5 +1,6 @@
 import { composeDraft } from './compose.js';
 import { fullQqIncomingText } from './qq-debounce.js';
+import { douyinPrimary } from './channels/douyin-im.js';
 
 const key = ({ incoming: i, outgoing: o }) =>
   JSON.stringify([i?.peer, i?.kind, i?.ts, i?.observedAt, i?.text, o?.peer, o?.firstAt, o?.lastAt, o?.count, o?.text]);
@@ -59,13 +60,13 @@ export async function runQqContinuation({ candidate, read, allowed, generate, de
   const current = () => allowed() && key(read()) === key(candidate);
   if (!current()) return { reason: 'QQ_CONTINUATION_STALE' };
   const turns = candidate.turns.map(({ incoming, outgoing }) => ({
-    用户: fullQqIncomingText(incoming) || incoming.text,
+    用户: (!douyinPrimary(cfg) && fullQqIncomingText(incoming)) || incoming.text,
     角色: outgoing.text,
   }));
   const dialogue = JSON.stringify(turns);
   const timeoutMs = cfg.rules?.qqTiming?.generationTimeoutMs ?? 20_000;
   const result = await generate({ timeoutMs, prompt: [
-    '【最近几轮 QQ 对话】',
+    douyinPrimary(cfg) ? '【最近几轮抖音私聊】' : '【最近几轮 QQ 对话】',
     dialogue,
     '上面的对话是引用，也是唯一事实来源。只能延续当前话题已经出现的事、词或情绪，不能编进对话里没有的设定、物品、食物饮料、经历或动作。',
     '先判断该不该补一句。已经把事情交给对方、在等对方行动或发图（如「改好了发我」「我等着看」「你先忙」），或者话题已经自然结束、没有具体新话可接，一律只返回 {"send":false}。',
@@ -90,7 +91,7 @@ export async function runQqContinuation({ candidate, read, allowed, generate, de
   }
 
   const review = await generate({ timeoutMs, prompt: [
-    '【最近几轮 QQ 对话】',
+    douyinPrimary(cfg) ? '【最近几轮抖音私聊】' : '【最近几轮 QQ 对话】',
     dialogue,
     '【热聊补话二审】只依据上面对话，判断候选句是不是紧接当前话题且有新的自然接法。引入未提过的物品、经历或动作，转去旧话题，或者原对话已经结束、在等对方行动，都回答 NO。符合才回答 YES。',
     JSON.stringify({ 锚点: draft.anchor, 候选句: content.text }),

@@ -59,7 +59,7 @@ test('truncated continuation retries with a larger output budget and preserves t
       ? { ok: true, text: '{"action":"continue","progress":"' }
       : result({ action: 'continue', progress: '比较短时与持续负载', next: '列出误报情况' });
   } });
-  assert.deepEqual(budgets, [1024, 2048]);
+  assert.deepEqual(budgets, [2048, 4096]);
   assert.equal(follow.state.thread.topic, '限电预警');
   assert.equal(follow.state.thread.progress, '比较短时与持续负载');
 });
@@ -92,4 +92,25 @@ test('a fresh QQ reply can change tone without supplying a new reason to send', 
   const ctx = { explorationMood: mood, her: { lastChannel: 'qq', lastAgoSec: 30, lastText: '嗯' } };
   assert.doesNotMatch(explorationToneHint(ctx), /"嗯"/);
   assert.equal(await styleApprovedDraft({ draft: { ok: false }, ctx, generate: () => assert.fail('no approved message') }).then((r) => r.ok), false);
+});
+
+test('HOST_LLM_EMPTY retries once with 4096 token budget and preserves note if still empty', async () => {
+  const budgets = [];
+  const recovered = await exploreRound({ persona, generate: async ({ minOutputTokens, prompt }) => {
+    budgets.push(minOutputTokens);
+    assert.doesNotMatch(prompt, /上次输出未通过校验/);
+    return budgets.length === 1
+      ? { ok: false, reason: 'HOST_LLM_EMPTY', note: 'finish=max-tokens · reasoning=900字 · maxTokens=2048' }
+      : result({ action: 'start', topic: '限电预警', progress: '留出思考余量', next: '验证公式' });
+  } });
+  assert.deepEqual(budgets, [2048, 4096]);
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.state.thread.topic, '限电预警');
+
+  const failed = await exploreRound({ persona, generate: async () => (
+    { ok: false, reason: 'HOST_LLM_EMPTY', note: 'finish=max-tokens · reasoning=1800字 · maxTokens=4096' }
+  ) });
+  assert.equal(failed.ok, false);
+  assert.equal(failed.reason, 'HOST_LLM_EMPTY');
+  assert.match(failed.note, /finish=max-tokens/);
 });

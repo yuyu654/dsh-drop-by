@@ -19,7 +19,11 @@ import { pruneOldRecords, recordDay } from "./retention.js";
 import { hhmm, agoSec, healthDay, dayKey } from "./time.js";
 import { inQuiet } from "./schedule.js";
 import { busyNow } from "./holidays.js";
-import { sendQQPrivate, sendQQRound } from "./send.js";
+import { activeChatChannel, canReadChat, chatDialogue, chatPeer, emotionPeer, externalInFlight, sendChatRound } from './channels/external.js';
+import { douyinPrimary } from './channels/douyin-im.js';
+import { chatChanging, readyDouyinBinding } from './channels/chat-switch.js';
+import { recordActionOutbound } from './action-proposal.js';
+import { appendEmotionInbox } from './emotion-sync.js';
 import { buildContext, selfMtime, lastHerMessage } from "./context.js";
 import { pickTopic, withForwardContent, fishStale, tierOfSlot, answerableOn } from "./topics.js";
 import { chitchatGate, chitchatTopic, noteChitchatSent, allowBareToday, chitchatYield, chitchatJudgeNo } from "./chitchat.js";
@@ -27,7 +31,7 @@ import { restFor } from "./bedtime.js";
 import { pickSeed, conversationLine } from "./seeds.js";
 import { detectTriggers } from "./triggers.js";
 import { summarizeVideo } from "./videosum.js";
-import { outboundFor, answeredAlready, recentOutbound, douyinLastInbound, bridgeInFlight, readBridgeDialogue } from "./outbound.js";
+import { outboundFor, answeredAlready, recentOutbound, douyinLastInbound } from "./outbound.js";
 import { settle, sweep, noteSent, adaptiveExtraMin } from "./feedback.js";
 import { generate as llmGenerate } from "./llm.js";
 import { compose, composeDraft } from "./compose.js";
@@ -64,16 +68,15 @@ function freshDayState(st, day) {
 export function qqContinuationEnabled(cfg) {
   return cfg.enabled !== false && cfg.rules?.proactive !== false && cfg.rules?.qqContinuation === true &&
     cfg.content?.enabled !== false && cfg.content?.mode !== 'fixed' &&
-    cfg.sources?.qq?.enabled !== false && cfg.channels?.qq?.enabled !== false &&
-    cfg.channels?.qq?.read !== false && cfg.channels?.qq?.send !== false &&
-    Boolean(cfg.channels?.qq?.peerId) && (cfg.dryRun !== false || cfg.send?.enabled === true);
+    canReadChat(cfg) && cfg.channels?.[activeChatChannel(cfg)]?.send !== false &&
+    Boolean(chatPeer(cfg)) && (cfg.dryRun !== false || cfg.send?.enabled === true);
 }
 
 function resolveMoodState({ cfg, persona, now }) {
   const explored = cfg.exploration?.mood === true ? explorationMood(loadExploration(), persona, now, cfg.exploration) : null;
   const portraitShort = portraitMood(cfg, persona, now);
   const portraitFull = cfg.exploration?.portrait === true
-    ? readPortraitMoodMap({ peer: cfg.channels?.qq?.peerId, now })
+    ? readPortraitMoodMap({ peer: emotionPeer(cfg), now })
     : '';
   const portrait = portraitFull
     ? (portraitShort && !portraitFull.includes(portraitShort) ? `${portraitFull}；即时心情：${portraitShort}` : portraitFull)
@@ -84,13 +87,14 @@ function resolveMoodState({ cfg, persona, now }) {
 export async function tickQqContinuation({ candidate, read, generate, active }) {
   const to = candidate.incoming.peer;
   const cfg = loadConfig();
+  const channel = activeChatChannel(cfg);
   const dryRun = cfg.dryRun !== false;
   const bucketName = dryRun ? 'sim' : 'real';
   const allowed = () => {
     const fresh = loadConfig();
     const now = Date.now();
     if (!active() || now > candidate.expiresAt || !qqContinuationEnabled(fresh) ||
-        (fresh.dryRun !== false) !== dryRun || String(fresh.channels.qq.peerId) !== to ||
+        (fresh.dryRun !== false) !== dryRun || activeChatChannel(fresh) !== channel || chatPeer(fresh) !== to ||
         inQuiet(now, fresh.quietHours, fresh.timezone) || busyNow(now, fresh)) return false;
     const st = freshDayState(loadState(), recordDay(now, fresh.timezone, fresh));
     const bucket = st[bucketName];
@@ -106,7 +110,7 @@ export async function tickQqContinuation({ candidate, read, generate, active }) 
   const r = await runQqContinuation({
     candidate, read, allowed, generate, cfg, tone,
     async deliver(text) {
-      const sent = dryRun ? null : await sendQQPrivate({ to, text, dryRun: false, timeoutMs: cfg.send?.timeoutMs });
+      const sent = dryRun ? null : await sendChatRound({ cfg, to, text, dryRun: false, split: { enabled: false }, source: 'continuation', timeoutMs: cfg.send?.timeoutMs });
       return { text, sent, reason: dryRun ? 'DRY_RUN' : sent.ok ? 'SEND' : 'SEND_FAILED' };
     },
   });
@@ -125,7 +129,7 @@ export async function tickQqContinuation({ candidate, read, generate, active }) 
   }
   append({
     ts: now, decision: text && (dryRun || sent?.ok) ? 'send' : 'skip',
-    track: 'proactive', reason, topic: { slot: 'qqContinuation', label: 'QQ 热聊补一句' },
+    track: 'proactive', reason, topic: { slot: 'qqContinuation', label: '热聊补一句' },
     content: text ? { text, chars: text.length } : null,
     delivery: sent ? { attempted: true, ok: sent.ok, to, messageId: sent.messageId, error: sent.error } : { attempted: false, reason },
   }, now, cfg.timezone, cfg);
@@ -212,6 +216,7 @@ export async function tick({
   const pcEvent = trackPcPresence(st, sys, now, cfg);
 
   const ch = readChannels(cfg, now, { quiet });
+  const channel = activeChatChannel(cfg);
 
   // —— 阶段 3：自然触发时刻。L2 归类要提前算一遍（纯函数、0 成本），
   //    「一段活干完 / 刚下课 / self.md 刚写一条」本身就是可以开口的时刻。
@@ -242,18 +247,17 @@ export async function tick({
 
   // 她回没回：比这句话更早发出去的 pending 都算「接住了」（QQ 与抖音并成一条时间线）
   // 阶段 2：顺手把她这一句的原文带上，配对时一起存（读不到就留空，不编）。
-  const herLine = lastHerMessage();
+  const herLine = ch.lastUserTs ? lastHerMessage(cfg) : null;
   const herSayTs = Number(herLine?.ts) || 0;
   const herSay = herSayTs && Math.abs(herSayTs - (Number(ch.lastUserTs) || 0)) <= Number(cfg.rules?.feedback?.replyMatchSec ?? 60) * 1000 ? herLine.text : '';
-  const repliedCount = settle(st, ch.lastUserTs, now, herSay, { tz, cfg });
+  const repliedCount = settle(st, ch.lastUserTs, now, herSay, { tz, cfg, channel: cfg.channels?.primary });
 
   const useSim = cfg.dryRun !== false;
-  if (!quiet && !useSim && cfg.rules?.askProjectOnce === true && cfg.sources?.qq?.enabled !== false &&
-      cfg.channels?.qq?.enabled !== false && cfg.channels?.qq?.read !== false) {
-    captureProjectAnswer(cfg, st, readBridgeDialogue().incoming, now);
+  if (!quiet && !useSim && cfg.rules?.askProjectOnce === true && canReadChat(cfg)) {
+    captureProjectAnswer(cfg, st, chatDialogue(cfg).incoming, now);
   }
   // 窗口已过、她一句话都没有的：每拍补判一次。盲着的时段（静默/全断）不判，dryRun 不写。
-  if (!useSim) sweep(st, now, { tz, cfg, canJudge: !quiet && !ch.allDown });
+  if (!useSim) sweep(st, now, { tz, cfg, channel: cfg.channels?.primary, canJudge: !quiet && !ch.allDown });
   const bucket = useSim ? st.sim : st.real;
   const todaySent = Number(bucket.todaySent) || 0;
   const lastSendTs = Math.max(Number(bucket.lastSendAt) || 0, Number(ch.lastSendTs) || 0) || null;
@@ -281,11 +285,11 @@ export async function tick({
     extraGapMin,
   });
 
-  const peer = cfg.channels?.qq?.peerId;
+  const peer = chatPeer(cfg);
   const bridgeReplyWindow = Number(cfg.rules?.qqTiming?.inFlightSec ?? 180) * 1000;
-  const bridgeOwnsReply = (at) => isHandledActionMessage(peer, at) ||
-    isBridgeManagedMessage(peer, at, Date.now(), bridgeReplyWindow);
-  if (d.track === 'reply' && ch.lastUserChannel === 'qq' && bridgeOwnsReply(ch.lastUserTs)) {
+  const bridgeOwnsReply = (at) => channel === 'douyin'
+    ? Boolean(at) : isHandledActionMessage(peer, at) || isBridgeManagedMessage(peer, at, Date.now(), bridgeReplyWindow);
+  if (d.track === 'reply' && ch.lastUserChannel === channel && bridgeOwnsReply(ch.lastUserTs)) {
     d.decision = 'skip';
     d.reason = 'REPLY_ALREADY_ANSWERED';
   }
@@ -394,13 +398,13 @@ export async function tick({
       persona = loadPersona({ cfg });
       topic = pickTopic(ctx, cfg, now, st);
       if (!topic && d.track === 'proactive' && !useSim && cfg.send?.enabled === true &&
-          ch.list?.some((c) => c.channel === 'qq' && c.ok && c.lastUserTs > 0)) {
+          ch.list?.some((c) => c.channel === channel && c.ok && c.lastUserTs > 0)) {
         topic = projectQuestion(cfg, st);
       }
       // —— 哪来哪回：只有 QQ 这一条发送路。她在抖音/主会话说的话只当信号，
       //    「回她」的由头不能拿到 QQ 上发——她会以为我在答非所问。
       //    通道为空的旧记录照常放行（见 topics.answerableOn）。
-      if (topic && !answerableOn(topic.slot, ctx?.her?.lastChannel)) {
+      if (topic && !answerableOn(topic.slot, ctx?.her?.lastChannel, channel)) {
         d.channel = { slot: topic.slot, from: ctx?.her?.lastChannel || '' };
         d.decision = 'skip';
         d.reason = 'REPLY_ON_OTHER_CHANNEL';
@@ -467,11 +471,11 @@ export async function tick({
       //    （driver 是「生成 → sendQQ → 写 qq-history」，history 那步失败还只是静默 catch）。
       //    生成之前先翻一次最新落盘记录，已经应过就放弃这一拍——不花模型、不吃配额。
       if ((topic?.slot === 'reply' || topic?.slot === 'forward') && cfg.rules?.replyGuard !== false) {
-        const flight = bridgeInFlight({ now, maxMs: Number(cfg.rules?.qqTiming?.inFlightSec ?? 180) * 1000 });
+        const flight = externalInFlight(cfg, now);
         if (flight) {
           d.decision = 'skip';
           d.reason = 'REPLY_IN_FLIGHT';
-          d.guard = { channel: 'qq', src: flight.src || 'qq-bridge', at: flight.firstAt, count: flight.count, herTs: Number(ctx.her?.lastTs) || 0 };
+          d.guard = { channel, src: flight.src || 'qq-bridge', at: flight.firstAt, count: flight.count, herTs: Number(ctx.her?.lastTs) || 0 };
           topic = null;
         }
         const ob = topic ? outboundFor(ctx?.her?.lastChannel, { cfg }) : null;
@@ -592,7 +596,7 @@ export async function tick({
           }
         }
         if (d.decision === 'send' && topic?.evidence?.actionRetry) {
-          actionProposal = mediaShare ? prepareActionProposal({ peer: cfg.channels?.qq?.peerId, text: content.text, cfg,
+          actionProposal = mediaShare ? prepareActionProposal({ peer, text: content.text, cfg,
             source: mediaShare.url, roundAt: topic.evidence?.at }) : null;
           if (!actionProposal) {
             d.decision = 'skip';
@@ -618,14 +622,14 @@ export async function tick({
   //    桥正发到一半（last-out.json firstAt 有、lastAt=0）也算「正在应」，别插进去。
   let guardHit = null;
   if (d.decision === 'send' && (topic?.slot === 'reply' || topic?.slot === 'forward') &&
-      ctx?.her?.lastChannel === 'qq' && bridgeOwnsReply(ctx.her.lastTs)) {
+      ctx?.her?.lastChannel === channel && bridgeOwnsReply(ctx.her.lastTs)) {
     d.decision = 'skip';
     d.reason = 'REPLY_ALREADY_ANSWERED';
   }
   if (d.decision === 'send' && (topic?.slot === 'reply' || topic?.slot === 'forward') && cfg.rules?.replyGuard !== false) {
-    const flight = bridgeInFlight({ now, maxMs: Number(cfg.rules?.qqTiming?.inFlightSec ?? 180) * 1000 });
+    const flight = externalInFlight(cfg, now);
     if (flight) {
-      guardHit = { channel: 'qq', src: flight.src || 'qq-bridge', ts: flight.firstAt, inFlight: true, count: flight.count };
+      guardHit = { channel, src: flight.src || 'qq-bridge', ts: flight.firstAt, inFlight: true, count: flight.count };
     } else {
       const ob = outboundFor(ctx?.her?.lastChannel, { cfg });
       if (answeredAlready({ herTs: ctx?.her?.lastTs, out: ob })) guardHit = ob;
@@ -640,18 +644,22 @@ export async function tick({
     d.reason = code;
     d.guard = { channel: guardHit.channel, src: guardHit.src || '', at: guardHit.ts, herTs: Number(ctx?.her?.lastTs) || 0 };
   } else if (d.decision === 'send') {
-    if (useSim) {
+    if (chatChanging() || (channel === 'douyin' && !readyDouyinBinding())) {
+      delivery = { attempted: false, reason: 'CHANNEL_SWITCH_PENDING' };
+      d.decision = 'skip';
+      d.reason = 'CHANNEL_SWITCH_PENDING';
+    } else if (useSim) {
       delivery = { attempted: false, reason: 'DRY_RUN', preview: content?.text || '' };
     } else if (cfg.send?.enabled !== true) {
       delivery = { attempted: false, reason: 'SEND_DISABLED' };
     } else if (!content?.ok || !content.text) {
       delivery = { attempted: false, reason: 'NO_CONTENT' };
     } else {
-      const to = cfg.channels.qq.peerId;
+      const to = peer;
       // 该拆的拆成几条发（空行分段），首条按她的字数晚几秒，条间留空隙；
       // 一轮只记一次「开口」，不算几条。
-      const r = await sendQQRound({
-        to,
+      const r = await sendChatRound({
+        cfg, to,
         text: content.text,
         dryRun: false,
         now,
@@ -675,12 +683,16 @@ export async function tick({
         d.decision = 'skip';
         d.reason = 'SEND_FAILED';
       }
+      if (r.ok && channel === 'douyin') {
+        recordActionOutbound({ peer, proposal: actionProposal, firstAt: r.firstAt, sentAt: r.sentAt, cfg });
+        if (cfg.exploration?.portrait === true) appendEmotionInbox({ user: emotionPeer(cfg), role: 'ai', text: content.text, t: r.sentAt });
+      }
       // 真发出去了才记待回：dryRun 与失败都不算，否则反馈会被假数据污染
       if (r.ok && topic?.slot === 'projectCheckIn') recordProjectQuestion(cfg, st, Date.now());
       if (r.ok && topic?.slot && topic.slot !== 'projectCheckIn') {
         // 测试期（rules.feedback.testMode）：记一条「发过」，但**不计入接住率**——
         // 插件没完工之前她的沉默不是「没接住」，是还没改好。
-        noteSent(st, topic.slot, now, content.text, { test: cfg.rules?.feedback?.testMode === true });
+        noteSent(st, topic.slot, now, content.text, { test: cfg.rules?.feedback?.testMode === true, channel });
         if (topic.slot === 'chitchat') noteChitchatSent(st, now, tz, content.text, topic.evidence?.seedId, { test: cfg.rules?.feedback?.testMode === true });
         if (topic.slot === 'agenda') {
           if (topic.evidence?.kind === 'early') st.content.lastAgendaNight = topic.evidence.nightKey;

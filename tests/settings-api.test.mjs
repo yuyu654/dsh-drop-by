@@ -106,6 +106,10 @@ test('设置口：读、写、拒绝、以及不碰真配置', async (t) => {
     got.json.explorationItems.map((i) => i.path),
     ['exploration.auto', 'exploration.intervalMinutes', 'exploration.offPeakOnly', 'exploration.nextTopic', 'exploration.interest', 'exploration.offerShare']
   );
+  assert.deepEqual(
+    got.json.channelItems.map((i) => i.path),
+    ['channels.primary', 'channels.qq.send', 'channels.qq.read']
+  );
   // 感知那三层的开关和间隔要能看能改
   const flat0 = groups.flatMap((g) => g.items);
   for (const p of ['idle.onlineSec', 'idle.awaySec', 'perception.l2.enabled', 'perception.l3.enabled']) {

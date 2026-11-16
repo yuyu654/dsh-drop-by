@@ -25,7 +25,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig, saveConfig, loadState, CONFIG_PATH, LOG_DIR } from './config.js';
 import { tick, tickQqContinuation, qqContinuationEnabled } from './engine.js';
-import { readBridgeDialogue } from './outbound.js';
 import { createQqContinuation } from './qq-continuation.js';
 import { inQuiet } from './schedule.js';
 import { busyNow, builtinYears, deepseekPeakStatus, offPeakNow } from './holidays.js';
@@ -33,7 +32,7 @@ import { calendarStatus, refreshCalendar } from './calendar.js';
 import { loadPersona } from './persona.js';
 import { exploreRound, explorationStatus, explorationMood, loadExploration, saveExploration } from './explore.js';
 import { makeHostLlm } from './hostllm.js';
-import { listForUi, explorationItemsForUi, applyChange, saveSecret } from './settings.js';
+import { listForUi, explorationItemsForUi, channelItemsForUi, applyChange, saveSecret } from './settings.js';
 import { detectSources, detectEmotionPortrait } from './detect.js';
 import { inspectEmotionPlugin, repairEmotionConfig, appendEmotionInbox, recordExplorationEmotion } from './emotion-sync.js';
 import { inspectMemory, mergeMemorySessions, restoreMemoryBackup } from './memorysource.js';
@@ -47,6 +46,13 @@ import { qqRolloverAdapter } from './qq-rollover-adapter.js';
 import { installQqPromptMerge, isBridgeManagedMessage } from './qq-debounce.js';
 import { executeQqCommand } from './qq-command.js';
 import { createExplorationMedia } from './explore-media.js';
+import { bridgeLastIn, bridgeLastOut } from './outbound.js';
+import { chatBinding, chatChanging, changePrimaryChannel, localApiOrigin, localChatApi, markChatBoot, readyDouyinBinding, switchState } from './channels/chat-switch.js';
+import { douyinPeer, douyinPeerName, douyinPrimary, pollDelayMs, readDouyinState, sendDouyinText, writeChatData } from './channels/douyin-im.js';
+import { createDouyinSession } from './channels/douyin-session.js';
+import { activeChatChannel, chatDialogue, chatPeer, emotionPeer } from './channels/external.js';
+import { buildReplyContext } from './qq-reply.js';
+import { readChatData } from './channels/douyin-im.js';
 
 export const name = 'dsh-drop-by';
 
@@ -114,18 +120,24 @@ function whenService(ctx, name, cb, log) {
 /** 往 logs/plugin.log 记一行（宿主 console 拿不到，只能自己留痕）。 */
 function noteMount(msg) {
   try {
-    if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
-    fs.appendFileSync(path.join(LOG_DIR, 'plugin.log'), `${new Date().toISOString()} ${msg}\n`, 'utf8');
+    const envLog = String(process.env.PG_LOG_DIR || '').trim();
+    const envCfg = String(process.env.PG_CONFIG_PATH || '').trim();
+    const dir = envLog
+      ? path.resolve(envLog)
+      : (envCfg ? path.join(path.dirname(path.resolve(envCfg)), 'logs') : LOG_DIR);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(path.join(dir, 'plugin.log'), `${new Date().toISOString()} ${msg}\n`, 'utf8');
   } catch {
     /* 日志不该影响主流程 */
   }
 }
 
-/** 打日志：宿主有 logger 就用它，没有就退 console（headless 调试时看得见）。 */
+/** 打日志：宿主有 logger 就用它，没有就退 console（headless 调试时看得见）；warn/error 同步落盘。 */
 function makeLog(ctx) {
   const logger = serviceOf(ctx, 'logger');
   const tag = '[dsh-drop-by]';
   const emit = (level, msg) => {
+    if (level === 'warn' || level === 'error') noteMount(`${level}: ${msg}`);
     try {
       if (logger && typeof logger[level] === 'function') return logger[level](msg);
       if (logger && typeof logger === 'function') return logger(msg);
@@ -206,7 +218,51 @@ export function apply(ctx, config = {}) {
   let lastExploreAttempt = 0;
   const continuation = createQqContinuation();
   const rolloverFile = path.join(path.dirname(CONFIG_PATH), 'data', 'session-handoff.json');
-  const rolloverAdapter = qqRolloverAdapter();
+  const qqAdapter = qqRolloverAdapter();
+  const douyinBindingFor = (id) => {
+    const b = readyDouyinBinding();
+    return b?.sessionId === id ? { peerId: b.qqBinding.peerId, peerKind: 'private' } : null;
+  };
+  const rolloverAdapter = {
+    stripSourceHeader: qqAdapter.stripSourceHeader,
+    bindingFor: (id) => douyinPrimary(loadConfig()) ? douyinBindingFor(id) : qqAdapter.bindingFor(id),
+    bindingMeta(id) {
+      if (!douyinPrimary(loadConfig())) return qqAdapter.bindingMeta(id);
+      const b = chatBinding();
+      return b.sessionId === id || b.preparedSessionId === id
+        ? { ...b.qqBinding, enabled: b.sessionId === id || b.preparedSessionId === id } : null;
+    },
+    prepareBinding(handoff) {
+      if (!douyinPrimary(loadConfig())) return qqAdapter.prepareBinding(handoff);
+      const b = chatBinding();
+      if (b.sessionId !== handoff.oldSessionId) return false;
+      writeChatData('external-chat', { ...b, preparedSessionId: handoff.newSessionId });
+      return true;
+    },
+  };
+  const douyin = createDouyinSession({
+    getConfig: loadConfig, controller: () => serviceOf(ctx, 'sessionController'), log,
+    async prepare({ cfg, peer, text, at, items }) {
+      const context = await buildReplyContext(ctx, { cfg, peer, kind: 'private', text, at, bridgeText: items.at(-1)?.text });
+      const clip = items.findLast(item => item.item);
+      let video = '';
+      if (clip && cfg.content?.forward?.enabled !== false) {
+        const host = llmNow(cfg);
+        if (host.ready) {
+          try {
+            const v = await watchVideo(clip.item, { cfg, host, llm: host.generate, ctx });
+            if (v?.ok && v.summary) video = '视频观察资料，仅按实际证据回应：' + v.summary;
+          } catch (error) { log.warn('抖音视频观察：' + error.message); }
+        }
+      }
+      return ['<external_reply_context>', context, video,
+        '只回复本次抖音私信正文。直接输出给联系人的正文，发送由宿主完成。不要调用外部聊天发送工具。没有视频证据时不要声称看过。',
+        '</external_reply_context>'].filter(Boolean).join('\n');
+    },
+    onSent: ({ cfg, peer, text, at }) => {
+      if (cfg.exploration?.portrait === true) appendEmotionInbox({ user: emotionPeer(cfg), role: 'ai', text, t: at });
+    },
+  });
   let ticks = 0;
   let lastAt = 0;
   let nextAt = 0;
@@ -319,7 +375,10 @@ export function apply(ctx, config = {}) {
           (retry && (fresh.rules?.actionGate?.enabled !== true || fresh.exploration.web !== true)) ||
           (requestedResearch && fresh.rules?.qqCommands?.enabled !== true) ||
           loadPersona({ cfg: fresh }).text !== persona.text) return { ok: false, reason: 'CANCELLED' };
-      if (!r.ok) return r;
+      if (!r.ok) {
+        log.warn(`自主探索未完成：${r.reason || 'UNKNOWN'}${r.note ? `（${r.note}）` : ''}`);
+        return r;
+      }
       saveExploration(r.state);
       // 仅在「近一轮探索主题」确实在本轮产生非跳过结果后自动消费清空，避免用户误卡死未来探索。
       if (focusTopic && r.action !== 'skip' && String(fresh.exploration?.nextTopic || '').trim() === focusTopic) {
@@ -327,11 +386,11 @@ export function apply(ctx, config = {}) {
       }
       if (r.action !== 'skip') {
         const explorationText = recordExplorationEmotion({ state: r.state, cfg: fresh });
-        if (explorationText && fresh.exploration?.portrait === true && fresh.channels?.qq?.peerId && host.ready) {
+        if (explorationText && fresh.exploration?.portrait === true && emotionPeer(fresh) && host.ready) {
           await updatePortraitMood({
             cfg: fresh,
             persona,
-            peer: fresh.channels.qq.peerId,
+            peer: emotionPeer(fresh),
             text: explorationText,
             at: r.state.lastAt || now,
             generate: host.generate,
@@ -350,7 +409,7 @@ export function apply(ctx, config = {}) {
     }
   }
 
-  const releaseActionExecutor = opt.enabled === false ? () => {} : bindActionExecutor({
+  const actionExecutor = {
     run: ({ params }, onRetryEvidence) => runExploration(true, params, onRetryEvidence),
     command: (cmd, cfg) => executeQqCommand({
       cmd, cfg,
@@ -360,14 +419,37 @@ export function apply(ctx, config = {}) {
       explore: (request) => runExploration(true, null, null, request),
       state: loadExploration, persona: () => loadPersona({ cfg }),
     }),
+    deferReport(entry) {
+      const store = readChatData('task-callbacks');
+      writeChatData('task-callbacks', { pending: [...(store.pending || []), entry] });
+    },
     async report({ peer, result, cfg, command }) {
       const text = command ? result?.text || '这条任务没跑完，暂时没有结果。' : !result?.ok ? '这次换源没跑完，我先把这个坑留着。'
         : result.foundBody ? '换了个站，正文找到了。'
           : '换了来源找过，还是没拿到正文。';
-      const sent = await sendQqText({ to: peer, text, cfg, confirm: true, track: true });
-      if (!sent.ok || sent.dryRun) log.warn('任务结果没能发到 QQ。');
+      const sent = douyinPrimary(cfg) ? await sendDouyinText({ cfg, peer, text, source: 'task' })
+        : await sendQqText({ to: peer, text, cfg, confirm: true, track: true });
+      if (!sent.ok || sent.dryRun) log.warn('任务结果没能发到当前主通道：' + (sent.error || '演练模式'));
+      return sent;
     },
-  });
+  };
+  const releaseActionExecutor = opt.enabled === false ? () => {} : bindActionExecutor(actionExecutor);
+
+  async function flushTaskResults(cfg) {
+    if (chatChanging() || cfg.dryRun !== false || cfg.send?.enabled !== true) return;
+    const store = readChatData('task-callbacks');
+    const pending = store.pending || [];
+    const channel = activeChatChannel(cfg);
+    const peer = chatPeer(cfg);
+    const index = pending.findIndex(item => item.channel === channel && item.peer === peer);
+    if (index < 0) return;
+    const entry = pending[index];
+    const result = await actionExecutor.report({ ...entry, cfg });
+    if (result?.ok) {
+      const latest = readChatData('task-callbacks').pending || [];
+      writeChatData('task-callbacks', { pending: latest.filter((_, i) => i !== index) });
+    }
+  }
 
   function schedule(delayMs) {
     if (disposed) return;
@@ -389,25 +471,28 @@ export function apply(ctx, config = {}) {
       try {
         const cfg = loadConfig();
         const now = Date.now();
+        if (opt.enabled !== false && cfg.enabled !== false && !running &&
+            (!douyinPrimary(cfg) || !!readyDouyinBinding())) await flushTaskResults(cfg);
         if (opt.enabled === false || !qqContinuationEnabled(cfg) ||
             inQuiet(now, cfg.quietHours, cfg.timezone) || busyNow(now, cfg)) {
           continuation.observe({ incoming: {}, outgoing: {} }, '', now);
           return;
         }
-        const due = continuation.observe(readBridgeDialogue(), String(cfg.channels.qq.peerId), now, cfg.rules.qqTiming);
-        if (!due || running || isHandledActionMessage(due.incoming.peer, due.incoming.ts) ||
-            isBridgeManagedMessage(due.incoming.peer, due.incoming.ts, now, Number(cfg.rules?.qqTiming?.inFlightSec ?? 180) * 1000, true)) return;
+        const channel = activeChatChannel(cfg);
+        const due = continuation.observe(chatDialogue(cfg), chatPeer(cfg), now, cfg.rules.qqTiming);
+        if (!due || running || isHandledActionMessage(due.incoming.peer, due.incoming.ts, channel) ||
+            (channel === 'qq' && isBridgeManagedMessage(due.incoming.peer, due.incoming.ts, now, Number(cfg.rules?.qqTiming?.inFlightSec ?? 180) * 1000, true))) return;
         continuation.consume(due);
         const host = llmNow(cfg);
         if (!host.ready) return;
         running = true;
         try {
-          await tickQqContinuation({ candidate: due, read: readBridgeDialogue, generate: host.generate, active: () => !disposed });
+          await tickQqContinuation({ candidate: due, read: () => chatDialogue(loadConfig()), generate: host.generate, active: () => !disposed });
         } finally {
           running = false;
         }
       } catch (e) {
-        log.warn(`QQ 热聊补话出错：${String(e?.message || e).slice(0, 160)}`);
+        log.warn(`热聊补话出错：${String(e?.message || e).slice(0, 160)}`);
       } finally {
         scheduleContinuation();
       }
@@ -454,9 +539,19 @@ export function apply(ctx, config = {}) {
         mode: String(cfg?.content?.mode || 'auto'),
         llm,
       },
+      externalChat: {
+        primary: cfg.channels.primary, restartRequired: douyinPrimary(cfg) && !!switchState().restartBoot,
+        ...(douyinPrimary(cfg) ? {
+          sessionId: chatBinding().sessionId || '',
+          polledAt: readDouyinState(douyinPeer(cfg)).polledAt,
+          status: readDouyinState(douyinPeer(cfg)).pollError || readDouyinState(douyinPeer(cfg)).replyError || '',
+          gap: !!readDouyinState(douyinPeer(cfg)).gap,
+          retryAt: readDouyinState(douyinPeer(cfg)).retryAt,
+        } : {}),
+      },
       send: {
         enabled: cfg?.send?.enabled === true,
-        peer: cfg?.channels?.qq?.peerId || '',
+        peer: douyinPrimary(cfg) ? douyinPeerName(cfg) || douyinPeer(cfg) : cfg.channels.qq.peerId || '',
       },
       mail: {
         enabled: cfg?.mail?.enabled === true,
@@ -506,16 +601,45 @@ export function apply(ctx, config = {}) {
         notes: ['授权码已存进 credentials.json（界面上只显示「已设置」，不会再显示出来）'],
         groups: listForUi(loadConfig()),
         explorationItems: explorationItemsForUi(loadConfig()),
+        channelItems: channelItemsForUi(loadConfig()),
         state: snapshot(),
       };
     }
+    const notes = [];
+    if (r.path === 'channels.primary') {
+      try {
+        const from = loadConfig().channels.primary;
+        if (from !== r.value) {
+          const call = localChatApi(localApiOrigin(req.headers || {}), { timeoutMs: r.cfg.send.timeoutMs, headers: req.headers || {} });
+          const result = await changePrimaryChannel({ from, to: r.value, cfg: r.cfg, call,
+            save: () => saveConfig(r.cfg), drain: () => douyin.drain(),
+            async canSwitchWithoutRestart(sessionId) {
+              const controller = serviceOf(ctx, 'sessionController');
+              if (!controller) return false;
+              const lastIn = bridgeLastIn();
+              const lastOut = bridgeLastOut();
+              if (lastIn?.ts && (!lastOut?.ts || lastOut.ts < lastIn.ts || !lastOut.lastAt)) return false;
+              const info = await controller.inspect(sessionId, AbortSignal.timeout(r.cfg.send.timeoutMs));
+              return info?.events?.findLast?.(e => ['turn/start', 'turn/end'].includes(e.type))?.type !== 'turn/start';
+            },
+          });
+          if (r.value === 'douyin') {
+            douyin.start(pollDelayMs(r.cfg.channels.douyin));
+            if (result.restartRequired) notes.push('已关闭旧抖音盯梢和 QQ 绑定。请重启 DSH 后由陪伴接管抖音私信。');
+          } else {
+            notes.push('已切回 QQ，抖音原聊天盯梢保持关闭。');
+          }
+        }
+      } catch (error) {
+        return { ok: false, error: error.message };
+      }
+    }
     try {
-      saveConfig(r.cfg);
+      if (r.path !== 'channels.primary') saveConfig(r.cfg);
     } catch (e) {
       return { ok: false, error: `写 config.json 失败：${String(e?.message || e).slice(0, 120)}` };
     }
 
-    const notes = [];
     if (r.path === 'dryRun' && r.value === true) notes.push('演练模式开着：之后只判定、不发');
     if (r.path === 'send.enabled' && r.value === true && r.cfg.dryRun !== false) {
       notes.push('「允许真的发送」开了，但演练模式还开着——两个都放行才会发出去');
@@ -528,12 +652,14 @@ export function apply(ctx, config = {}) {
       notes.push('读邮箱开了：下一次到间隔就去收信（填了账号和授权码才会真连）');
     }
 
+    if (douyinPrimary(r.cfg) && r.path === 'channels.douyin.pollSec') douyin.start(pollDelayMs(r.cfg.channels.douyin));
+
     if (timer && ['tickMinutes', 'tickJitterSec'].includes(r.path) && !running) {
       clearTimeout(timer);
       schedule(intervalMs());
     }
     const latestCfg = loadConfig();
-    return { ok: true, path: r.path, value: r.value, notes, groups: listForUi(latestCfg), explorationItems: explorationItemsForUi(latestCfg), state: snapshot() };
+    return { ok: true, path: r.path, value: r.value, notes, groups: listForUi(latestCfg), explorationItems: explorationItemsForUi(latestCfg), channelItems: channelItemsForUi(latestCfg), state: snapshot() };
   }
 
   // ---------------------------------------------------------------- 可选：状态接口
@@ -570,7 +696,7 @@ export function apply(ctx, config = {}) {
                 if (route === '/state' && (req.method || 'GET') === 'GET') return json(200, snapshot());
                 if (route === '/config' && (req.method || 'GET') === 'GET') {
                   const curCfg = loadConfig();
-                  return json(200, { ok: true, path: CONFIG_PATH, groups: listForUi(curCfg), explorationItems: explorationItemsForUi(curCfg) });
+                  return json(200, { ok: true, path: CONFIG_PATH, groups: listForUi(curCfg), explorationItems: explorationItemsForUi(curCfg), channelItems: channelItemsForUi(curCfg) });
                 }
                 if (route === '/config' && req.method === 'POST') {
                   return json(200, await saveFromBody(req));
@@ -592,6 +718,18 @@ export function apply(ctx, config = {}) {
                   const manualTopic = typeof body?.topic === 'string' ? body.topic.trim() : '';
                   const r = await runExploration(true, null, null, null, manualTopic);
                   return json(200, { ...r, state: snapshot() });
+                }
+                if (route === '/rollover/switch' && req.method === 'POST') {
+                  localApiOrigin(req.headers || {});
+                  if (!douyinPrimary(loadConfig())) return json(400, { ok: false, error: '当前主通道不是抖音' });
+                  const body = JSON.parse((await readBody(req)) || '{}');
+                  const b = readyDouyinBinding();
+                  if (!b) return json(409, { ok: false, error: '请等主通道接管完成' });
+                  const record = pendingRollovers(rolloverFile, rolloverAdapter).find(
+                    row => row.oldSessionId === b.sessionId && row.newSessionId === body.sessionId);
+                  if (!record) return json(400, { ok: false, error: '找不到这个待切换会话' });
+                  writeChatData('external-chat', { ...b, sessionId: record.newSessionId, preparedSessionId: '' });
+                  return json(200, { ok: true, state: snapshot() });
                 }
                 if (route === '/rollover/dismiss' && req.method === 'POST') {
                   let body = {};
@@ -847,17 +985,18 @@ export function apply(ctx, config = {}) {
         log,
         async notify({ handoff, usage, prepared, displayTitle }) {
           const cfg = loadConfig();
-          const to = cfg.channels?.qq?.peerId;
+          const dy = douyinPrimary(cfg);
+          const to = dy ? douyinPeer(cfg) : cfg.channels?.qq?.peerId;
           if (disposed || cfg.enabled === false || cfg.dryRun !== false || cfg.send?.enabled !== true || !to ||
-              cfg.sources?.qq?.enabled === false || cfg.channels?.qq?.enabled === false || cfg.channels?.qq?.send === false) return;
+              (!dy && (cfg.sources?.qq?.enabled === false || cfg.channels?.qq?.enabled === false || cfg.channels?.qq?.send === false))) return;
           const { newSessionId, carryMessages, fallbackMessages } = handoff;
           const percent = Math.round(usage.ratio * 1000) / 10;
           const context = carryMessages ? `已备好 ${fallbackMessages.length} 条前情，切换时会更新到最近 ${carryMessages} 条` : '会从空白上下文开始';
           const title = displayTitle ? `「${displayTitle}」` : '续聊会话';
           const switching = prepared ? '方便时重启 DSH 自动切换，或在「陪伴」设置页点一下立即重绑'
             : '方便时在「陪伴」设置页点一下立即重绑';
-          const sent = await sendQQPrivate({ to, dryRun: false, timeoutMs: cfg.send?.timeoutMs,
-            text: `当前会话上下文用了 ${percent}%（${usage.used}/${usage.limit}）。已建好${title}[${newSessionId.slice(0, 8)}]，${context}。这边还能聊，${switching}。` });
+          const text = `当前会话上下文用了 ${percent}%（${usage.used}/${usage.limit}）。已建好${title}[${newSessionId.slice(0, 8)}]，${context}。这边还能聊，${switching}。`;
+          const sent = dy ? await sendDouyinText({ cfg, text }) : await sendQQPrivate({ to, text, dryRun: false, timeoutMs: cfg.send?.timeoutMs });
           if (!sent.ok) log.warn('续聊提醒发送失败：' + sent.error);
         },
       });
@@ -867,6 +1006,11 @@ export function apply(ctx, config = {}) {
         .map((p) => (p?.type === 'text' ? String(p.text || '') : '')).join('').trim();
       const removeListener = ctx.on?.('session/event', (session, event) => {
         if (disposed || !session?.id) return;
+        douyin.observe(session, event);
+        if (douyinPrimary(loadConfig())) {
+          if (event?.type === 'turn/end') return rollover.handleEvent(session, event).catch(error => log.warn('续聊准备失败：' + error.message));
+          return;
+        }
         if (event?.type === 'assistant/message') {
           const text = assistantText(event.data?.message);
           if (text) lastAssistant.set(session.id, { turn: event.data?.turn, text });
@@ -901,6 +1045,7 @@ export function apply(ctx, config = {}) {
     stop() {
       disposed = true;
       releaseActionExecutor();
+      douyin.stop();
       for (const release of releases.values()) release();
       releases.clear();
       if (timer) clearTimeout(timer);
@@ -928,6 +1073,10 @@ export function apply(ctx, config = {}) {
   const firstDelay = Math.max(0, Number(loadConfig().startupDelaySec ?? opt.startupDelaySec) || 0) * 1000;
   schedule(firstDelay);
   scheduleContinuation();
+  if (opt.enabled !== false && douyinPrimary(loadConfig())) {
+    markChatBoot();
+    douyin.start(pollDelayMs(loadConfig().channels.douyin));
+  }
   log.info(
     `插件已激活：每 ${tickMinutes()} 分钟一拍，首拍 +${Math.round(firstDelay / 1000)}s，` +
       `dryRun=${loadConfig().dryRun !== false}${opt.hostLlm === false ? '，宿主模型已关（走 spawn）' : ''}`

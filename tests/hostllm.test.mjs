@@ -210,3 +210,52 @@ test('text-only host models never get labeled as a visual observation', async ()
   assert.equal(r.reason, 'VIDEO_MODEL_NO_IMAGE');
   assert.equal(called, false);
 });
+
+test('hostllm：思考耗尽 maxTokens 返回空时，诊断 note 保留细节且重试翻倍预算', async () => {
+  const seenMax = [];
+  const logs = [];
+  let calls = 0;
+  const h = makeHostLlm(
+    ctxWith({
+      llm: {
+        stream(args) {
+          seenMax.push(args.maxTokens);
+          calls += 1;
+          return (async function* () {
+            if (calls === 1) {
+              yield { type: 'reasoning-delta', text: '正在推导' };
+              yield { type: 'usage', usage: { outputTokens: 1024 } };
+              yield { type: 'finish', reason: { kind: 'max-tokens' } };
+              return;
+            }
+            yield { type: 'text-delta', text: '行。' };
+            yield { type: 'finish', reason: { kind: 'stop' } };
+          })();
+        },
+      },
+      agentDefaultModel: { currentSelection: () => ({ provider: 'ali', model: 'deepseek-v4.1-flash-1017' }) },
+    }),
+    { cfg: { content: { llm: {} } }, log: (m) => logs.push(m) }
+  );
+  const okRes = await h.generate({ prompt: '说一句', minOutputTokens: 1024 });
+  assert.equal(okRes.ok, true);
+  assert.equal(okRes.text, '行。');
+  assert.deepEqual(seenMax, [1024, 2048]);
+  assert.match(logs[0], /finish=max-tokens.*reasoning=4字.*outTokens=1024.*maxTokens=1024/);
+
+  const emptyH = makeHostLlm(
+    ctxWith({
+      llm: fakeLlm([
+        { type: 'reasoning-delta', text: '太长了' },
+        { type: 'finish', reason: { kind: 'max-tokens' } },
+      ]),
+      agentDefaultModel: { currentSelection: () => ({ provider: 'ali', model: 'deepseek-v4.1-flash-1017' }) },
+    }),
+    { cfg: { content: { llm: { retries: 0 } } }, log: (m) => logs.push(m) }
+  );
+  const failRes = await emptyH.generate({ prompt: '说一句', minOutputTokens: 768 });
+  assert.equal(failRes.ok, false);
+  assert.equal(failRes.reason, 'HOST_LLM_EMPTY');
+  assert.match(failRes.note, /finish=max-tokens · reasoning=3字 · maxTokens=1024/);
+  assert.match(logs.at(-1), /生成最终失败（HOST_LLM_EMPTY：finish=max-tokens/);
+});

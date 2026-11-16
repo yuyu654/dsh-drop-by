@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { sendQQPrivate, sendQQRound, bridgeInfo } from './send.js';
 
 export async function sendQqText({ text, to, cfg = loadConfig(), confirm = false, track = false }) {
+  if (cfg.channels?.primary === 'douyin') return { ok: false, error: '当前主通道为抖音，QQ 发信已停用' };
   if (!text) return { ok: false, error: '缺少 --text' };
   const peer = to ?? cfg.channels?.qq?.peerId ?? '';
   const gate = { sendEnabled: cfg.send?.enabled === true, dryRun: cfg.dryRun !== false, confirm };

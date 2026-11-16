@@ -8,7 +8,9 @@
 import { readQq } from './qq.js';
 import { readMain } from './main.js';
 import { readDouyin } from './douyin.js';
-import { detectQq, detectDouyin } from '../detect.js';
+import { readDouyinState, douyinPeer, douyinInstallation } from './douyin-im.js';
+import { readyDouyinBinding } from './chat-switch.js';
+import { detectQq } from '../detect.js';
 import { inQuiet, inWindows, normalizeWindows } from '../schedule.js';
 
 /** 跳过时的统一形状：state 只表示「本拍没读」，不是失败。 */
@@ -47,22 +49,24 @@ export function readChannels(cfg, now, opts = {}) {
   const src = cfg.sources || {};
   const srcOn = (k) => src[k]?.enabled !== false;
   // 检测结果由外面传进来（测试不扫真机）；没传就当场问一次（只读文件，10 分钟缓存）。
-  const det = opts.detect || { qq: detectQq(), douyin: detectDouyin() };
+  const primary = ch.primary;
+  const det = opts.detect || {};
   const list = [];
 
   // QQ
   {
-    const g = gate(ch.qq, now, tz, quiet, srcOn('qq'));
+    const g = primary === 'douyin' ? { skip: 'off' } : gate(ch.qq, now, tz, quiet, srcOn('qq'));
     if (!g) {
       if (ch.qq?.read) {
-        if (!det.qq.installed) {
+        const qq = det.qq || detectQq();
+        if (!qq.installed) {
           // 插件没装：qq-history.json 里的东西一定是旧的，不能当「她刚说话」用。
-          list.push({ channel: 'qq', ok: false, reason: 'QQ_PLUGIN_MISSING', note: det.qq.note, plugin: det.qq });
-        } else if (!det.qq.paired) {
-          list.push({ channel: 'qq', ok: false, reason: 'QQ_PLUGIN_UNPAIRED', note: det.qq.note, plugin: det.qq });
+          list.push({ channel: 'qq', ok: false, reason: 'QQ_PLUGIN_MISSING', note: qq.note, plugin: qq });
+        } else if (!qq.paired) {
+          list.push({ channel: 'qq', ok: false, reason: 'QQ_PLUGIN_UNPAIRED', note: qq.note, plugin: qq });
         } else {
           try {
-            list.push({ ...readQq(ch.qq, now, tz), plugin: det.qq });
+            list.push({ ...readQq(ch.qq, now, tz), plugin: qq });
           } catch (e) {
             list.push({ channel: 'qq', ok: false, reason: 'QQ_READ_ERROR', note: String(e.message).slice(0, 120) });
           }
@@ -87,11 +91,20 @@ export function readChannels(cfg, now, opts = {}) {
 
   // 抖音：没开就完全不执行这一项
   {
-    const g = gate(ch.douyin, now, tz, quiet, srcOn('douyin'));
+    const g = primary === 'qq' ? { skip: 'off' } : primary === 'douyin'
+      ? gate({ ...ch.douyin, enabled: true }, now, tz, quiet)
+      : gate(ch.douyin, now, tz, quiet, srcOn('douyin'));
     if (!g) {
       if (ch.douyin?.read) {
         try {
-          list.push(readDouyin(now, cfg.rules?.douyinStaleMin || 10, cfg.sources?.douyin?.detectCacheMin));
+          if (primary === 'douyin') {
+            const state = readDouyinState(douyinPeer(cfg));
+            const ok = !!readyDouyinBinding() && douyinInstallation().ready && !!state.polledAt && !state.pollError;
+            list.push({ channel: 'douyin', ok, note: state.pollError || (ok ? '陪伴正在读取抖音私信' : '等待首次私信轮询'),
+              lastUserTs: ok ? state.incoming?.ts || null : null, lastSendTs: ok ? state.outgoing?.lastAt || null : null });
+          } else {
+            list.push(readDouyin(now, cfg.rules?.douyinStaleMin || 10, cfg.sources?.douyin?.detectCacheMin));
+          }
         } catch (e) {
           list.push({ channel: 'douyin', ok: false, reason: 'DOUYIN_READ_ERROR', note: String(e.message).slice(0, 120) });
         }

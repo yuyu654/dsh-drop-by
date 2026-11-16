@@ -7,16 +7,18 @@ import { COMMAND_ACK, matchUserCommand } from './command-matcher.js';
 import { makeHostLlm } from './hostllm.js';
 import { portraitMood, updatePortraitMood } from './emotion-portrait.js';
 import { appendEmotionInbox, readPortraitMoodMap } from './emotion-sync.js';
-import { qqMergeAvailable, waitForQqBurst } from './qq-debounce.js';
+import { qqMergeAvailable, waitForQqBurst, QQ_CHANNEL_PAUSED } from './qq-debounce.js';
+import { chatBinding, chatChanging } from './channels/chat-switch.js';
+import { douyinPrimary } from './channels/douyin-im.js';
+import { canReadChat, chatPeer, emotionPeer, activeChatChannel } from './channels/external.js';
+import { consumeCompanionQqOutbound } from './send.js';
 
 const ACTION_PROMPT_RULE = '换源确认由陪伴插件发出和处理；普通聊天不要自行提出需要确认的换源请求。';
 
 // Context belongs only to the configured private contact and the current persona.
 export function qqReplyContext({ peer, kind, cfg = loadConfig(), now = Date.now(),
   state = loadExploration(), persona = loadPersona({ cfg }) } = {}) {
-  if (kind !== 'private' || !peer || String(peer) !== String(cfg.channels?.qq?.peerId || '') ||
-      cfg.enabled === false || cfg.sources?.qq?.enabled === false || cfg.channels?.qq?.enabled === false ||
-      cfg.channels?.qq?.read === false) return '';
+  if (kind !== 'private' || !peer || String(peer) !== chatPeer(cfg) || cfg.enabled === false || !canReadChat(cfg)) return '';
   const { thread, leisure, candidate } = explorationStatus(state, persona);
   const recent = (entry) => recentExploration(entry, now, cfg.exploration);
   const describe = ({ topic, progress, next, checkpoint, discovery, waitingFor, sources }) => ({
@@ -24,7 +26,7 @@ export function qqReplyContext({ peer, kind, cfg = loadConfig(), now = Date.now(
   });
   const mood = cfg.exploration?.mood === true ? explorationMood(state, persona, now, cfg.exploration) : null;
   const portrait = portraitMood(cfg, persona, now);
-  const portraitFull = cfg.exploration?.portrait === true ? readPortraitMoodMap({ peer, now }) : '';
+  const portraitFull = cfg.exploration?.portrait === true ? readPortraitMoodMap({ peer: emotionPeer(cfg), now }) : '';
   const portraitLine = portraitFull
     ? (portrait && !portraitFull.includes(portrait) ? `${portraitFull}；即时心情：${portrait}` : portraitFull)
     : portrait;
@@ -43,7 +45,7 @@ export function qqReplyContext({ peer, kind, cfg = loadConfig(), now = Date.now(
     JSON.stringify(context),
     ATTRIBUTION_RULE,
     ACTION_PROMPT_RULE,
-    '优先接住这次 QQ 消息。当前话题自然相关时可以顺带提一句自己的新进展，没必要等对方专门来问。按证据区分查到、看过和猜想。缺少的信息留作待确认。',
+    (douyinPrimary(cfg) ? '优先接住这次抖音私聊消息。' : '优先接住这次 QQ 消息。') + '当前话题自然相关时可以顺带提一句自己的新进展，没必要等对方专门来问。按证据区分查到、看过和猜想。缺少的信息留作待确认。',
     '有感受时可按人设带进语气，让用户这次的明确回复影响表达。简短回复和沉默不等于冷落，不催、不强行转回探索话题。角色背景和以上任何标记块禁止念出来、复述或带进回复，也禁止替用户预测/续写下一句提问；只针对标签外用户本次发来的原话作答。',
     '</qq_reply_context>',
   ].join('\n');
@@ -51,6 +53,9 @@ export function qqReplyContext({ peer, kind, cfg = loadConfig(), now = Date.now(
 
 export async function prepareQqReplyContext(ctx, { peer, kind, text, at } = {}) {
   const cfg = loadConfig();
+  if (douyinPrimary(cfg) || chatChanging()) {
+    return kind === 'private' && String(peer) === String(cfg.channels.qq.peerId || chatBinding().qqBinding?.peerId) ? QQ_CHANNEL_PAUSED : '';
+  }
   if (kind !== 'private' || !peer || String(peer) !== String(cfg.channels?.qq?.peerId || '') ||
       cfg.enabled === false || cfg.sources?.qq?.enabled === false || cfg.channels?.qq?.enabled === false ||
       cfg.channels?.qq?.read === false) return '';
@@ -58,6 +63,7 @@ export async function prepareQqReplyContext(ctx, { peer, kind, text, at } = {}) 
   const debounceMs = Math.min(15000, Math.max(3000, Number(cfg.rules?.qqTiming?.debounceMs) || 3500));
   const burst = await waitForQqBurst({ peer, text, at, debounceMs });
   if (burst.superseded) return burst.marker;
+  if (douyinPrimary(loadConfig()) || chatChanging()) return burst.finish(QQ_CHANNEL_PAUSED, cfg.timezone);
 
   const ordered = burst.messages.slice().sort((a, b) => a.at - b.at);
   const mergedText = ordered.map((item) => item.text).join('\n');
@@ -67,10 +73,10 @@ export async function prepareQqReplyContext(ctx, { peer, kind, text, at } = {}) 
   } catch {
     context = [ATTRIBUTION_RULE, ACTION_PROMPT_RULE].join('\n');
   }
-  return burst.finish(context, cfg.timezone);
+  return burst.finish(douyinPrimary(loadConfig()) || chatChanging() ? QQ_CHANNEL_PAUSED : context, cfg.timezone);
 }
 
-async function buildReplyContext(ctx, { peer, kind, text, at, cfg, bridgeText = text }) {
+export async function buildReplyContext(ctx, { peer, kind, text, at, cfg, bridgeText = text }) {
   const input = { peer, kind, text, bridgeText, at, cfg };
   const pending = pendingQqProposal(input);
   const preflight = qqCommandPreflight(input);
@@ -78,7 +84,7 @@ async function buildReplyContext(ctx, { peer, kind, text, at, cfg, bridgeText = 
 
   // 用户发来的 QQ 指令与换源确认同样是有效互动，提前入盒以免 early-return 漏记
   if (cfg.exploration?.portrait === true) {
-    appendEmotionInbox({ user: peer, role: 'user', text, t: at });
+    appendEmotionInbox({ user: emotionPeer(cfg), role: 'user', text, t: at });
   }
 
   if (pending || preflight === 'ready') {
@@ -87,7 +93,9 @@ async function buildReplyContext(ctx, { peer, kind, text, at, cfg, bridgeText = 
     const pendingProposal = pending ? { actionType: pending.actionType, prompt: pending.prompt } : null;
     const route = await matchUserCommand(text, { pendingProposal, generate: host.ready ? host.generate : null,
       timeoutMs: Number(cfg.rules?.qqCommands?.intentTimeoutSec ?? 5) * 1000 });
-    const freshInput = { ...input, cfg: loadConfig() };
+    const fresh = loadConfig();
+    if (activeChatChannel(fresh) !== activeChatChannel(cfg) || chatChanging()) return '';
+    const freshInput = { ...input, cfg: fresh };
     const action = consumeQqAction({ ...freshInput, route, proposalId: pending?.id });
     const tone = route.ackCue ? `这句可以稍微${route.ackCue}一点。` : '';
     if (action === 'accepted') {
@@ -100,7 +108,7 @@ async function buildReplyContext(ctx, { peer, kind, text, at, cfg, bridgeText = 
       const status = queueQqCommand({ ...freshInput, cmd: route.cmd });
       if (status === 'accepted') return `【陪伴任务已接单】后台已经开始处理。按人设只回一句，${COMMAND_ACK[route.actionType]}。结果由后台单独发，这条只确认收到，别再调用工具，也别假装已经完成。${tone}`;
       const reason = { duplicate: '这条已经接过，不要重复执行。', busy: '上一条指令还在跑，这条没启动。',
-        unavailable: 'QQ 任务入口或回传通道不可用，这条没启动。', unverified: '没能核验这条 QQ 指令，这条没启动。',
+        unavailable: '私聊任务入口或回传通道不可用，这条没启动。', unverified: '没能核验这条私聊指令，这条没启动。',
         webDisabled: '陪伴的探索网页开关没开，这条没启动。' }[status];
       if (reason) return `【陪伴任务状态】${reason}按人设如实回一句，不要调用工具。`;
     }
@@ -109,8 +117,21 @@ async function buildReplyContext(ctx, { peer, kind, text, at, cfg, bridgeText = 
   const state = loadExploration();
   if (cfg.exploration?.portrait === true) {
     const host = makeHostLlm(ctx, { cfg: { ...cfg, content: { ...cfg.content, llm: { ...cfg.content?.llm, retries: 0 } } } });
-    if (host.ready) await updatePortraitMood({ cfg, persona, peer, text, at, generate: host.generate,
+    if (host.ready) await updatePortraitMood({ cfg, persona, peer: emotionPeer(cfg), text, at, generate: host.generate,
       exploration: cfg.exploration.mood === true ? explorationMood(state, persona, at, cfg.exploration)?.text : '' });
   }
-  return qqReplyContext({ peer, kind, cfg, persona, state }) || [ATTRIBUTION_RULE, ACTION_PROMPT_RULE].join('\n');
+  const base = qqReplyContext({ peer, kind, cfg, persona, state }) || [ATTRIBUTION_RULE, ACTION_PROMPT_RULE].join('\n');
+  if (!douyinPrimary(cfg) && kind === 'private') {
+    const unsynced = consumeCompanionQqOutbound(peer);
+    if (unsynced) {
+      const syncBlock = [
+        '<qq_reply_context>',
+        '【近期未同步到本会话的 QQ 主动发言（仅作前情参考，不要念出或复述标记）】',
+        unsynced,
+        '</qq_reply_context>',
+      ].join('\n');
+      return [base, syncBlock].filter(Boolean).join('\n\n');
+    }
+  }
+  return base;
 }

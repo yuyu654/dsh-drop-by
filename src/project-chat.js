@@ -1,10 +1,11 @@
 import { composeDraft } from './compose.js';
+import { activeChatChannel, canReadChat, chatPeer, emotionPeer } from './channels/external.js';
 
 const DAY = 86_400_000;
-const peerFor = (cfg) => String(cfg?.channels?.qq?.peerId || '');
+const peerFor = (cfg) => emotionPeer(cfg || {});
 const validPeer = (peer) => /^\d+$/.test(peer);
-const enabled = (cfg) => cfg?.rules?.askProjectOnce === true && cfg.sources?.qq?.enabled !== false &&
-  cfg.channels?.qq?.enabled !== false && cfg.channels?.qq?.read !== false && cfg.channels?.qq?.send !== false;
+const enabled = (cfg) => cfg?.rules?.askProjectOnce === true && canReadChat(cfg) &&
+  cfg.channels?.[activeChatChannel(cfg)]?.send !== false;
 
 export function projectQuestion(cfg, st) {
   const peer = peerFor(cfg);
@@ -23,7 +24,7 @@ export function recordProjectQuestion(cfg, st, at) {
 export function captureProjectAnswer(cfg, st, incoming, now) {
   const peer = peerFor(cfg);
   const record = st?.projectChat?.[peer];
-  if (!enabled(cfg) || !record?.askedAt || record.answer || incoming?.peer !== peer || incoming.kind !== 'private' ||
+  if (!enabled(cfg) || !record?.askedAt || record.answer || incoming?.peer !== chatPeer(cfg) || incoming.kind !== 'private' ||
       !((incoming.ts > record.askedAt || (incoming.ts === Math.floor(record.askedAt / 1000) * 1000 &&
         incoming.observedAt > record.askedAt)) && incoming.ts <= now && incoming.ts - record.askedAt <= DAY)) return null;
   const answer = String(incoming.text || '').trim().replace(/\s+/g, ' ').slice(0, 80);
@@ -43,7 +44,7 @@ const USER_UPDATE = /卡住|卡在|跑不通|跑不起来|报错|失败了|帮�
 export async function writeProjectQuestion({ cfg, topic, persona, ctx, generate }) {
   const skip = { ok: false, source: 'project-check-in', reason: 'PROJECT_NO_NATURAL_QUESTION' };
   if (!persona?.text || typeof generate !== 'function') return skip;
-  const qqLine = ctx?.her?.lastChannel === 'qq' && ctx.her.lastAgoSec != null && ctx.her.lastAgoSec <= 3600
+  const qqLine = ctx?.her?.lastChannel === activeChatChannel(cfg || {}) && ctx.her.lastAgoSec != null && ctx.her.lastAgoSec <= 3600
     ? String(ctx.her.lastText || '').slice(0, 160)
     : '';
   const prompt = [

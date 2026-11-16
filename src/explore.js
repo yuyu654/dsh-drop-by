@@ -188,7 +188,7 @@ export async function exploreRound({ persona, previous, interest = '', focusTopi
       pinnedTopic ? '本轮只能按 requestedTopic 选一条公开搜索词。' : '',
       forcedMode ? `本轮 mode 必须是 ${forcedMode}，按这个方向选资料。` : '',
     ].join('\n');
-    const plan = await generate({ prompt: planPrompt, timeoutMs: timing?.planTimeoutMs ?? 30_000, minOutputTokens: 768 });
+    const plan = await generate({ prompt: planPrompt, timeoutMs: timing?.planTimeoutMs ?? 30_000, minOutputTokens: 2048 });
     const value = plan?.ok ? readJsonReply(plan.text) : null;
     mode = forcedMode || (value?.mode === 'leisure' ? 'leisure' : 'research');
     query = pinnedTopic || line(value?.query, 120);
@@ -196,6 +196,8 @@ export async function exploreRound({ persona, previous, interest = '', focusTopi
       kind = value.kind;
       sources = await media.collect(value.kind, query);
       outcome = sources.length ? sources.map((source) => source.evidence).join('、') : '未取得可用来源';
+    } else if (plan && !plan.ok) {
+      outcome = `工具计划未生成（${plan.reason || '模型错误'}${plan.note ? `：${plan.note}` : ''}），转为文字探索`;
     } else if (!value) {
       outcome = '工具计划未生成，转为文字探索';
     }
@@ -223,20 +225,22 @@ export async function exploreRound({ persona, previous, interest = '', focusTopi
   ].join('\n');
   let reply = retry && !sources.some((source) => source.evidence === '网页正文')
     ? { ok: true, text: '{"action":"skip"}' }
-    : await generate({ prompt, timeoutMs: timing?.roundTimeoutMs ?? 45_000, minOutputTokens: 1024 });
+    : await generate({ prompt, timeoutMs: timing?.roundTimeoutMs ?? 45_000, minOutputTokens: 2048 });
   let parsed = parseRound(reply, working, mode);
   if (parsed.problem) {
     reply = await generate({
-      prompt: prompt + '\n上次输出未通过校验（' + parsed.problem +
-        '）。重新输出完整 JSON，不要附解释。没有可推进的内容时只输出 {"action":"skip"}。',
+      prompt: reply?.ok
+        ? prompt + '\n上次输出未通过校验（' + parsed.problem +
+          '）。重新输出完整 JSON，不要附解释。没有可推进的内容时只输出 {"action":"skip"}。'
+        : prompt,
       timeoutMs: timing?.roundTimeoutMs ?? 45_000,
-      minOutputTokens: 2048,
+      minOutputTokens: 4096,
     });
     parsed = parseRound(reply, working, mode);
   }
   // 换源已执行，模型没写好摘要也要留下真实的工具结果。
   if (retry && parsed.reason) parsed = parseRound({ ok: true, text: '{"action":"skip"}' }, working, mode);
-  if (parsed.reason) return { ok: false, reason: parsed.reason };
+  if (parsed.reason) return { ok: false, reason: parsed.reason, ...(parsed.note ? { note: parsed.note } : {}) };
   const { value, progress, next } = parsed;
   const topic = pinnedTopic || parsed.topic;
   const action = value.action;
@@ -300,7 +304,14 @@ function readJsonReply(text) {
 }
 
 function parseRound(reply, old, mode) {
-  if (!reply?.ok) return { reason: reply?.reason || 'MODEL_ERROR' };
+  if (!reply?.ok) {
+    const reason = reply?.reason || 'MODEL_ERROR';
+    const note = typeof reply?.note === 'string' ? reply.note : '';
+    // 空内容（常见于思考耗尽 maxTokens）时给一次加大预算重跑的机会，而不是直接放弃。
+    return reason === 'HOST_LLM_EMPTY'
+      ? { reason, ...(note ? { note } : {}), problem: note || '模型返回为空' }
+      : { reason, ...(note ? { note } : {}) };
+  }
   const invalid = (problem, reason = 'INVALID_FIELDS') => ({ reason, problem });
   const value = readJsonReply(reply.text);
   if (!value) return invalid('JSON 不完整或格式不正确', 'INVALID_OUTPUT');

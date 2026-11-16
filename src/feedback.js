@@ -97,6 +97,7 @@ export function noteSent(st, slot, now, text, opts = {}) {
   // draft：我发出去的原文前 80 字——配对时才有「我问的是什么」可回看
   f.pending.push({
     slot,
+    ...(opts.channel ? { channel: opts.channel } : {}),
     ts: now,
     chars: String(text || '').length,
     draft: String(text || '').slice(0, DRAFT_MAX),
@@ -184,6 +185,10 @@ export function settle(st, herTs, now = Date.now(), herText = '', opts = {}) {
   let replied = 0;
   const rest = [];
   for (const p of f.pending) {
+    if (opts.channel && (p.channel || 'qq') !== opts.channel) {
+      rest.push(p);
+      continue;
+    }
     if (p.test === true) {
       // 测试期：她回了就配一对留着看，但不计入任何统计
       if (ts > 0 && p.ts < ts && ts - p.ts <= keepMs) {
@@ -237,6 +242,7 @@ export function settle(st, herTs, now = Date.now(), herText = '', opts = {}) {
   // 一天以上没人应的：从分母里去掉（不是没接住，是这段对话早结束了）
   f.pending = rest.filter((p) => {
     if (now - p.ts < keepMs) return true;
+    if (p.test === true || p.expect === false) return false;
     const s = slotRec(f, p.slot);
     s.sent = Math.max(0, (Number(s.sent) || 0) - 1);
     return false;
@@ -276,7 +282,7 @@ export function sweep(st, now = Date.now(), opts = {}) {
       judged += 1;
       continue;
     }
-    if (now <= windowEnd(p.ts, tz, timing) || !canJudge) {
+    if (now <= windowEnd(p.ts, tz, timing) || !canJudge || (opts.channel && (p.channel || 'qq') !== opts.channel)) {
       keep.push(p);
       continue;
     }

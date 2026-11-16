@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import { getPath } from './config.js';
 import { normalizeWindows, fmtWindows } from './schedule.js';
 import { SECRETS_PATH, saveSecrets, hostFor } from './fishmail.js';
-import { detectSources, detectEmotionPortrait } from './detect.js';
+import { detectSources, detectEmotionPortrait, douyinPluginPeer } from './detect.js';
 import { parseAgenda, agendaSource, courseKey } from './agenda.js';
 import { parseExams, examsSource } from './exams.js';
 
@@ -71,8 +71,8 @@ export const FOLDABLE_GROUPS = new Set(['决定TA粘不粘人', '节奏', '说�
  * 子项跟着父开关走：父开关关着，这一行就不显示（值还留在 config.json 里，开回来就恢复）。
  * dflt = 父开关在配置里没写时当作什么（默认开的父开关传 true）。
  */
-function dep(path, dflt = true) {
-  return { path, on: true, default: dflt };
+function dep(path, dflt = true, on = true) {
+  return { path, on, default: dflt };
 }
 const ON_JUDGE = dep('rules.judge.enabled', false);
 const ON_NATURAL = dep('rules.naturalTriggers.enabled', false);
@@ -80,7 +80,8 @@ const ON_TIER = dep('rules.gapByTier.enabled', false);
 const ON_PHONE = dep('sources.phone.enabled', true);
 const ON_MEMORY = dep('sources.memory.enabled', true);
 const ON_QQ = dep('sources.qq.enabled', true);
-const ON_DOUYIN = dep('sources.douyin.enabled', true);
+const ON_PRIMARY_QQ = dep('channels.primary', 'qq', 'qq');
+const ON_PRIMARY_DOUYIN = dep('channels.primary', 'qq', 'douyin');
 const ON_CONTENT = dep('content.enabled', true);
 const ON_L3 = dep('perception.l3.enabled', false);
 const ON_SIGNALS = dep('perception.signals.enabled', true);
@@ -99,11 +100,11 @@ const onTopic = (k) => dep(`content.topics.${k}`, true);
  *   dep     父开关（见上面的 dep()）：父开关关着就不显示
  */
 export const SCHEMA = [
-  { group: '高级', path: 'rules.qqRollover.enabled', label: '外部聊天到上下文阈值时预建续聊', type: 'bool', hint: '在同一工作区建新会话并经 QQ 提醒，旧会话可继续聊。建议在 dsh-fish-memory 开启按工作区共用记忆。' },
+  { group: '高级', path: 'rules.qqRollover.enabled', label: '外部聊天到上下文阈值时预建续聊', type: 'bool', hint: '在同一工作区建新会话并经当前主通道提醒，旧会话可继续聊。建议在 dsh-fish-memory 开启按工作区共用记忆。' },
   { group: '高级', path: 'rules.qqRollover.thresholdPercent', label: '预建续聊的上下文占用率', type: 'int', min: 10, max: 95, unit: '%', dep: dep('rules.qqRollover.enabled', true), hint: '默认 80%。只在绑定会话完成一轮时检查，每个旧会话只预建一次。' },
   { group: '高级', path: 'rules.qqRollover.carryMessages', label: '新会话携带最近消息', type: 'int', min: 0, max: 50, unit: '条', dep: dep('rules.qqRollover.enabled', true), hint: '默认 10 条，用户和助手各自的一条都计数。填 0 只建立续聊会话。' },
-  { group: '高级', path: 'rules.qqRollover.prepareBindingFile', label: '预备重启后自动切到续聊会话', type: 'bool', dep: dep('rules.qqRollover.enabled', true), hint: '只预备 QQ 桥的磁盘绑定。当前聊天照常继续，重启 DSH 后启用。关闭后可手动切绑。' },
-  { group: '说什么', path: 'rules.qqCommands.enabled', label: '接收 QQ 主动任务指令', type: 'bool', hint: '只接收配置收件人的 QQ 私聊。允许搜索公开网页、推进研究、整理探索笔记或跑插件快速测试。回传不受日常静默和配额限制。' },
+  { group: '高级', path: 'rules.qqRollover.prepareBindingFile', label: '预备重启后自动切到续聊会话', type: 'bool', dep: dep('rules.qqRollover.enabled', true), hint: '预备当前主通道的磁盘绑定。当前聊天照常继续，重启 DSH 后启用。关闭后可手动切绑。' },
+  { group: '说什么', path: 'rules.qqCommands.enabled', label: '接收私聊任务指令', type: 'bool', hint: '只接收主通道配置联系人的私聊。允许搜索公开网页、推进研究、整理探索笔记或跑插件快速测试。回传不受日常静默和配额限制。' },
   { group: '时间间隔', path: 'rules.qqCommands.intentTimeoutSec', label: 'QQ 意图识别最多等多久', type: 'int', min: 1, max: 20, unit: '秒', hint: '默认 5 秒。模型超时或未给出可校验的任务时，直接走普通 QQ 聊天。' },
   { group: '时间间隔', path: 'rules.qqCommands.timeoutSec', label: 'QQ 任务多久先反馈超时', type: 'int', min: 5, max: 120, unit: '秒', hint: '默认 90 秒。任务到时限仍没结束会回一条状态。' },
   { group: '时间间隔', path: 'rules.qqCommands.freshSec', label: 'QQ 任务指令最多多旧', type: 'int', min: 5, max: 900, unit: '秒', hint: '默认 120 秒。超过这个时间的补发消息不能启动后台任务。' },
@@ -126,8 +127,18 @@ export const SCHEMA = [
   { group: '时间间隔', path: 'startupDelaySec', default: 60, label: '启动后第一拍等待', type: 'int', min: 0, max: 3600, unit: '秒', hint: '下次启动 DSH 时使用。' },
   { group: '时间间隔', path: 'tickJitterSec', default: 30, label: '每拍额外随机等待上限', type: 'int', min: 0, max: 300, unit: '秒', hint: '填 0 完全按每拍间隔运行。' },
   { group: '时间间隔', path: 'mail.activeHours', label: '允许收邮件的时段', type: 'windows' },
-  { group: '时间间隔', path: 'channels.qq.activeHours', label: '允许读取 QQ 的时段', type: 'windows', dep: ON_QQ },
-  { group: '时间间隔', path: 'channels.douyin.activeHours', label: '允许读取抖音的时段', type: 'windows', dep: ON_DOUYIN },
+  { group: '聊天接口', path: 'channels.primary', label: '主聊天接口', type: 'select', options: [['qq', 'QQ'], ['douyin', '抖音私信']], hint: '选择唯一的收发通道。切回 QQ 后，抖音原聊天盯梢保持关闭。' },
+  { group: '聊天接口', path: 'channels.douyin.send', label: '往抖音发', type: 'bool', dep: ON_PRIMARY_DOUYIN, hint: '主通道选抖音私信时展示并生效。普通回复、主动开口、续聊提醒与任务回传都受发送总开关控制。' },
+  { group: '聊天接口', path: 'channels.douyin.read', label: '读抖音私信', type: 'bool', dep: ON_PRIMARY_DOUYIN, hint: '开（默认）：读抖音私信和分享记录。关：抖音整块不读，TA在那边的消息不算「TA刚说话」' },
+  { group: '聊天接口', path: 'channels.douyin.pollSec', label: '抖音私信轮询间隔', type: 'int', min: 10, max: 300, unit: '秒', dep: ON_PRIMARY_DOUYIN, hint: '默认 30 秒，最低 10 秒。抖音 IM 会检测请求模式，密集轮询或探测会触发 too many requests 限流。' },
+  { group: '聊天接口', path: 'channels.douyin.peerSecUid', label: '抖音联系人 sec_uid', type: 'str', dep: ON_PRIMARY_DOUYIN, hint: '留空 = 自动从抖音插件（dsh-douyin-scroll）获取；如需手填请填 sec_uid（如 MS4wLjAB...），不要填抖音号。' },
+  { group: '聊天接口', path: 'channels.douyin.peerName', label: '抖音联系人昵称', type: 'str', dep: ON_PRIMARY_DOUYIN, hint: '留空 = 自动从抖音插件（dsh-douyin-scroll）获取。' },
+  { group: '聊天接口', path: 'channels.qq.send', label: '往 QQ 发', type: 'bool', dep: [ON_QQ, ON_PRIMARY_QQ], hint: '开（默认）：这一侧才真发。关：判定照走、内容照写，但不往 QQ 发（配合演练模式看它会说什么）' },
+  { group: '聊天接口', path: 'channels.qq.read', label: '读 QQ', type: 'bool', dep: [ON_QQ, ON_PRIMARY_QQ], hint: '开（默认）：读TA QQ 上的消息，用来判「TA刚说话」和回复。关：QQ 只当发送通道，不再读' },
+  { group: '时间间隔', path: 'channels.douyin.readTimeoutSec', label: '抖音私信读取超时', type: 'int', min: 5, max: 120, unit: '秒', dep: ON_PRIMARY_DOUYIN, hint: '默认 30 秒。' },
+  { group: '时间间隔', path: 'channels.douyin.sendTimeoutSec', label: '抖音私信发送超时', type: 'int', min: 10, max: 600, unit: '秒', dep: ON_PRIMARY_DOUYIN, hint: '默认 240 秒。首次启动浏览器可能更慢。' },
+  { group: '时间间隔', path: 'channels.qq.activeHours', label: '允许读取 QQ 的时段', type: 'windows', dep: [ON_QQ, ON_PRIMARY_QQ] },
+  { group: '时间间隔', path: 'channels.douyin.activeHours', label: '允许读取抖音的时段', type: 'windows', dep: ON_PRIMARY_DOUYIN },
   { group: '时间间隔', path: 'channels.main.activeHours', label: '允许读取主会话的时段', type: 'windows' },
   { group: '时间间隔', path: 'exploration.storyboardSeconds', label: '通用视频分镜取前多少秒', type: 'int', min: 1, max: 600, unit: '秒' },
   { group: '时间间隔', path: 'exploration.moodReplyAgeMin', label: '调整心情语气最多参考多早的 QQ 消息', type: 'int', min: 0, max: 1440, unit: '分钟' },
@@ -231,7 +242,7 @@ export const SCHEMA = [
   { group: '决定TA粘不粘人', path: 'rules.dailyCap', label: '每天最多几条', type: 'int', min: 0, max: 20, unit: '条', hint: '0 = 今天一条都不主动发。默认 3 条' },
   { group: '决定TA粘不粘人', path: 'rules.minGapMin', label: '两条之间至少隔', type: 'int', min: 0, max: 1440, unit: '分钟', hint: '默认 240 分钟（四小时）。改小会明显变黏；下面开了「间隔按由头分档」后，这条只在分档关着时用' },
   { group: '决定TA粘不粘人', path: 'rules.adaptiveGap', label: '没人应时自己少说点', type: 'bool', hint: '开（默认）：连着两条没回，之后两条之间自动多等一会儿（最多拖成三倍）；关：永远按上面那个固定间隔' },
-  { group: '决定TA粘不粘人', path: 'rules.qqContinuation', label: 'QQ 热聊补一句', type: 'bool', hint: '刚来回聊了几轮，普通回复发完并等待设定时长后，可以顺着话题再补一句。有新消息就取消；没内容或没回应就停。遵守静默、忙碌时段和每日上限。' },
+  { group: '决定TA粘不粘人', path: 'rules.qqContinuation', label: '热聊补一句', type: 'bool', hint: '刚来回聊了几轮，普通回复发完并等待设定时长后，可以顺着话题再补一句。有新消息就取消；没内容或没回应就停。遵守静默、忙碌时段和每日上限。' },
   { group: '决定TA粘不粘人', path: 'rules.feedback.enabled', label: '按TA的反应调由头', type: 'bool', hint: '开（默认）：记下哪一类发出去TA接住了、哪一类老没人应，老不接的先压几天；关：所有由头一视同仁' },
   { group: '决定TA粘不粘人', path: 'rules.judge.enabled', label: '让模型自己决定说不说', type: 'bool', hint: '关（默认）：规则挑到由头就写。开：规则只提一条建议，把整份处境交给模型——它可以说不说，也可以换个角度；它写好的句子仍要过长度/口吻/防重复那些护栏，判坏了就退回规则链' },
   { group: '决定TA粘不粘人', path: 'rules.chitchat.enabled', label: '没什么事也可以说一句', type: 'bool', hint: '关（默认）：没有由头就不说话。开：别的由头都挑不出来时，让模型判一句「随口话」（「在吗」那种空招呼不算）——只走模型，写不出来就不发。一天最多几条在下面的「随口话一天最多几条」里自己设；不说时段跟着全局静默和TA睡着的那段走。要「让模型自己决定说不说」也开着才生效' },
@@ -287,15 +298,13 @@ export const SCHEMA = [
   // hint 后面会动态接一句「检测：…」（listForUi 里拼），所以这里只写「关掉会发生什么」。
   { group: '数据从哪来', path: 'sources.phone.enabled', label: '手机数据', type: 'bool', hint: '睡眠、压力、屏幕时间都来自手机 App 发的邮件。关掉就不连邮箱，这三类由头全部停用' },
   { group: '数据从哪来', path: 'sources.qq.enabled', label: 'QQ', type: 'bool', hint: '要 dsh-plugin-qq-bridge 装了并配对过才算通；关掉之后 QQ 侧的旧记录也不再当「TA刚说话」用' },
-  { group: '数据从哪来', path: 'sources.douyin.enabled', label: '抖音', type: 'bool', hint: '要 dsh-douyin-scroll 装了、并且它的聊天盯梢开着才算通。开着会读抖音私信，那边说的话也算「TA刚说话」' },
+  { group: '数据从哪来', path: 'sources.douyin.enabled', label: '抖音', type: 'bool', hint: '主通道选抖音时由陪伴接管私信。需要安装 dsh-douyin-scroll，并配置抖音联系人 sec_uid。' },
   { group: '数据从哪来', path: 'sources.memory.enabled', label: '读记忆插件的记忆', type: 'bool', hint: '从下面这个记忆插件里读它记下来的长期记忆，当「我本来就知道的事」用（只读，不改它的文件）。读不到就照常说话' },
   { group: '数据从哪来', path: 'sources.memory.plugin', label: '用哪个记忆插件', type: 'select', options: [['fish-memory', '鱼的记忆（dsh-fish-memory）']], dep: ON_MEMORY, hint: '目前只认鱼的记忆（同时支持会话文件 session-*.json 与工作区文件 ws_*.json）。用别的记忆插件也能接：跟你的大肥鱼说一声，让它在 src/memorysource.js 里加一条适配就行' },
   { group: '数据从哪来', path: 'exploration.portrait', label: '延续 QQ 聊天的心情（情绪插件）', type: 'bool', hint: '需要安装 emotion-state-portrait 和支持本入口的 QQ 桥。打开后会按每条 QQ 私聊实时打分即时心情，同时把私聊、QQ 指令与回复自动写入 emotion/inbox.jsonl 并在主动/被动对话里延续情绪画像' },
   { group: '数据从哪来', path: 'mail.enabled', label: '读邮箱', type: 'bool', hint: '开：才会连 IMAP 把手机 App 发来的 FISH 邮件取回来；关着完全不联网。账号和授权码在「高级」里' },
-  { group: '数据从哪来', path: 'channels.qq.read', label: '读 QQ', type: 'bool', dep: ON_QQ, hint: '开（默认）：读TA QQ 上的消息，用来判「TA刚说话」和回复。关：QQ 只当发送通道，不再读' },
-  { group: '数据从哪来', path: 'channels.douyin.read', label: '读抖音私信', type: 'bool', dep: ON_DOUYIN, hint: '开（默认）：读抖音私信和分享记录。关：抖音整块不读，TA在那边的消息不算「TA刚说话」' },
   { group: '数据从哪来', path: 'channels.main.read', label: '读主会话', type: 'bool', hint: '开：把 DSH 主对话也当成一个通道读（TA在这儿说的话也算）。默认关，免得主对话被当成聊天记录反复读' },
-  { group: '数据从哪来', path: 'content.topics.noReplyDouyin', label: '抖音分享也算没回', type: 'bool', dep: ON_DOUYIN, hint: '还需启用「追问没回的闲聊或分享」才生效。没装抖音插件或关闭抖音来源时跳过。' },
+  { group: '数据从哪来', path: 'content.topics.noReplyDouyin', label: '抖音分享也算没回', type: 'bool', hint: '还需启用「追问没回的闲聊或分享」才生效。没装抖音插件或关闭抖音来源时跳过。' },
 
   // ================================================================ 课表与考试
   { group: '课表与考试', path: 'content.agenda.text', label: '我的课表', type: 'text', max: 4000, rows: 8, hint: '一行一节：「周一 08:00-09:40 电机学」，也认「第3-4节」和「1-16周」「单周」。周几可以写「星期一」，冒号全角半角都认；空行和 # 开头的行会跳过。整学期的课表看不懂就直接截图发给我，我帮你整理成这里能认的格式' },
@@ -325,8 +334,6 @@ export const SCHEMA = [
   { group: '高级', path: 'sources.phone.staleGuard', label: '数据过期就停用', type: 'bool', dep: ON_PHONE, hint: '开（默认）：邮件太旧时上面那四类由头不参与判定，--why 里会写原因；关：不管多旧都照旧用（阈值还留着，想恢复不用重填）' },
   { group: '高级', path: 'sources.memory.max', label: '一次带几条', type: 'int', min: 1, max: 8, dep: ON_MEMORY, hint: '默认 3 条。长期画像（喜好、约定）优先，剩下给最近的事；带太多会把这一句挤成汇报' },
   { group: '高级', path: 'sources.memory.session', label: '读哪个会话的记忆', type: 'str', max: 80, dep: ON_MEMORY, hint: '留空 = 同时读取最近改过的工作区文件与会话文件（按文本去重）；填会话 id 或 ws_ 前几位锁一份；填 all 全合并' },
-  { group: '高级', path: 'channels.qq.send', label: '往 QQ 发', type: 'bool', dep: ON_QQ, hint: '开（默认）：这一侧才真发。关：判定照走、内容照写，但不往 QQ 发（配合演练模式看它会说什么）' },
-  { group: '高级', path: 'channels.douyin.send', label: '往抖音发', type: 'bool', dep: ON_DOUYIN, hint: '默认关。抖音那边目前是另一个值班会话在回，这里开了一般也用不上' },
   { group: '高级', path: 'mail.user', label: '邮箱账号', type: 'str', max: 120, hint: '填完整地址（比如 123456@qq.com）。IMAP 服务器按域名自动猜，QQ/163/126/Gmail/Outlook 都在表里' },
   { group: '高级', path: 'mail.authCode', label: 'IMAP 授权码', type: 'secret', max: 200, hint: '不是登录密码。QQ 邮箱：设置 → 账号 → 开启 IMAP 服务后生成的那串。只存进 credentials.json，界面永远只显示「已设置」' },
   { group: '高级', path: 'mail.host', label: 'IMAP 服务器', type: 'str', max: 120, hint: '留空 = 按邮箱域名自动猜；猜不准才填，比如 imap.exmail.qq.com' },
@@ -460,6 +467,9 @@ export function coerce(path, raw) {
         }
         return { ok: true, path: spec.path, value: v };
       }
+      if (spec.path === 'channels.douyin.peerSecUid' || spec.path === 'channels.douyin.peerName') {
+        return { ok: true, path: spec.path, value: s.trim() };
+      }
       return { ok: true, path: spec.path, value: s };
     }
     case 'secret': {
@@ -472,6 +482,9 @@ export function coerce(path, raw) {
     case 'select': {
       const s = String(raw);
       if (!(spec.options || []).some(([k]) => k === s)) return bad(`只能是 ${(spec.options || []).map(([k]) => k).join(' / ')}`);
+      if (spec.path === 'channels.douyin.peerSecUid' || spec.path === 'channels.douyin.peerName') {
+        return { ok: true, path: spec.path, value: s.trim() };
+      }
       return { ok: true, path: spec.path, value: s };
     }
     case 'hm': {
@@ -568,6 +581,21 @@ function groupItemsForUi(cfg, name, detCache = { value: null }) {
         /* 认不出来就不多嘴 */
       }
     }
+    // 抖音联系人：留空时展示从抖音插件自动识别到的结果
+    if (s.path === 'channels.douyin.peerSecUid' || s.path === 'channels.douyin.peerName') {
+      if (!detCache.douyinPeer) detCache.douyinPeer = douyinPluginPeer();
+      const auto = detCache.douyinPeer;
+      const cur = String(value || '').trim();
+      if (!cur) {
+        if (s.path === 'channels.douyin.peerSecUid') {
+          hint = `${hint || ''}｜${auto.secUid ? `已自动获取：${auto.nick ? `${auto.nick} · ` : ''}${auto.secUid}` : '未检测到：请先在 dsh-douyin-scroll 选择私信对象或手填'}`;
+        } else {
+          hint = `${hint || ''}｜${auto.nick ? `已自动获取：${auto.nick}` : '未检测到：留空将只用 sec_uid'}`;
+        }
+      } else if (s.path === 'channels.douyin.peerSecUid' && !cur.startsWith('MS4w')) {
+        hint = `${hint || ''}｜注意：当前填的值不像 sec_uid（通常以 MS4w 开头），清空留空即可自动从抖音插件获取`;
+      }
+    }
     return {
       path: s.path,
       label: s.label,
@@ -592,6 +620,11 @@ function groupItemsForUi(cfg, name, detCache = { value: null }) {
 /** 自主探索卡片底部的直出配置项。 */
 export function explorationItemsForUi(cfg) {
   return groupItemsForUi(cfg, '自主探索');
+}
+
+/** 自主探索下方「聊天接口切换」卡片的直出配置项。 */
+export function channelItemsForUi(cfg) {
+  return groupItemsForUi(cfg, '聊天接口');
 }
 
 /**
@@ -623,6 +656,7 @@ export function listForUi(cfg) {
  */
 function depVisible(cfg, d) {
   if (!d) return true;
+  if (Array.isArray(d)) return d.every((item) => depVisible(cfg, item));
   return getPath(cfg, d.path, d.default) === d.on;
 }
 

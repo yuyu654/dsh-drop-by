@@ -186,10 +186,35 @@ export function detectEmotionPortrait(opts = {}) {
   };
 }
 
+export function douyinPluginPeer(home = dshHome()) {
+  const cfg = readJson(path.join(home, 'douyin-duty', 'config.json'));
+  const peers = Array.isArray(cfg?.dmPeers) ? cfg.dmPeers : [];
+  const firstWithId = peers.find((p) => String(p?.sec_uid || '').trim());
+  const secUid = String(cfg?.dmToId || firstWithId?.sec_uid || '').trim();
+  const matched = secUid ? peers.find((p) => String(p?.sec_uid || '').trim() === secUid) : null;
+  const nick = String((secUid && cfg?.dmToId === secUid ? cfg?.dmTo : '') || matched?.nick || cfg?.dmTo || firstWithId?.nick || '').trim();
+  return { secUid, nick };
+}
+
+function detectDouyinTakeover(cfg, opts) {
+  const home = opts.dshHome || dshHome(opts.env);
+  const detected = detectPlugin('dsh-douyin-scroll', opts);
+  const desktop = path.join(home, 'profiles', 'desktop', 'node_modules', 'dsh-douyin-scroll');
+  const plugin = detected.found.find(p => p.dir === desktop) || detected;
+  const scripts = ['im-http.py', 'im-send.mjs'].every(name => plugin.dir && exists(path.join(plugin.dir, 'tools', name)));
+  const peer = !!(String(cfg.channels.douyin?.peerSecUid || '').trim() || douyinPluginPeer(home).secUid);
+  return { installed: detected.installed, version: plugin.version, ready: scripts && peer,
+    note: !detected.installed ? '缺少 dsh-douyin-scroll' : !scripts ? '插件缺少私信脚本'
+      : !peer ? '请配置私信对象 sec_uid' : '私信脚本已就绪，由陪伴接管' };
+}
+
 /** 三条链路一次问清。设置页、状态接口、tick 的降级都用这一份。 */
 export function detectSources(cfg, opts = {}) {
-  const qq = detectQq(opts);
-  const douyin = detectDouyin(opts);
+  const primary = cfg?.channels?.primary;
+  const off = { installed: false, ready: false, note: '当前未选为主聊天接口' };
+  const qq = primary === 'douyin' ? off : detectQq(opts);
+  const douyin = primary === 'qq' ? off : primary === 'douyin'
+    ? detectDouyinTakeover(cfg, opts) : detectDouyin(opts);
   const phone = detectPhone(cfg, opts);
   return { qq, douyin, phone };
 }

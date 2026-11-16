@@ -43,6 +43,7 @@ export const REASONS = {
   REPLY_ALREADY_ANSWERED: '她那条已经有人应了（插件那边先回了），这一拍不重复',
   REPLY_ON_OTHER_CHANNEL: '她那条是别的通道（抖音/主会话）说的，这边只有 QQ，回过去答非所问，这一拍不发',
   GAP_TOO_SHORT: '距上次主动太近',
+  CHANNEL_SWITCH_PENDING: '主通道切换待完成（请先重启 DSH 完成接管）',
   DAILY_CAP: '今日主动次数已满',
   NO_TOPIC: '时机到了，但这次没有由头（不硬凑）',
   PROJECT_HELP_WITHOUT_REQUEST: '用户没有近期亲口说需要排查或有新进展',

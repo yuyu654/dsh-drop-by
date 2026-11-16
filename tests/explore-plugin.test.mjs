@@ -62,3 +62,42 @@ test('manual exploration uses the host, saves progress across rounds and never s
   assert.equal(searched, 2);
   assert.equal(api.snapshot().today.real, 0);
 });
+
+test('manual exploration failure writes diagnostic note to plugin.log and returns note in response', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pg-explore-fail-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  process.env.PG_CONFIG_PATH = path.join(dir, 'config.json');
+  process.env.PG_STATE_PATH = path.join(dir, 'state.json');
+  process.env.PG_DSH_HOME = dir;
+  const personaFile = path.join(dir, 'persona.md');
+  fs.writeFileSync(personaFile, '喜欢推理小说。');
+  fs.writeFileSync(process.env.PG_CONFIG_PATH, JSON.stringify({
+    quietHours: [], dryRun: false, send: { enabled: true },
+    content: { llm: { retries: 0 } },
+    exploration: { web: false, video: false },
+    persona: { localFile: personaFile, dshHome: dir },
+  }));
+  const { apply } = await import('../src/plugin.js');
+  let route;
+  const services = {
+    webServer: { register: (r) => { route = r; return () => {}; } },
+    agentDefaultModel: { currentSelection: () => ({ provider: 'ali', model: 'deepseek-v4.1-flash-1017' }) },
+    llm: { async *stream() {
+      yield { type: 'reasoning-delta', text: '一直想个不停' };
+      yield { type: 'finish', reason: { kind: 'max-tokens' } };
+    } },
+  };
+  const api = apply({ get: (k) => services[k], effect: (f) => f() }, { startupDelaySec: 3600, tool: false });
+  t.after(() => api.stop());
+
+  let body;
+  await route.handler({ url: '/api/dsh-drop-by/explore', method: 'POST' }, {
+    setHeader() {}, end(s) { body = JSON.parse(s); },
+  });
+  assert.equal(body.ok, false);
+  assert.equal(body.reason, 'HOST_LLM_EMPTY');
+  assert.match(body.note, /finish=max-tokens · reasoning=6字/);
+  const pluginLog = fs.readFileSync(path.join(dir, 'logs', 'plugin.log'), 'utf8');
+  assert.match(pluginLog, /生成最终失败（HOST_LLM_EMPTY：finish=max-tokens/);
+  assert.match(pluginLog, /自主探索未完成：HOST_LLM_EMPTY/);
+});

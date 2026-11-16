@@ -116,7 +116,7 @@ export async function judgeDecision({ snapshot, persona, cfg, generate, llmReady
         base;
     let r = null;
     try {
-      r = await generate({ prompt, cfg, timeoutMs, tail: 'json', minOutputTokens: 600 });
+      r = await generate({ prompt, cfg, timeoutMs, tail: 'json', minOutputTokens: 1536 });
     } catch (e) {
       return { ok: false, reason: 'JUDGE_ERROR', note: String(e?.message || e).slice(0, 160), ms: Date.now() - t0 };
     }

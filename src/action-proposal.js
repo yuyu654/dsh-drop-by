@@ -6,7 +6,8 @@ import { loadPersona } from './persona.js';
 import { inQuiet } from './schedule.js';
 import { busyNow } from './holidays.js';
 import { publicExplorationUrl } from './explore-media.js';
-import { dshHome, readBridgeDialogue } from './outbound.js';
+import { dshHome } from './outbound.js';
+import { activeChatChannel, canReadChat, chatDialogue, chatPeer } from './channels/external.js';
 import { createHash } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 
@@ -19,7 +20,8 @@ export function bindActionExecutor(handler) {
   return () => { if (executor === handler) executor = null; };
 }
 
-function callbackTransportReady() {
+function callbackTransportReady(cfg) {
+  if (activeChatChannel(cfg) === 'douyin') return canReadChat(cfg) && cfg.channels.douyin.send !== false;
   try {
     const conn = JSON.parse(fs.readFileSync(path.join(dshHome(), 'qq-bridge', 'connection.json'), 'utf8'));
     return Boolean(conn.httpApiUrl && conn.httpToken);
@@ -33,9 +35,8 @@ function eligible(cfg, peer, now) {
 
 export function qqTaskPeerEnabled(cfg, peer) {
   return cfg.enabled !== false &&
-    cfg.sources?.qq?.enabled !== false && cfg.channels?.qq?.enabled !== false &&
-    cfg.channels?.qq?.send !== false && cfg.channels?.qq?.read !== false &&
-    !!peer && String(cfg.channels?.qq?.peerId || '') === String(peer) &&
+    canReadChat(cfg) && cfg.channels?.[activeChatChannel(cfg)]?.send !== false &&
+    !!peer && chatPeer(cfg) === String(peer) &&
     cfg.send?.enabled === true && cfg.dryRun === false;
 }
 
@@ -53,7 +54,7 @@ export function retryPlan(state, persona) {
 }
 
 function availablePlan(cfg, peer, now, state = loadExploration(), persona = loadPersona({ cfg })) {
-  if (!executor || !eligible(cfg, peer, now) || !callbackTransportReady()) return null;
+  if (!executor || !eligible(cfg, peer, now) || !callbackTransportReady(cfg)) return null;
   const plan = retryPlan(state, persona);
   const age = now - Number(plan?.params.roundAt);
   return plan && age >= 0 && age < Number(cfg.exploration?.recentDays ?? 3) * 86_400_000 ? plan : null;
@@ -94,8 +95,8 @@ export function prepareActionProposal({ peer, text, cfg = loadConfig(), now = Da
 }
 
 export function recordActionOutbound({ peer, proposal, firstAt, sentAt, cfg = loadConfig() }) {
-  if (!peer || String(cfg.channels?.qq?.peerId || '') !== String(peer)) return;
-  if (proposal && (!eligible(cfg, peer, sentAt) || !callbackTransportReady())) proposal = null;
+  if (!peer || chatPeer(cfg) !== String(peer)) return;
+  if (proposal && (!eligible(cfg, peer, sentAt) || !callbackTransportReady(cfg))) proposal = null;
   const state = read();
   const content = state.content ||= {};
   // Outbound can arrive from both the bridge and the companion.
@@ -103,7 +104,7 @@ export function recordActionOutbound({ peer, proposal, firstAt, sentAt, cfg = lo
   if (!proposal && !content.pendingAction) return;
   content.lastOutboundAt = sentAt;
   content.pendingAction = proposal ? {
-    ...proposal, id: 'explore_retry:' + sentAt, peer: String(peer), firstAt, createdAt: sentAt,
+    ...proposal, id: 'explore_retry:' + sentAt, channel: activeChatChannel(cfg), peer: String(peer), firstAt, createdAt: sentAt,
     expiresAt: sentAt + Math.max(1, Math.min(15, Number(cfg.rules?.actionGate?.expiresMinutes) || 15)) * 60_000,
   } : null;
   save(state);
@@ -120,15 +121,15 @@ function proposalWindow({ pending, peer, kind, at, now, outgoing }) {
   return 'ready';
 }
 
-export function isHandledActionMessage(peer, at) {
-  return !!at && (read().content?.handled || []).some((item) => item.peer === String(peer) && item.at === Number(at));
+export function isHandledActionMessage(peer, at, channel = 'qq') {
+  return !!at && (read().content?.handled || []).some((item) => (item.channel || 'qq') === channel && item.peer === String(peer) && item.at === Number(at));
 }
 
 async function waitForOrdinaryReply({ peer, consumedAt, cfg, handler }) {
   const limit = consumedAt + Number(cfg.rules?.actionGate?.ackWaitSec ?? 30) * 1000;
   const interval = Math.max(1, Number(cfg.rules?.qqTiming?.pollSec ?? 2)) * 1000;
-  while (executor === handler) {
-    const { outgoing } = readBridgeDialogue();
+  while (executor === handler && activeChatChannel(loadConfig()) === activeChatChannel(cfg)) {
+    const { outgoing } = chatDialogue(cfg);
     if (outgoing.peer === String(peer) && outgoing.firstAt >= consumedAt && outgoing.lastAt >= outgoing.firstAt && outgoing.count > 0) return;
     const remaining = limit - Date.now();
     if (remaining <= 0) return;
@@ -136,21 +137,21 @@ async function waitForOrdinaryReply({ peer, consumedAt, cfg, handler }) {
   }
 }
 
-function incomingMatches({ peer, kind, text, bridgeText = text, at, incoming }) {
-  const value = String(bridgeText || '').slice(0, 80).trim();
+function incomingMatches({ peer, kind, text, bridgeText = text, at, incoming, cfg }) {
+  const value = (activeChatChannel(cfg) === 'qq' ? String(bridgeText || '').slice(0, 80) : String(bridgeText || '')).trim();
   return incoming.peer === String(peer) && incoming.kind === kind &&
-    incoming.ts === at && Boolean(incoming.observedAt) && incoming.text === value;
+    incoming.ts === at && Boolean(incoming.observedAt) && String(incoming.text || '').trim() === value;
 }
 
 function readPendingForMessage({ peer, kind, text, bridgeText, at, cfg, now }) {
   const state = read();
   const pending = state.content?.pendingAction;
-  if (!pending || pending.peer !== String(peer) || kind !== 'private') return null;
-  const { incoming, outgoing } = readBridgeDialogue();
-  if (!incomingMatches({ peer, kind, text, bridgeText, at, incoming })) return null;
+  if (!pending || (pending.channel || 'qq') !== activeChatChannel(cfg) || pending.peer !== String(peer) || kind !== 'private') return null;
+  const { incoming, outgoing } = chatDialogue(cfg);
+  if (!incomingMatches({ peer, kind, text, bridgeText, at, incoming, cfg })) return null;
   const window = proposalWindow({ pending, peer, kind, at, now, outgoing });
   if (window === 'ignore') return null;
-  if (window === 'cancel' || !executor || !eligible(cfg, peer, now) || !callbackTransportReady()) {
+  if (window === 'cancel' || !executor || !eligible(cfg, peer, now) || !callbackTransportReady(cfg)) {
     state.content.pendingAction = null;
     save(state);
     return null;
@@ -173,7 +174,7 @@ export function consumeQqAction({ peer, kind, text, bridgeText, at, cfg = loadCo
   content.pendingAction = null;
   const decision = route.actionType === pending.type ? route.intent : null;
   if (decision === 'accept_proposal' || decision === 'decline_proposal') {
-    content.handled = [...(content.handled || []), { peer: String(peer), at }].slice(-50);
+    content.handled = [...(content.handled || []), { peer: String(peer), at, channel: activeChatChannel(cfg) }].slice(-50);
   }
   save(state);
   if (decision === 'decline_proposal') return 'decline';
@@ -185,7 +186,7 @@ export function consumeQqAction({ peer, kind, text, bridgeText, at, cfg = loadCo
   const action = { ...current, params: { ...current.params, userGuidance: route.userGuidance || '' } };
   startQqTask({ peer, cfg, now, handler,
     run: (report) => handler.run(action, report),
-    canReport: (fresh) => eligible(fresh, peer, Date.now()),
+    canReport: (fresh) => qqTaskPeerEnabled(fresh, peer),
   });
   return 'accepted';
 }
@@ -200,7 +201,11 @@ function startQqTask({ peer, cfg, now, handler, run, canReport, command = false 
     void (async () => {
       await waitForOrdinaryReply({ peer, consumedAt: now, cfg, handler });
       const fresh = loadConfig();
-      if (executor === handler && callbackTransportReady() && canReport(fresh)) {
+      if (executor !== handler) return;
+      const channel = activeChatChannel(cfg);
+      if (channel !== activeChatChannel(fresh)) {
+        await handler.deferReport?.({ peer, result, channel, command });
+      } else if (callbackTransportReady(fresh) && canReport(fresh)) {
         await handler.report({ peer, result, cfg: fresh, command });
       }
     })().catch(() => {});
@@ -219,14 +224,14 @@ let runningCommand = false;
 /** Recheck after model classification as a newer QQ message may have replaced the marker. */
 export function qqCommandPreflight({ peer, kind, text, bridgeText, at, cfg, now = Date.now() }) {
   if (cfg.rules?.qqCommands?.enabled !== true || kind !== 'private' || !qqTaskPeerEnabled(cfg, peer)) return 'disabled';
-  if (!executor?.command || !callbackTransportReady()) return 'unavailable';
-  const { incoming } = readBridgeDialogue();
+  if (!executor?.command || !callbackTransportReady(cfg)) return 'unavailable';
+  const { incoming } = chatDialogue(cfg);
   const age = now - Number(at);
-  if (!incomingMatches({ peer, kind, text, bridgeText, at, incoming }) ||
+  if (!incomingMatches({ peer, kind, text, bridgeText, at, incoming, cfg }) ||
       !(age >= 0 && age <= Number(cfg.rules?.qqCommands?.freshSec ?? 120) * 1000)) return 'unverified';
   const value = String(text || '').trim();
   const key = createHash('sha256').update(value).digest('hex');
-  if ((read().content?.handled || []).some((entry) => entry.peer === String(peer) && entry.at === at && entry.commandKey === key)) return 'duplicate';
+  if ((read().content?.handled || []).some((entry) => (entry.channel || 'qq') === activeChatChannel(cfg) && entry.peer === String(peer) && entry.at === at && entry.commandKey === key)) return 'duplicate';
   return 'ready';
 }
 
@@ -241,7 +246,7 @@ export function queueQqCommand({ cmd, peer, kind, text, bridgeText, at, cfg, now
   const handled = content.handled || [];
   if (runningCommand) return 'busy';
   if (cmd.type === 'explore_query' && cfg.exploration?.web !== true) return 'webDisabled';
-  content.handled = [...handled, { peer: String(peer), at, commandKey: key }].slice(-50);
+  content.handled = [...handled, { peer: String(peer), at, channel: activeChatChannel(cfg), commandKey: key }].slice(-50);
   save(state);
   runningCommand = true;
   startQqTask({ peer, cfg, now, handler, command: true,
