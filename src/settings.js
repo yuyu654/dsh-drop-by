@@ -172,7 +172,7 @@ export const SCHEMA = [
   { group: '时间间隔', path: 'exploration.storyboardTimeoutMs', label: '探索视频分镜超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒', dep: ON_EXP_VIDEO },
   { group: '时间间隔', path: 'exploration.moodDraftTimeoutMs', label: '探索心情润色超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒', dep: ON_EXP_MOOD },
   { group: '时间间隔', path: 'exploration.portraitTimeoutMs', label: 'QQ 心情判断超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒', dep: ON_EXP_PORTRAIT },
-  { group: '时间间隔', path: 'rules.qqTiming.generationTimeoutMs', label: 'QQ 热聊补话生成超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒', dep: ON_QQ_CONT },
+  { group: '时间间隔', path: 'rules.qqTiming.generationTimeoutMs', label: '热聊补话生成超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒', dep: ON_QQ_CONT },
   { group: '时间间隔', path: 'rules.projectTiming.generationTimeoutMs', label: '项目问候生成超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒', dep: ON_PROJECT },
   { group: '时间间隔', path: 'rules.judge.timeoutMs', label: '主动开口判断超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒', dep: ON_JUDGE },
   { group: '时间间隔', path: 'content.topics.noReplyJudgeTimeoutMs', label: '追问前判断超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒', dep: [onTopic('noReply'), ON_NOREPLY_JUDGE] },
@@ -183,10 +183,10 @@ export const SCHEMA = [
   { group: '时间间隔', path: 'exploration.moodHours', label: '探索心情保留多久', type: 'int', min: 0, max: 168, unit: '小时', dep: ON_EXP_MOOD, hint: '默认 2 小时。填 0 不引用探索心情。' },
   { group: '时间间隔', path: 'exploration.portraitHours', label: 'QQ 聊天心情保留多久', type: 'int', min: 0, max: 168, unit: '小时', dep: ON_EXP_PORTRAIT, hint: '默认 2 小时，同时控制情绪回落速度。填 0 不引用。' },
   { group: '时间间隔', path: 'rules.qqTiming.debounceMs', label: 'QQ 连发消息合并等待', type: 'int', min: 3000, max: 15000, unit: '毫秒', hint: '默认 3500 毫秒，最低 3000 毫秒。上限 15000 毫秒，为 QQ 桥单次投递 controller.prompt 的 20000 毫秒超时留出余量。' },
-  { group: '时间间隔', path: 'rules.qqTiming.pollSec', label: 'QQ 热聊检查间隔', type: 'int', min: 1, max: 60, unit: '秒', dep: ON_QQ_CONT, hint: '多久检查一次 QQ 桥的最新消息。' },
-  { group: '时间间隔', path: 'rules.qqTiming.windowSec', label: 'QQ 热聊回看窗口', type: 'int', min: 1, max: 1800, unit: '秒', dep: ON_QQ_CONT, hint: '在这段时间里至少有两轮对话才算热聊。' },
-  { group: '时间间隔', path: 'rules.qqTiming.pauseSec', label: 'QQ 热聊补话先等多久', type: 'int', min: 0, max: 300, unit: '秒', dep: ON_QQ_CONT, hint: '从正常回复发送完成开始计时。' },
-  { group: '时间间隔', path: 'rules.qqTiming.expireSec', label: 'QQ 热聊补话超过多久作废', type: 'int', min: 1, max: 600, unit: '秒', dep: ON_QQ_CONT, hint: '从正常回复发送完成开始计时，须大于补话等待时间，并留出一次检查和生成的时间。' },
+  { group: '时间间隔', path: 'rules.qqTiming.pollSec', label: '热聊检查间隔', type: 'int', min: 1, max: 60, unit: '秒', dep: ON_QQ_CONT, hint: '多久检查一次最新消息。' },
+  { group: '时间间隔', path: 'rules.qqTiming.windowSec', label: '热聊回看窗口', type: 'int', min: 1, max: 1800, unit: '秒', dep: ON_QQ_CONT, hint: '在这段时间里至少有两轮对话才算热聊。' },
+  { group: '时间间隔', path: 'rules.qqTiming.pauseSec', label: '热聊补话先等多久', type: 'int', min: 0, max: 300, unit: '秒', dep: ON_QQ_CONT, hint: '从正常回复发送完成开始计时。' },
+  { group: '时间间隔', path: 'rules.qqTiming.expireSec', label: '热聊补话超过多久作废', type: 'int', min: 1, max: 600, unit: '秒', dep: ON_QQ_CONT, hint: '从正常回复发送完成开始计时，须大于补话等待时间，并留出一次检查和生成的时间。' },
   { group: '时间间隔', path: 'rules.qqTiming.inFlightSec', label: 'QQ 另一边正在回复时等多久', type: 'int', min: 1, max: 1800, unit: '秒', hint: '用于避免和 QQ 桥同时回复。' },
   { group: '时间间隔', path: 'rules.projectTiming.memoryDays', label: '项目回答保留为聊天背景多久', type: 'int', min: 0, max: 365, unit: '天', dep: ON_PROJECT, hint: '到期后不再带入聊天。' },
   { group: '时间间隔', path: 'rules.projectTiming.updateMin', label: '项目新进展多久内算刚提到', type: 'int', min: 0, max: 1440, unit: '分钟', dep: ON_PROJECT, hint: '跟进项目问题时只参考这个时间内的用户原话。' },
@@ -781,7 +781,7 @@ export function applyChange(cfg, path, raw) {
   cur[parts[parts.length - 1]] = r.value;
   if (r.path === 'rules.qqTiming.pauseSec' || r.path === 'rules.qqTiming.expireSec') {
     const { pauseSec = 15, expireSec = 55 } = next.rules.qqTiming;
-    if (expireSec <= pauseSec) return { ok: false, error: 'QQ 热聊补话的作废时间须大于补话等待时间' };
+    if (expireSec <= pauseSec) return { ok: false, error: '热聊补话的作废时间须大于补话等待时间' };
   }
   if (r.path === 'rules.feedback.dayStartMin' || r.path === 'rules.feedback.dayEndMin') {
     const { dayStartMin = 510, dayEndMin = 1410 } = next.rules.feedback;
