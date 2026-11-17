@@ -94,6 +94,110 @@ function serviceOf(ctx, key) {
   }
 }
 
+const LOOPBACK_HOST_RE = /^(?:localhost|\[::1\]|127(?:\.\d{1,3}){3})$/i;
+
+function firstHeader(headers, name) {
+  const v = headers?.[name];
+  return String(Array.isArray(v) ? (v[0] ?? '') : (v ?? '')).trim();
+}
+
+function connectionOf(c, ctx) {
+  const isConn = (v) => Boolean(v && (typeof v.requestRejection === 'function' || typeof v.admit === 'function'));
+  const candidates = [
+    () => serviceOf(c, 'connection'),
+    () => serviceOf(ctx, 'connection'),
+    () => (c && typeof c === 'object' ? Reflect.get(c, 'connection') : null),
+    () => (ctx && typeof ctx === 'object' ? Reflect.get(ctx, 'connection') : null),
+    () => c?.root?.connection,
+    () => ctx?.root?.connection,
+  ];
+  for (const probe of candidates) {
+    try {
+      const v = probe();
+      if (isConn(v)) return v;
+    } catch {
+      /* 忽略未注入或无权限访问，继续下一路 */
+    }
+  }
+  return null;
+}
+
+function localOriginRejection(req) {
+  const headers = req?.headers || {};
+  const rawHost = firstHeader(headers, 'host');
+  const rawOrigin = firstHeader(headers, 'origin');
+  const secFetch = firstHeader(headers, 'sec-fetch-site').toLowerCase();
+  if (!rawHost && !rawOrigin && !secFetch) return null;
+
+  if (secFetch === 'cross-site') return 403;
+  let parsedHost = null;
+  if (rawHost) {
+    try {
+      parsedHost = new URL(`http://${rawHost}`);
+    } catch {
+      return 403;
+    }
+    if (!LOOPBACK_HOST_RE.test(parsedHost.hostname)) return 403;
+  }
+  if (rawOrigin && rawOrigin !== 'null') {
+    try {
+      const originUrl = new URL(rawOrigin);
+      if (parsedHost ? originUrl.host !== parsedHost.host : !LOOPBACK_HOST_RE.test(originUrl.hostname)) return 403;
+    } catch {
+      return 403;
+    }
+  } else if (rawOrigin === 'null') {
+    return 403;
+  }
+  return null;
+}
+
+/**
+ * 入口访问检查：优先交由宿主 ctx.connection.requestRejection(req) / admit(req) 判定；
+ * 若宿主未提供 connection 服务（如老宿主或裸测），对带浏览器来源头的请求做回环同源兜底。
+ */
+function rejectIfUntrusted(req, c, ctx, json) {
+  const conn = connectionOf(c, ctx);
+  if (conn) {
+    try {
+      const reqArg = req && typeof req === 'object' ? (req.headers ? req : { ...req, headers: {} }) : { headers: {} };
+      if (typeof conn.requestRejection === 'function') {
+        const rej = conn.requestRejection(reqArg);
+        if (rej !== undefined && rej !== null && rej !== false) {
+          const code = typeof rej === 'number' && rej > 0 ? rej : (Number(rej?.status ?? rej?.statusCode) || 403);
+          json(code, { ok: false, error: code === 401 ? 'UNAUTHORIZED' : 'FORBIDDEN' });
+          return true;
+        }
+        return false;
+      }
+      if (typeof conn.admit === 'function') {
+        const admission = conn.admit(reqArg);
+        if (admission && typeof admission === 'object' && 'rejection' in admission && admission.rejection !== undefined) {
+          const code = Number(admission.rejection) || 403;
+          json(code, { ok: false, error: code === 401 ? 'UNAUTHORIZED' : 'FORBIDDEN' });
+          return true;
+        }
+        const kind = admission?.peer?.principal?.kind;
+        if (kind !== undefined && kind !== 'owner') {
+          json(403, { ok: false, error: 'FORBIDDEN' });
+          return true;
+        }
+        return false;
+      }
+    } catch {
+      json(403, { ok: false, error: 'FORBIDDEN' });
+      return true;
+    }
+  }
+
+  const fallbackCode = localOriginRejection(req);
+  if (fallbackCode) {
+    json(fallbackCode, { ok: false, error: 'FORBIDDEN' });
+    return true;
+  }
+  return false;
+}
+
 /**
  * 等一个服务就绪再干活（cordis 的延迟注入）。
  *
@@ -692,6 +796,7 @@ export function apply(ctx, config = {}) {
                 res.setHeader('cache-control', 'no-store');
                 res.end(JSON.stringify(body, null, 2));
               };
+              if (rejectIfUntrusted(req, c, ctx, json)) return;
               try {
                 if (route === '/state' && (req.method || 'GET') === 'GET') return json(200, snapshot());
                 if (route === '/config' && (req.method || 'GET') === 'GET') {

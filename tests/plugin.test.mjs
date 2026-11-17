@@ -101,6 +101,85 @@ test('状态接口：挂在 /api/dsh-drop-by，GET /state 返回 JSON', async ()
   }
 });
 
+test('状态接口：入口先过 ctx.connection.requestRejection(req)，拒绝/异常均拦截，缺省走回环兜底', async () => {
+  let route = null;
+  let rejectCode = undefined;
+  let shouldThrow = false;
+  const seenReqs = [];
+  const conn = {
+    requestRejection(req) {
+      seenReqs.push(req);
+      if (shouldThrow) throw new Error('boom');
+      return rejectCode;
+    },
+  };
+  const ctx = fakeCtx({
+    webServer: { register: (r) => ((route = r), () => {}) },
+    connection: conn,
+  });
+  const api = apply(ctx, { enabled: false, startupDelaySec: 3600, tool: false });
+  try {
+    const callRoute = async (req) => {
+      let body = '';
+      const res = {
+        statusCode: 0,
+        headers: {},
+        setHeader(k, v) { this.headers[k] = v; },
+        end(s) { body = s; },
+      };
+      await route.handler(req, res);
+      return { status: res.statusCode, json: JSON.parse(body) };
+    };
+
+    // 1. connection.requestRejection 返回 401 -> 拦截
+    rejectCode = 401;
+    const r401 = await callRoute({ url: '/api/dsh-drop-by/state', method: 'GET', headers: { host: '127.0.0.1:3000' } });
+    assert.equal(r401.status, 401);
+    assert.equal(r401.json.ok, false);
+    assert.equal(seenReqs.length, 1);
+
+    // 2. connection.requestRejection 返回 403 -> 拦截
+    rejectCode = 403;
+    const r403 = await callRoute({ url: '/api/dsh-drop-by/state', method: 'GET', headers: { host: 'evil.example' } });
+    assert.equal(r403.status, 403);
+
+    // 3. connection.requestRejection 抛异常 -> fail-closed 403
+    shouldThrow = true;
+    const rErr = await callRoute({ url: '/api/dsh-drop-by/state', method: 'GET', headers: {} });
+    assert.equal(rErr.status, 403);
+
+    // 4. connection.requestRejection 返回 undefined -> 放行
+    shouldThrow = false;
+    rejectCode = undefined;
+    const rOk = await callRoute({ url: '/api/dsh-drop-by/state', method: 'GET', headers: { host: 'trusted.tunnel.example' } });
+    assert.equal(rOk.status, 200);
+    assert.equal(rOk.json.plugin, 'dsh-drop-by');
+
+    // 5. 无 connection 服务时，非回环/跨站浏览器头被兜底拦截
+    let routeNoConn = null;
+    const api2 = apply(
+      fakeCtx({ webServer: { register: (r) => ((routeNoConn = r), () => {}) } }),
+      { enabled: false, startupDelaySec: 3600, tool: false }
+    );
+    try {
+      const callNoConn = async (req) => {
+        let body = '';
+        const res = { statusCode: 0, headers: {}, setHeader() {}, end(s) { body = s; } };
+        await routeNoConn.handler(req, res);
+        return { status: res.statusCode, json: JSON.parse(body) };
+      };
+      assert.equal((await callNoConn({ url: '/api/dsh-drop-by/state', method: 'GET', headers: { host: 'evil.example' } })).status, 403);
+      assert.equal((await callNoConn({ url: '/api/dsh-drop-by/state', method: 'GET', headers: { host: '127.0.0.1:3000', 'sec-fetch-site': 'cross-site' } })).status, 403);
+      assert.equal((await callNoConn({ url: '/api/dsh-drop-by/state', method: 'GET', headers: { host: '127.0.0.1:3000', origin: 'http://other.example' } })).status, 403);
+      assert.equal((await callNoConn({ url: '/api/dsh-drop-by/state', method: 'GET', headers: { host: '127.0.0.1:3000', origin: 'http://127.0.0.1:3000' } })).status, 200);
+    } finally {
+      api2.stop();
+    }
+  } finally {
+    api.stop();
+  }
+});
+
 test('工具：能挂上 presence_status（拿不到 dsh-tools 就用等价实现）', async () => {
   const ctx = fakeCtx();
   ctx.registered.tools = [];
