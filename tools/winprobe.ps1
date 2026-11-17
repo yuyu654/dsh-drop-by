@@ -149,9 +149,12 @@ try {
   if ($fgPid -gt 0) { $fgName = (Get-Process -Id $fgPid -ErrorAction Stop).ProcessName.ToLowerInvariant() }
 } catch { }
 
+$locked = $procs -contains 'logonui'
+
 $obj = [ordered]@{
   ok         = $true
   idle_ms    = [WP]::IdleMs()
+  locked     = [bool]$locked
   fg_pid     = $fgPid
   fg_title   = $fgTitle
   fg_name    = $fgName

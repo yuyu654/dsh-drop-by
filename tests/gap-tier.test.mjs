@@ -110,9 +110,9 @@ test('人不在：presenceSignal 开着且 judge 开着 → 不再拦（降级�
   assert.equal(d.presenceSignal, true);
 });
 
-test('人不在：presenceSignal 开着但 judge 关着 → 仍是硬拦', () => {
+test('人不在：开启 requirePcOnline 且 presenceSignal 开着但 judge 关着 → 仍是硬拦', () => {
   const d = decide({
-    cfg: tiered({ rules: { judge: { enabled: false } } }),
+    cfg: tiered({ rules: { requirePcOnline: true, judge: { enabled: false } } }),
     now: NOW,
     idleSec: 4000,
     quiet: false,
@@ -125,7 +125,22 @@ test('人不在：presenceSignal 开着但 judge 关着 → 仍是硬拦', () =>
   assert.equal(d.reason, 'AWAY');
 });
 
-test('人不在：presenceSignal 关着 → 硬拦（0.13 行为）', () => {
+test('人不在：开启 requirePcOnline 且 presenceSignal 关着 → 硬拦（单机模式）', () => {
+  const d = decide({
+    cfg: tiered({ rules: { requirePcOnline: true, presenceSignal: { enabled: false } } }),
+    now: NOW,
+    idleSec: 4000,
+    quiet: false,
+    busy: false,
+    lastUserTs: NOW - 8 * 60 * MIN,
+    lastSendTs: NOW - 7 * 60 * MIN,
+    todaySent: 0,
+    allDown: false,
+  });
+  assert.equal(d.reason, 'AWAY');
+});
+
+test('人不在：多端默认（requirePcOnline=false）即使 presenceSignal 关着也能主动找', () => {
   const d = decide({
     cfg: tiered({ rules: { presenceSignal: { enabled: false } } }),
     now: NOW,
@@ -137,7 +152,8 @@ test('人不在：presenceSignal 关着 → 硬拦（0.13 行为）', () => {
     todaySent: 0,
     allDown: false,
   });
-  assert.equal(d.reason, 'AWAY');
+  assert.equal(d.decision, 'send');
+  assert.equal(d.away, true);
 });
 
 test('回复轨道不看电脑空不空（人拿手机发的话照样回）', () => {
@@ -157,7 +173,7 @@ test('回复轨道不看电脑空不空（人拿手机发的话照样回）', ()
   assert.equal(d.away, true);
 });
 
-test('快照：人不在时写「两种事实」，且点明不要求马上回应', () => {
+test('快照：电脑暂无动静时写清多端可达，不按失联处理', () => {
   const text = buildSnapshot({
     cfg: tiered(),
     now: NOW,
@@ -168,9 +184,10 @@ test('快照：人不在时写「两种事实」，且点明不要求马上回�
       me: {},
     },
   });
-  assert.match(text, /她的在场：电脑判定不在/);
-  assert.match(text, /手机情况未知/);
-  assert.match(text, /不要求马上回应/);
+  assert.match(text, /她的在场：电脑端暂无动静（40 分钟没碰电脑）/);
+  assert.match(text, /QQ \/ 抖音在手机端随时可达/);
+  assert.match(text, /不在电脑前不等于不在/);
+  assert.doesNotMatch(text, /手机情况未知/);
 });
 
 test('快照：她刚说过话时写「可能在」，不写不在', () => {

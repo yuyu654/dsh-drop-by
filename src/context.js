@@ -229,6 +229,11 @@ export function buildContext({ cfg, now, st, ch, sys, tz }) {
     tz,
     presence: {
       idleSec: typeof sys?.idle_ms === 'number' && sys.idle_ms >= 0 ? Math.round(sys.idle_ms / 1000) : -1,
+      locked: Boolean(
+        sys?.locked === true ||
+        (Array.isArray(sys?.procs) && sys.procs.some((p) => String(p).toLowerCase() === 'logonui')) ||
+        st?.pc?.locked
+      ),
       fgTitle: sys?.fg_title || '',
       fgName: sys?.fg_name || '',
       audioPeak: typeof sys?.audio_peak === 'number' ? sys.audio_peak : null,

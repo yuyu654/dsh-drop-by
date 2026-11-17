@@ -279,7 +279,8 @@ export const SCHEMA = [
   { group: '决定TA粘不粘人', path: 'rules.naturalTriggers.enabled', label: '事件也能挑开我', type: 'bool', hint: '关（默认）：只看时钟。开：一段活干完、刚下课、刚在 self.md 写一条，这几种时刻也算「可以开口」——静默、忙碌、离开、每日上限一概照旧拦着，间隔要不要让路看下面那条' },
   { group: '决定TA粘不粘人', path: 'rules.naturalTriggers.takeGap', label: '事件拍可以让间隔让路', type: 'bool', dep: ON_NATURAL, hint: '关（默认）：事件只是把开口提前到发生的那一秒，两条之间仍隔满 minGap。开：事件拍可以越过 minGap，但仍要隔够「事件拍最短间隔」——不会因为下课就紧跟着再说一句' },
   { group: '决定TA粘不粘人', path: 'rules.naturalTriggers.floorMin', label: '事件拍最短间隔', type: 'int', min: 1, max: 240, unit: '分钟', dep: ON_NATURAL, hint: '只在上面那条开着时生效：事件拍两次开口之间至少隔这么久（默认 20 分钟）。比 minGap 短，但仍是个地板' },
-  { group: '决定TA粘不粘人', path: 'rules.presenceSignal.enabled', label: '人不在只当信号', type: 'bool', dep: ON_JUDGE, hint: '关（默认）：电脑判定TA不在就不主动开口。开：不再拦截，改成写进快照让 judge 自己判断（电脑不在证明不了TA不在手机前）。只在 judge 也开着时生效——没有软决策层就不放开硬闸' },
+  { group: '决定TA粘不粘人', path: 'rules.requirePcOnline', label: '只在电脑前才主动开口', type: 'bool', hint: '关（默认）：多端聊天模式，QQ/抖音手机随时能收到，离开电脑或锁屏也照常主动找TA。开：只在电脑前且未锁屏时才主动开口' },
+  { group: '决定TA粘不粘人', path: 'rules.presenceSignal.enabled', label: '人不在只当信号', type: 'bool', dep: ON_JUDGE, hint: '开启「只在电脑前才主动开口」后若同时打开此项：离开电脑不再硬拦截，改成把电脑状态写进快照让 judge 自己判断。只在 judge 也开着时生效' },
 
   // ================================================================ 节奏
   { group: '节奏', path: 'rules.replyCooldownMin', label: 'TA说完话先等几分钟', type: 'int', min: 0, max: 120, unit: '分钟', hint: '默认 5 分钟。TA刚说完你就回，等于抢话' },

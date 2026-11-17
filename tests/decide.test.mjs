@@ -60,9 +60,24 @@ test('主动轨道：间隔不够 / 配额满了 两个老闸没坏', () => {
   assert.equal(cap.reason, 'DAILY_CAP');
 });
 
-test('主动轨道：人不在 → AWAY', () => {
-  const d = decide({ ...base, lastUserTs: null, idleSec: 1200 });
-  assert.equal(d.reason, 'AWAY');
+test('主动轨道：多端默认下人不在电脑前或锁屏也允许主动找 → SEND', () => {
+  const idle = decide({ ...base, lastUserTs: null, idleSec: 1200 });
+  assert.equal(idle.decision, 'send');
+  assert.equal(idle.track, 'proactive');
+
+  const locked = decide({ ...base, lastUserTs: null, idleSec: 10, locked: true });
+  assert.equal(locked.decision, 'send');
+  assert.equal(locked.track, 'proactive');
+});
+
+test('主动轨道：开启 requirePcOnline 后，人不在或锁屏 → AWAY', () => {
+  const c = cfg();
+  c.rules.requirePcOnline = true;
+  const idle = decide({ ...base, cfg: c, lastUserTs: null, idleSec: 1200 });
+  assert.equal(idle.reason, 'AWAY');
+
+  const locked = decide({ ...base, cfg: c, lastUserTs: null, idleSec: 10, locked: true });
+  assert.equal(locked.reason, 'AWAY');
 });
 
 test('主动轨道：三道闸都过 → SEND', () => {

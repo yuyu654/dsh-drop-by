@@ -56,3 +56,22 @@ test('凌晨还醒着算前一夜：4 点起算，0 点不清零', () => {
   assert.equal(st.pc.day, '2026-11-04', '跨零点还归同一晚（前一天的 4 点起算）');
   assert.equal(st.pc.activeSince, before);
 });
+
+test('锁屏中（如 UU 远控退出自动锁屏）：不累计离开，解锁后不误判「刚回电脑前」', () => {
+  const st = {};
+  const t0 = at(13);
+  trackPcPresence(st, sysOf(20), t0, cfg);
+  // 进程出现 logonui 或 sys.locked=true：哪怕 idle_ms 已经很大，也不记 awaySince
+  assert.equal(trackPcPresence(st, { ok: true, idle_ms: 40 * MIN, procs: ['logonui'] }, t0 + 40 * MIN, cfg), null);
+  assert.equal(st.pc.locked, true);
+  assert.equal(st.pc.awaySince, 0);
+  assert.equal(st.pc.activeSince, 0);
+
+  // 解锁回到桌面后，不能伪造出 return / lastReturnAt
+  const tUnlock = t0 + 90 * MIN;
+  assert.equal(trackPcPresence(st, { ok: true, idle_ms: 5000, locked: false, procs: [] }, tUnlock, cfg), null);
+  assert.equal(st.pc.locked, false);
+  assert.equal(st.pc.lastReturnAt, 0);
+  assert.equal(st.pc.lastAwayMs, 0);
+  assert.equal(st.pc.activeSince, tUnlock);
+});

@@ -26,6 +26,7 @@ export function probe(force = false, cfg) {
             ok: false,
             err: String(err.message || err).slice(0, 200),
             idle_ms: -1,
+            locked: false,
             fg_title: '',
             fg_pid: 0,
             audio_peak: -1,
@@ -36,6 +37,7 @@ export function probe(force = false, cfg) {
         try {
           const data = JSON.parse(String(stdout).trim().split('\n').pop());
           data.procs = Array.isArray(data.procs) ? data.procs : [];
+          data.locked = Boolean(data.locked || data.procs.some((p) => String(p).toLowerCase() === 'logonui'));
           cache = { at: Date.now(), data };
           resolve(data);
         } catch (e) {
@@ -43,6 +45,7 @@ export function probe(force = false, cfg) {
             ok: false,
             err: '探针输出解析失败',
             idle_ms: -1,
+            locked: false,
             fg_title: '',
             fg_pid: 0,
             audio_peak: -1,

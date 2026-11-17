@@ -59,6 +59,13 @@ test('snapshot：处境该有的段都在，顺序从「现在」开始', () => 
   assert.match(s, /规则建议（可参考也可不用）：拿睡眠说事/);
 });
 
+test('snapshot：电脑锁屏时提示锁屏且手机可达，不输出刚回到电脑前', () => {
+  const ctx = { ...fakeCtx(), presence: { idleSec: 20, locked: true }, activity: null };
+  const s = buildSnapshot({ ctx, topic: { slot: 'sleep', label: '拿睡眠说事', brief: '她昨夜只睡了 7 小时。' }, cfg: fakeCfg, st: fakeSt, now: NOW, tz: TZ });
+  assert.match(s, /电脑当前锁屏中（QQ \/ 抖音在手机端仍可联系）/);
+  assert.doesNotMatch(s, /刚回到电脑前/);
+});
+
 test('snapshot：只把探索正文交给选中的分享或相关回复提示', () => {
   const self = { section: '推理短篇', at: NOW, line: '很想聊这个反转', exploration: true };
   const ctx = { ...fakeCtx(), self, myExploration: [

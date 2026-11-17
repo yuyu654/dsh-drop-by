@@ -141,31 +141,46 @@ export async function tickQqContinuation({ candidate, read, generate, active }) 
  * 不接手机 App 时这是仅有的「她在不在 / 在干什么」信号，所以每拍都算一遍，
  * 但它只当由头素材，不参与「发不发」的判定。
  */
+function isScreenLocked(sys) {
+  if (sys?.locked === true) return true;
+  return Array.isArray(sys?.procs) && sys.procs.some((p) => String(p).toLowerCase() === 'logonui');
+}
+
 export function trackPcPresence(st, sys, now, cfg) {
+  const locked = isScreenLocked(sys);
   const idleSec =
     typeof sys?.idle_ms === 'number' && sys.idle_ms >= 0 ? Math.round(sys.idle_ms / 1000) : null;
-  if (idleSec == null) return null; // 探针没读到：不猜，保持上一次的记录
+  if (idleSec == null && !locked) return null; // 探针没读到：不猜，保持上一次的记录
   const awaySec = Number(cfg?.idle?.awaySec) || 600; // 不设隐藏下限：她在设置页里改成多少就是多少
   // 「这一晚」按 4 点起算：凌晨还醒着不该在 0 点被清零重新计时
   const day = healthDay(now, cfg.timezone, 4);
   const pc =
     st.pc && st.pc.day === day
       ? st.pc
-      : { day, activeSince: 0, awaySince: 0, lastReturnAt: 0, lastAwayMs: 0 };
+      : { day, activeSince: 0, awaySince: 0, lastReturnAt: 0, lastAwayMs: 0, locked: false };
   let event = null;
 
-  if (idleSec <= awaySec) {
-    // 人在：从「离开」切回「在」——记下这次离开了多久
-    if (!pc.activeSince) pc.activeSince = now;
-    if (pc.awaySince) {
-      pc.lastAwayMs = now - pc.awaySince;
-      pc.lastReturnAt = now;
-      pc.awaySince = 0;
-      event = 'return';
-    }
+  if (locked) {
+    // 系统锁屏（例如 UU 远控退出后自动锁屏）：不累计 awaySince，也不保持 activeSince；
+    // 解锁后自然不会伪造「出去很久刚回电脑前」的 return 事件。
+    pc.locked = true;
+    pc.awaySince = 0;
+    pc.activeSince = 0;
   } else {
-    if (!pc.awaySince) pc.awaySince = now;
-    pc.activeSince = 0; // 走开了就不再算「连续坐着」
+    pc.locked = false;
+    if (idleSec <= awaySec) {
+      // 人在：从「离开」切回「在」——记下这次离开了多久
+      if (!pc.activeSince) pc.activeSince = now;
+      if (pc.awaySince) {
+        pc.lastAwayMs = now - pc.awaySince;
+        pc.lastReturnAt = now;
+        pc.awaySince = 0;
+        event = 'return';
+      }
+    } else {
+      if (!pc.awaySince) pc.awaySince = now;
+      pc.activeSince = 0; // 走开了就不再算「连续坐着」
+    }
   }
 
   st.pc = pc;
@@ -274,6 +289,7 @@ export async function tick({
     cfg: decideCfg,
     now,
     idleSec,
+    locked: isScreenLocked(sys),
     quiet,
     busy,
     lastUserTs: ch.lastUserTs,

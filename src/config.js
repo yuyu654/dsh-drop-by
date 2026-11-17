@@ -89,6 +89,8 @@ const DEFAULTS = {
     // 开着按由头分三档：回她/接转发/追问 5 分钟，事件类 60 分钟，其余闲聊 240 分钟。
     // 跨档只兜 replyMin（回复档）这道全局地板——否则 chat 的 240 会把 event 压死，分档就没意义。
     gapByTier: { enabled: false, replyMin: 5, eventMin: 60, chatMin: 240 },
+    // 多端（QQ/抖音）默认允许不在电脑前也主动开口；开启 requirePcOnline 后才恢复「人不在电脑前就拦截」。
+    requirePcOnline: false,
     // 阶段 1（0.14）：「人不在」从硬拦截降级成快照里的一个信号，交给 judge 判断。
     // 只在 judge 也开着时生效——没有软决策层就不许放开硬闸（防止规则裸奔）。
     presenceSignal: { enabled: false, recentChatMin: 30, recentReturnMin: 30, justActiveSec: 120 } },

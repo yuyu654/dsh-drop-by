@@ -112,7 +112,7 @@ export function checkTierGap({ cfg, now, tier, lastByTier = {}, lastSendTs = 0, 
   };
 }
 
-export function decide({ cfg, now, idleSec, quiet, busy, lastUserTs, lastUserChannel, lastSendTs, todaySent, allDown, triggered = false, extraGapMin = 0 }) {
+export function decide({ cfg, now, idleSec, locked = false, quiet, busy, lastUserTs, lastUserChannel, lastSendTs, todaySent, allDown, triggered = false, extraGapMin = 0 }) {
   const rules = cfg.rules || {};
   const idle = cfg.idle || {};
   const gt = rules.gapByTier || {};
@@ -133,8 +133,9 @@ export function decide({ cfg, now, idleSec, quiet, busy, lastUserTs, lastUserCha
   const byTrigger = Boolean(triggered) && nt.takeGap === true;
   const floorMs = Math.max(60_000, (Number(nt.floorMin ?? 20) || 20) * 60_000);
 
-  // 阶段 1.2：「人不在」降级为信号，只在 judge 开着时才允许（没有软决策层就不许放开硬闸）。
-  const away = idleSec >= 0 && idleSec > awaySec;
+  // 多端默认：不在电脑前或锁屏不代表人在手机旁也找不到；只有显式开启 requirePcOnline 才把离开电脑当硬闸。
+  const away = (idleSec >= 0 && idleSec > awaySec) || Boolean(locked);
+  const requirePcOnline = rules.requirePcOnline === true;
   const presenceSignalOn = rules.presenceSignal?.enabled === true && rules.judge?.enabled === true;
 
   const base = {
@@ -183,8 +184,8 @@ export function decide({ cfg, now, idleSec, quiet, busy, lastUserTs, lastUserCha
   if (busy) {
     return { ...base, track, reason: 'BUSY_HOURS' };
   }
-  // 人不在：默认硬拦；presenceSignal 开着（且 judge 开着）时降级为信号，交给 judge。
-  if (away && !presenceSignalOn) {
+  // 仅当用户显式开启 requirePcOnline 时才在「人不在电脑前」硬拦（除非 presenceSignal + judge 接管）。
+  if (requirePcOnline && away && !presenceSignalOn) {
     return { ...base, track, reason: 'AWAY' };
   }
   if (lastSendTs && now - lastSendTs < minGapMs && !(byTrigger && now - lastSendTs >= floorMs)) {

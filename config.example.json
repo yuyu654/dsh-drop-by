@@ -64,6 +64,7 @@
       "eventMin": 60,
       "chatMin": 240
     },
+    "requirePcOnline": false,
     "presenceSignal": {
       "enabled": true
     }

@@ -132,14 +132,15 @@ export function buildSnapshot({ ctx = {}, topic = null, cfg = {}, st = {}, now =
     const awaySec = Number(cfg?.idle?.awaySec ?? 600) || 600;
     const idle = Number(ctx.presence?.idleSec);
     const herAgoSec = Number(her.lastAgoSec);
-    // 她最近 30 分钟在手机/QQ 说过话 → 先按「可能在」写（比「电脑判定不在」更有用）
+    // 她最近 30 分钟在手机/QQ 说过话 → 先按「可能在」写（比「电脑端暂无动静」更有用）
     if (Number.isFinite(herAgoSec) && herAgoSec >= 0 && herAgoSec <= Number(cfg?.rules?.presenceSignal?.recentChatMin ?? 30) * 60) {
       blocks.push([`她的在场：她 ${agoText(herAgoSec)}在手机上说过话（可能在）。`]);
-    } else if (Number.isFinite(idle) && idle > awaySec) {
+    } else if (ctx.presence?.locked || (Number.isFinite(idle) && idle > awaySec)) {
       const herAgo = her.lastAgoSec == null ? null : agoText(her.lastAgoSec);
+      const pcState = ctx.presence?.locked ? '当前锁屏中' : `${fmtMin(Math.round(idle / 60))}没碰电脑`;
       blocks.push([
-        `她的在场：电脑判定不在（${fmtMin(Math.round(idle / 60))}没碰电脑），${herAgo ? `她最后一次说话在 ${herAgo}` : '最近没读到她在任何通道说过话'}（手机情况未知）。`,
-        '不确定她什么时候看得到——要说就说不要求马上回应的话。',
+        `她的在场：电脑端暂无动静（${pcState}），${herAgo ? `她最后一次说话在 ${herAgo}` : '最近没读到她在聊天里说过话'}；QQ / 抖音在手机端随时可达。`,
+        '不在电脑前不等于不在——正常说话就行，不催立刻回即可。',
       ]);
     }
   }
@@ -155,12 +156,15 @@ export function buildSnapshot({ ctx = {}, topic = null, cfg = {}, st = {}, now =
     if (act.speaking) pcLines.push('电脑正在放声音');
   }
   if (!coarseDesktop) for (const x of signalFacts(ctx.signals)) pcLines.push(x);
+  const locked = Boolean(ctx.presence?.locked);
   const idleSec = Number(ctx.presence?.idleSec);
-  if (Number.isFinite(idleSec) && idleSec >= 0) {
-    pcLines.push(idleSec < Number(cfg?.rules?.presenceSignal?.justActiveSec ?? 120) ? '她现在就在电脑前（刚有动静）' : `她 ${fmtMin(Math.round(idleSec / 60))}没碰电脑`);
+  if (locked) {
+    pcLines.push('电脑当前锁屏中（QQ / 抖音在手机端仍可联系）');
+  } else if (Number.isFinite(idleSec) && idleSec >= 0) {
+    pcLines.push(idleSec < Number(cfg?.rules?.presenceSignal?.justActiveSec ?? 120) ? '她现在就在电脑前（刚有动静）' : `她 ${fmtMin(Math.round(idleSec / 60))}没碰电脑（手机端仍可联系）`);
   }
   const pc = st?.pc || {};
-  if (pc.lastReturnAt && now - Number(pc.lastReturnAt) <= Number(cfg?.rules?.presenceSignal?.recentReturnMin ?? 30) * 60_000) {
+  if (!locked && pc.lastReturnAt && now - Number(pc.lastReturnAt) <= Number(cfg?.rules?.presenceSignal?.recentReturnMin ?? 30) * 60_000) {
     pcLines.push(`她出去过 ${fmtMin(Math.round(Number(pc.lastAwayMs || 0) / 60_000))}，${hhmm(Number(pc.lastReturnAt), zone)} 刚回到电脑前`);
   }
   if (pcLines.length) blocks.push(pcLines);
