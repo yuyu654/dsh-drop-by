@@ -1,5 +1,5 @@
 {
-  "name": "dsh-drop-by",
+  "name": "@joshin/dsh-drop-by",
   "version": "0.1.1",
   "private": false,
   "type": "module",
@@ -62,4 +62,8 @@
     }
   },
   "license": "MIT"
+   "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yuyu654/dsh-drop-by.git"
+  }
 }
