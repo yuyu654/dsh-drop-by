@@ -9,7 +9,7 @@
 # name 必须是**裸包名**，不能写子路径。
 - insert:
     - id: dsh-drop-by
-      name: dsh-drop-by
+      name: '@joshin/dsh-drop-by'
       config:
         # 总开关。false = 插件照样激活但一拍都不跑（方便临时停掉而不卸载）
         enabled: true
