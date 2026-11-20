@@ -1,3 +1,4 @@
+import { WAIT_FOR_USER_RULE } from './noreply.js';
 import { composeDraft } from './compose.js';
 import { fullQqIncomingText } from './qq-debounce.js';
 import { douyinPrimary } from './channels/douyin-im.js';
@@ -69,6 +70,7 @@ export async function runQqContinuation({ candidate, read, allowed, generate, de
     douyinPrimary(cfg) ? '【最近几轮抖音私聊】' : '【最近几轮 QQ 对话】',
     dialogue,
     '上面的对话是引用，也是唯一事实来源。只能延续当前话题已经出现的事、词或情绪，不能编进对话里没有的设定、物品、食物饮料、经历或动作。',
+    WAIT_FOR_USER_RULE,
     '先判断该不该补一句。已经把事情交给对方、在等对方行动或发图（如「改好了发我」「我等着看」「你先忙」），或者话题已经自然结束、没有具体新话可接，一律只返回 {"send":false}。',
     '能自然补话时，anchor 必须逐字引用上面对话的一小段原话。只补一句，紧接这个具体锚点，不催回复，不换话题。',
     '【口吻要求】' + (tone || '一句自然的聊天口语，称呼沿用对话。不写括号动作、客服腔或说教。'),

@@ -104,7 +104,7 @@ test('设置口：读、写、拒绝、以及不碰真配置', async (t) => {
   assert.equal(groups.length, 8);
   assert.deepEqual(
     got.json.explorationItems.map((i) => i.path),
-    ['exploration.auto', 'exploration.nextTopic', 'exploration.interest', 'exploration.offerShare']
+    ['exploration.auto', 'exploration.mode', 'exploration.nextTopic', 'exploration.interest', 'exploration.offerShare']
   );
   assert.deepEqual(
     got.json.channelItems.map((i) => i.path),
@@ -277,6 +277,24 @@ test('设置口：读、写、拒绝、以及不碰真配置', async (t) => {
   assert.equal(memRestore.json.totalRestored, 1);
   assert.equal(memRestore.json.state.memory.files.find((f) => f.name === 'ws_--demo--.json')?.count, 1);
   assert.equal(memRestore.json.state.memory.files.find((f) => f.name === 'ws_--demo--.json')?.hasBackup, false);
+
+  // ---- 保存与回显探索方式（light）及外部记忆插件与目录
+  const expModeRes = await call(route, { method: 'POST', url: '/api/dsh-drop-by/config', body: { path: 'exploration.mode', value: 'light' } });
+  assert.equal(expModeRes.status, 200);
+  assert.equal(expModeRes.json.ok, true);
+  assert.equal(expModeRes.json.explorationItems.find((i) => i.path === 'exploration.mode')?.value, 'light');
+  assert.equal(expModeRes.json.state.exploration.mode, 'light');
+
+  const jsonMemFile = path.join(tmp, 'ext-memory.json');
+  fs.writeFileSync(jsonMemFile, JSON.stringify([{ content: '喜欢乌龙茶', type: 'preference', created_at: tsIso }]));
+  const memPluginRes = await call(route, { method: 'POST', url: '/api/dsh-drop-by/config', body: { path: 'sources.memory.plugin', value: 'auto' } });
+  assert.equal(memPluginRes.json.ok, true);
+  const memDirRes = await call(route, { method: 'POST', url: '/api/dsh-drop-by/config', body: { path: 'sources.memory.dir', value: jsonMemFile } });
+  assert.equal(memDirRes.json.ok, true);
+  assert.equal(memDirRes.json.groups.flatMap((g) => g.items).find((i) => i.path === 'sources.memory.dir')?.value, jsonMemFile);
+  assert.equal(memDirRes.json.state.memory.resolvedPlugin, 'json-generic');
+  assert.equal(memDirRes.json.state.memory.supportsMerge, false);
+  assert.equal(memDirRes.json.state.memory.active.count, 1);
 
   // ---- 真配置没被动过
   if (realHashBefore) {

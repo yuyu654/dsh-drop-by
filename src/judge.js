@@ -9,6 +9,8 @@
 // 不读文件、不写 state：快照由 snapshot.js 拼好传进来，结论由 engine 存。
 import { ATTRIBUTION_RULE } from './attribution.js';
 
+export const PERSONA_FACT_RULE = '人设只提供口吻、偏好和表达习惯。已发生的动作、当下的身体状态、物品和约定都要有本轮候选或对话事实支撑。之前发出去但没有事实依据的描述不能当成后来追问的依据。可以说喜好、想法和感受。';
+
 const DEFAULT_MAX_CHARS = 60;
 
 /**
@@ -16,13 +18,14 @@ const DEFAULT_MAX_CHARS = 60;
  * 结构特意是「先说要交付什么，再给材料，最后再说一遍」——只在末尾写一次 JSON 契约时，
  * 角色型人格会把这一步当成「回她一条消息」，输出人话（实测三次里两次这样）。
  */
-export function judgePrompt({ snapshot, persona, maxChars = DEFAULT_MAX_CHARS } = {}) {
+export function judgePrompt({ snapshot, persona, candidates = [], maxChars = DEFAULT_MAX_CHARS } = {}) {
   const p = String(persona?.text || '').trim();
   const snap = String(snapshot || '').trim();
   const limit = Math.max(10, Number(maxChars) || DEFAULT_MAX_CHARS);
+  const idField = candidates.length ? '"candidateId": "选中的候选 ID；不说时为空", ' : '';
   const contract = [
     '只输出一个 JSON 对象（一行），不要代码块，不要解释，不要额外说一句话：',
-    '{"say": true|false, "angle": "想说的那件事", "draft": "要发出去的那一句", "why": "为什么这么判断"}',
+    `{"say": true|false, ${idField}"angle": "想说的那件事", "draft": "要发出去的那一句", "why": "为什么这么判断"}`,
   ];
   return [
     p ? `下面是你要扮演的角色。draft 的口吻、句子长短、能说什么，都照它来：
@@ -41,8 +44,13 @@ ${p}
     '',
     '【怎么判断】',
     ATTRIBUTION_RULE,
-    '· 有没有值得开口的事，你说了算——规则给的那条建议可以参考，也可以整个不用。',
-    '· 我也有自己的日常、身体小毛病、饮食偏好和兴趣，不必每句话都围着她转或只顾着问她吃没吃、忙不忙。在没有紧急正事的时刻，完全可以从「我这边」自然开口（比如人设里写的身体不适嘴硬轻带过、嘴馋想喝冰的或吃甜的使唤她顺手带一杯、或聊起自己正看正折腾的爱好）；但别虚构「我已经给你放桌上了」这类没发生的事，也别把自己的毛病反扣到她头上盘问。',
+    PERSONA_FACT_RULE,
+    ...(candidates.length ? [
+      '从下列候选选一条或保持沉默。say=true 时 candidateId 必须是原样 ID，angle 和 draft 只围绕该候选，不串题或新增由头。',
+      '优先考虑快过期的明确提醒与有证据的新发现。普通设备活动、身体数据只是弱信号。出现明确等待、结束或取消的事项，不能因沉默就续问。',
+      '若选换源请示，只询问这份资料能否换来源。若选有来源的分享，写为什么想分享，按实际证据表述，正文不写网址并遵守候选要求。',
+      JSON.stringify(candidates),
+    ] : ['当前准备预演或接话，已有具体由头就围绕它。']),
     '· 这是多端聊天（QQ / 抖音手机与电脑都能收到）：不要仅仅因为「她不在电脑前」「电脑锁屏」或「没检测到电脑动静」就写 "say": false——不在电脑前只是不提桌面状态，照常可以正常开口聊天或问候。',
     '· 没有值得开口的事就写 "say": false。宁可这一拍不说，也别硬凑一句。只有规则明确选中「那条还没回」才考虑跟进；不能自行把没回的闲聊或分享当成由头。',
     '· 电脑活动、窗口、旧项目记忆不代表她在求助。只有她近期亲口提到卡住、需要帮忙或给了同一项目的新进展，才顺势接；别主动要报错、追问进度或反复问她最近做什么项目。',
@@ -54,9 +62,9 @@ ${p}
     '· 她那句要是标着「我已经在那边回过了」，就绝对不许再拿它当这一拍要说的事，也不许再答一遍——那是同一个问题答两次，她只会觉得我在复读。',
     '· draft 只许说快照里这一件事：不翻旧账、不拽只有你们两个知道的生活梗当理由。要关心就直接问她这一件，别追加一句预设立场的数落（「别又…」「又不好好…」）。',
     '· 材料里的旧话带日期（今天／昨天／N 天前）：只有标着「今天」的才能说成「今天」「刚才」，「昨天」的才是昨晚；标着更早的，不许说成昨晚、今早、刚才——要提就直接说那件事，别提时间。',
-    '· 别围着「她在电脑前」转：快照里「最近发出去的几条」要是已经在说屏幕、坐着、硬撑，这一拍就换别的事——她刚说过的话、没回的那条、我自己这边的判断。同一个观察一天说一次就够，反复提会像监视。',
+    '· 别围着「她在电脑前」转：快照里「最近发出去的几条」要是已经在说屏幕、坐着、硬撑，就选另一个合格候选或保持沉默。同一个观察反复提会像监视。',
     '· 若要聊自己琢磨的事或分享内容（share / 我的探索近况）：先对照「她接过我哪类话」「我记得的事」看她是不是真感兴趣；明显偏门、她近期常冷处理或你自己没法翻译成日常聊天的话，就写 "say": false。',
-    '· 这类 share 的 draft 严禁出现公式、字母代号、专业黑话或教科书式定论——一定译成外行朋友一听就懂的大白话，并且必须留出她能接话的口子（顺口问她看法、经历或丢个问题过去），别只讲完一句自己的结论就收尾。',
+    '· share 用能听懂的大白话讲具体的新发现、反例或为什么偏爱它。允许讲完就停，只有自然能接话时再抛问题。',
     '',
     ...contract,
     '',
@@ -71,7 +79,7 @@ ${p}
  * 解析模型输出。任何一处不对都算判断失败（ok:false），由调用方退回规则链。
  * 不做「尽量抢救」：字段缺一个就整条不用，免得半截 JSON 变成半截话。
  */
-export function parseJudge(raw) {
+export function parseJudge(raw, candidates = []) {
   const txt = String(raw ?? '').trim();
   if (!txt) return { ok: false, reason: 'JUDGE_EMPTY' };
   const m = /\{[\s\S]*\}/.exec(txt);
@@ -89,7 +97,11 @@ export function parseJudge(raw) {
   const draft = String(j.draft ?? '').trim().slice(0, 400);
   const why = String(j.why ?? '').trim().slice(0, 120);
   if (say && !draft) return { ok: false, reason: 'JUDGE_NO_DRAFT' };
-  return { ok: true, say, angle, draft: say ? draft : '', why };
+  if (say && candidates.length && !candidates.some(({ id }) => id === j.candidateId)) {
+    return { ok: false, reason: 'JUDGE_INVALID_CANDIDATE' };
+  }
+  return { ok: true, say, angle, draft: say ? draft : '', why,
+    ...(say && candidates.length ? { candidateId: j.candidateId } : {}) };
 }
 
 /**
@@ -97,11 +109,11 @@ export function parseJudge(raw) {
  * 返回 { ok, say, angle, draft, why, ms } 或 { ok:false, reason }。
  * ok:false 的含义是「这一拍照旧按规则走」，不是「不说」。
  */
-export async function judgeDecision({ snapshot, persona, cfg, generate, llmReady = null, timeoutMs = cfg?.rules?.judge?.timeoutMs ?? 90_000 } = {}) {
+export async function judgeDecision({ snapshot, persona, candidates = [], cfg, generate, llmReady = null, timeoutMs = cfg?.rules?.judge?.timeoutMs ?? 90_000 } = {}) {
   if (typeof generate !== 'function') return { ok: false, reason: 'JUDGE_NO_LLM' };
   if (llmReady === false) return { ok: false, reason: 'JUDGE_LLM_NOT_READY' };
   const maxChars = Math.max(10, Number(cfg?.content?.maxChars) || DEFAULT_MAX_CHARS);
-  const base = judgePrompt({ snapshot, persona, maxChars });
+  const base = judgePrompt({ snapshot, persona, candidates, maxChars });
   const attempts = Math.max(1, Math.min(3, Number(cfg?.rules?.judge?.attempts) || 2));
   const retryable = new Set(['JUDGE_EMPTY', 'JUDGE_NOT_JSON', 'JUDGE_JSON_PARSE', 'JUDGE_NOT_OBJECT', 'JUDGE_SAY_NOT_BOOL', 'JUDGE_NO_DRAFT']);
 
@@ -126,7 +138,7 @@ export async function judgeDecision({ snapshot, persona, cfg, generate, llmReady
       return { ok: false, reason: r?.reason || 'JUDGE_LLM_FAIL', ms: Date.now() - t0, note: String(r?.note || '').slice(0, 160), raw };
     }
     raw = String(r.text || '').slice(0, 1200);
-    const p = parseJudge(r.text);
+    const p = parseJudge(r.text, candidates);
     if (p.ok) return { ...p, ms: Date.now() - t0, attempts: i + 1, raw };
     last = p;
     if (!retryable.has(p.reason)) return { ...p, ms: Date.now() - t0, attempts: i + 1, raw };

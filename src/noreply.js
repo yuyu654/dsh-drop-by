@@ -17,6 +17,7 @@ import { hhmm, hmToMin, minutesOfDayOf } from './time.js';
 import { lastBusyEnd, isHoliday } from './holidays.js';
 
 const MIN = 60_000;
+export const WAIT_FOR_USER_RULE = '只等用户完成某事、说好改完发图、用户说先忙或话题已结束时，沉默或过了很久都不能当成追问的理由。只有用户明确约好提醒，或相关事项有了实际变化，才重新考虑。';
 const BACKGROUND_SLOTS = new Set(['steps', 'screen', 'longSit']);
 const CASUAL_SLOTS = new Set(['share', 'chitchat', 'catchup', 'backHome', 'qqContinuation']);
 
@@ -114,6 +115,7 @@ export function pickNoReply({ st, cfg, now, herTs = null, douyinOut = null, herO
  * 返回 { ok, why?, dueAt? }。
  */
 export function noReplyDue({ cand, cfg, now, herTs = null, tz }) {
+  if (cand?.verdict?.followUp === false) return { ok: false, why: '没有可核对的提醒约定' };
   const t = cfg?.content?.topics || {};
   const afterHerMin = Math.max(0, num(t.noReplyAfterHerMin, 120));
   const afterBusyMin = Math.max(0, num(t.noReplyAfterBusyMin, 20));
@@ -159,8 +161,8 @@ export function judgePrompt({ cand, ctx, cfg, now, tz }) {
   const herTs = Number(her.lastTs) || 0;
   const lines = [];
   const what =
-    cand.channel === 'douyin'
-      ? '分享了一条视频'
+    cand.kind === 'card'
+      ? `分享了一条视频：${String(cand.title || '').slice(0, 120)}`
       : `发了一条消息：『${String(cand.text || '').slice(0, 120)}』`;
   lines.push(
     `现在 ${hhmm(now, tz)}。我在 ${hhmm(cand.at, tz)} ${what}，到现在 ${cand.silenceMin} 分钟没回。`
@@ -188,10 +190,12 @@ export function judgePrompt({ cand, ctx, cfg, now, tz }) {
   }
   lines.push(
     '',
-    '判断一件事：她这会儿多半是去忙了 / 睡了 / 被别的事占着（away=true），还是在回避这条（away=false）。',
+    WAIT_FOR_USER_RULE,
+    'followUp 仅在用户亲口明确要求就这件事在当前时刻或条件下提醒，且对应约定仍然有效时为 true。quote 必须逐字引用那段用户原话。未明确同意、事项已完成、目标时间未到或有歧义，一律 false。',
+    'away 表示有迹象显示她此刻在忙或睡了。只凭未回无法推断她在回避。',
     '只看上面这些和现在的时间；判不准就写 false，别替她编理由。',
     '只输出一行 JSON，不要别的字：',
-    '{"away": true, "until": "20:30", "why": "在赶作业"}',
+    '{"away": false, "until": null, "why": "没有在忙的证据", "followUp": false, "quote": ""}',
     'away=false 时 until 必须是 null。'
   );
   return lines.join('\n');
@@ -199,7 +203,7 @@ export function judgePrompt({ cand, ctx, cfg, now, tz }) {
 
 /**
  * 让模型判一次。generate 走 engine 注进来的那个（命令行走 dsh 子进程）。
- * 任何异常都退回 away=false：这条追问该不该发，宁可早问，不要凭空压着。
+ * 解析失败或没有有效约定时，调度器不会把它列入追问候选。
  */
 export async function judgeAway({ cand, ctx, cfg, now, tz, generate, llmReady = null }) {
   if (llmReady === false || typeof generate !== 'function') {
@@ -219,7 +223,11 @@ export async function judgeAway({ cand, ctx, cfg, now, tz, generate, llmReady = 
     const away = j?.away === true;
     const hm = /^(\d{1,2}):(\d{2})$/.exec(String(j?.until ?? '').trim());
     const untilHm = away && hm ? `${String(Number(hm[1])).padStart(2, '0')}:${hm[2]}` : null;
-    return { away, untilHm, why: String(j?.why || '').slice(0, 20), judge: 'llm' };
+    const quote = typeof j?.quote === 'string' ? j.quote.trim() : '';
+    const userLines = [ctx?.her?.lastText, ...(ctx?.recent || []).filter((r) => r.from === 'her').map((r) => r.text)];
+    const followUp = j?.followUp === true && quote.length >= 4 &&
+      userLines.some((line) => typeof line === 'string' && line.includes(quote));
+    return { away, untilHm, followUp, ...(followUp ? { quote } : {}), why: String(j?.why || '').slice(0, 20), judge: 'llm' };
   } catch (e) {
     return { away: false, untilHm: null, why: '', judge: 'error', reason: String(e?.message || e).slice(0, 160) };
   }

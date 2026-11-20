@@ -15,12 +15,16 @@ const cfg = () => ({
   content: { enabled: true, topics: {} },
 });
 
-test('记忆插件选项列的是内置适配，fish-memory 在里头', () => {
+test('记忆插件选项列的是内置适配，fish-memory / auto / json-generic / markdown 在里头', () => {
   const spec = SCHEMA.find((s) => s.path === 'sources.memory.plugin');
   assert.ok(spec, '设置页要有这一项');
-  assert.ok(spec.options.some(([id]) => id === 'fish-memory'));
+  for (const id of ['fish-memory', 'soul-md', 'auto', 'json-generic', 'markdown']) {
+    assert.ok(spec.options.some(([k]) => k === id), `缺少选项 ${id}`);
+  }
   // 选项里的 id 必须真有适配，不然选了也是静默读不到
   for (const [id] of spec.options) assert.ok(MEMORY_PLUGINS[id], `${id} 没在 MEMORY_PLUGINS 里`);
+  const dirSpec = SCHEMA.find((s) => s.path === 'sources.memory.dir');
+  assert.ok(dirSpec && dirSpec.group === '数据从哪来', '设置页要有自定义记忆目录/文件入口');
 });
 
 test('这一项的提示里写清楚：换插件找自己的大肥鱼加适配', () => {

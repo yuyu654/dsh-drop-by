@@ -18,6 +18,7 @@ import { getPath } from './config.js';
 import { normalizeWindows, fmtWindows } from './schedule.js';
 import { SECRETS_PATH, saveSecrets, hostFor } from './fishmail.js';
 import { detectSources, detectEmotionPortrait, douyinPluginPeer } from './detect.js';
+import { detectMemory } from './memorysource.js';
 import { parseAgenda, agendaSource, courseKey } from './agenda.js';
 import { parseExams, examsSource } from './exams.js';
 
@@ -43,6 +44,10 @@ function detectHint(specPath, cfg, detCache) {
     const d = detCache.emotion;
     const ver = d.version ? `（v${d.version}）` : '';
     return `｜检测：${d.note}${ver}`;
+  }
+  if (specPath === 'sources.memory.plugin') {
+    if (!detCache.memory) detCache.memory = detectMemory(cfg);
+    return `｜检测：${detCache.memory.note}`;
   }
   const key = specPath.split('.')[1];
   if (!detCache.value) detCache.value = detectSources(cfg);
@@ -98,6 +103,7 @@ const ON_MAIN_READ = dep('channels.main.read', false);
 const ON_CONTENT = dep('content.enabled', true);
 const ON_FORWARD = dep('content.forward.enabled', true);
 const ON_EXP_AUTO = dep('exploration.auto', false);
+const ON_EXP_DEEP = dep('exploration.mode', 'deep', 'deep');
 const ON_EXP_MOOD = dep('exploration.mood', false);
 const ON_EXP_PORTRAIT = dep('exploration.portrait', false);
 const ON_EXP_WEB = dep('exploration.web', false);
@@ -245,7 +251,8 @@ export const SCHEMA = [
   { group: '时间间隔', path: 'content.forward.edgeWaitMs', label: '等待 Edge 调试口启动', type: 'int', min: 5, max: 600, unit: '秒', scale: 1000, dep: ON_VIDEO_OR_FORWARD },
   { group: '时间间隔', path: 'perception.signals.timeoutMs', label: '读取浏览器信号超时', type: 'int', min: 100, max: 30000, unit: '毫秒', dep: [ON_SIGNALS, ON_SIGNALS_BROWSER] },
   // ================================================================ 自主探索（设置页显示在「自主探索」卡片底部）
-  { group: '自主探索', path: 'exploration.auto', label: '自动自主探索', type: 'bool', hint: '默认关闭。角色按人设选择继续研究或自由浏览，探索结束保存进展和可选的分享候选。' },
+  { group: '自主探索', path: 'exploration.auto', label: '自动自主探索', type: 'bool', hint: '默认关闭。角色按人设选择探索内容，探索结束保存收获和可选的分享候选。' },
+  { group: '自主探索', path: 'exploration.mode', label: '探索方式', type: 'select', options: [['deep', '深度推进（保留研究线与下一步）'], ['light', '轻量化探索（单次简单小事，不推进长任务）']], hint: '深度推进会持续跟进研究线和下一步；轻量化探索每次只挑一件简单小事做一次浅显了解，不建长线任务、省 Token。' },
   { group: '自主探索', path: 'exploration.intervalMinutes', label: '探索间隔', type: 'int', min: 30, max: 1440, unit: '分钟', dep: ON_EXP_AUTO, hint: '默认 180 分钟；静默和忙碌时段不自动探索（若开启下方「只在谷时自动探索」，还会避开 DeepSeek API 高峰时段）。' },
   { group: '自主探索', path: 'exploration.offPeakOnly', label: '只在谷时自动探索', type: 'bool', dep: ON_EXP_AUTO, hint: '开：自动探索仅在 DeepSeek 谷时（5折空闲时段）运行——按北京时间结合日历判定，工作日非高峰时段（00:00–09:00、12:00–14:00、18:00–24:00）、周中法定节假日全天及周末（含调休上班周末）全天均为谷时；工作日 09:00–12:00 / 14:00–18:00 跳过。手动点「试跑一轮」不受限制。' },
   { group: '自主探索', path: 'exploration.nextTopic', label: '近一轮探索主题', type: 'str', max: 120, hint: '单独指定下一轮要探索的具体题目（优先于下方「最近对什么好奇」）；成功跑完一轮后会自动清空恢复日常自选。' },
@@ -268,8 +275,8 @@ export const SCHEMA = [
   { group: '决定TA粘不粘人', path: 'rules.adaptiveGap', label: '没人应时自己少说点', type: 'bool', hint: '开（默认）：连着两条没回，之后两条之间自动多等一会儿（最多拖成三倍）；关：永远按上面那个固定间隔' },
   { group: '决定TA粘不粘人', path: 'rules.qqContinuation', label: '热聊补一句', type: 'bool', hint: '刚来回聊了几轮，普通回复发完并等待设定时长后，可以顺着话题再补一句。有新消息就取消；没内容或没回应就停。遵守静默、忙碌时段和每日上限。' },
   { group: '决定TA粘不粘人', path: 'rules.feedback.enabled', label: '按TA的反应调由头', type: 'bool', hint: '开（默认）：记下哪一类发出去TA接住了、哪一类老没人应，老不接的先压几天；关：所有由头一视同仁' },
-  { group: '决定TA粘不粘人', path: 'rules.judge.enabled', label: '让模型自己决定说不说', type: 'bool', hint: '关（默认）：规则挑到由头就写。开：规则只提一条建议，把整份处境交给模型——它可以说不说，也可以换个角度；它写好的句子仍要过长度/口吻/防重复那些护栏，判坏了就退回规则链' },
-  { group: '决定TA粘不粘人', path: 'rules.chitchat.enabled', label: '没什么事也可以说一句', type: 'bool', hint: '关（默认）：没有由头就不说话。开：别的由头都挑不出来时，让模型判一句「随口话」（没有具体话题时，按下面设置的次数放行「在吗」「在干嘛」这类轻招呼）——只走模型，写不出来就不发。一天最多几条在下面的「随口话一天最多几条」里自己设；不说时段跟着全局静默和TA睡着的那段走。要「让模型自己决定说不说」也开着才生效' },
+  { group: '决定TA粘不粘人', path: 'rules.judge.enabled', label: '让模型自己决定说不说', type: 'bool', hint: '关（默认）：规则挑到由头就写。开：模型从合格的由头里挑一条，或选择不说。草稿还会过长度、口吻和防重复检查。无合格由头时保持安静' },
+  { group: '决定TA粘不粘人', path: 'rules.chitchat.enabled', label: '没什么事也可以说一句', type: 'bool', hint: '关（默认）：没有由头就不说话。开：可在合适的时候加入一个「随口话」候选（没有具体话题时，按下面设置的次数放行「在吗」「在干嘛」这类轻招呼）——只走模型，写不出来就不发。一天最多几条在下面的「随口话一天最多几条」里自己设；不说时段跟着全局静默和TA睡着的那段走。要「让模型自己决定说不说」也开着才生效' },
   { group: '决定TA粘不粘人', path: 'rules.chitchat.perDay', label: '随口话一天最多几条', type: 'int', min: 1, max: 10, unit: '条', dep: dep('rules.chitchat.enabled', true), hint: '默认 3 条。这是上限：设 5 也不会一天真发 5 条——实际从 1 条起，最近TA接得住才往上放，老被晾着就收回 1 条。独立计数，但照旧计入每天总上限' },
   { group: '决定TA粘不粘人', path: 'rules.chitchat.barePerDay', label: '轻招呼一天最多几次', type: 'int', min: 0, max: 10, unit: '次', dep: dep('rules.chitchat.enabled', true), hint: '默认 1 次（填 0 禁止「在吗」「在干嘛」这类空招呼）。仍受上面的随口话条数和每天总上限约束' },
   { group: '决定TA粘不粘人', path: 'rules.gapByTier.enabled', label: '间隔按由头分档', type: 'bool', hint: '关（默认）：所有由头共用 minGapMin 一刀切。开：回TA/接转发/追问 5 分钟，事件类（刚回来、深夜、久坐、self.md 新写入）60 分钟，其余闲聊 240 分钟——跨档至少隔回复档那么久' },
@@ -316,7 +323,7 @@ export const SCHEMA = [
   { group: '说什么', path: 'content.topics.lateUp', label: '深夜了还没睡', type: 'bool', hint: '夜里TA还亮着屏幕、人在电脑前时提一句。一个晚上最多一次（跨零点算同一晚）' },
   { group: '说什么', path: 'content.topics.longSit', label: '坐太久了', type: 'bool', hint: '连续坐在电脑前、中间没离开过，到点说一句让TA起身。一天最多一次' },
   { group: '说什么', path: 'content.topics.backHome', label: 'TA刚回来', type: 'bool', hint: 'TA出去一阵又回到电脑前，接一句开场。TA两小时内说过话就不发' },
-  { group: '说什么', path: 'content.topics.noReply', label: '那条还没回', type: 'bool', hint: '我主动发过去、TA隔很久没回时问一句「在忙还是睡了」。同一条只问一次；先让模型结合最近的对话判断TA是不是去忙了/睡了' },
+  { group: '说什么', path: 'content.topics.noReply', label: '按聊天约定跟进', type: 'bool', hint: '发过相关消息后，只有能核对到 TA 主动约好的提醒才会跟进，同一条最多一次。等 TA 发图或未回闲聊本身不构成提醒约定' },
   { group: '说什么', path: 'content.topics.agenda', label: '按课表说事', type: 'bool', hint: '明早有课就前一晚催一句；下一节在几十分钟内开始就提醒一句。课表在「课表与考试」里填' },
 
   // ================================================================ 数据从哪来
@@ -326,11 +333,12 @@ export const SCHEMA = [
   { group: '数据从哪来', path: 'sources.qq.enabled', label: 'QQ', type: 'bool', hint: '要 dsh-plugin-qq-bridge 装了并配对过才算通；关掉之后 QQ 侧的旧记录也不再当「TA刚说话」用' },
   { group: '数据从哪来', path: 'sources.douyin.enabled', label: '抖音', type: 'bool', hint: '主通道选抖音时由陪伴接管私信。需要安装 dsh-douyin-scroll，并配置抖音联系人 sec_uid。' },
   { group: '数据从哪来', path: 'sources.memory.enabled', label: '读记忆插件的记忆', type: 'bool', hint: '从下面这个记忆插件里读它记下来的长期记忆，当「我本来就知道的事」用（只读，不改它的文件）。读不到就照常说话' },
-  { group: '数据从哪来', path: 'sources.memory.plugin', label: '用哪个记忆插件', type: 'select', options: [['fish-memory', '鱼的记忆（dsh-fish-memory）']], dep: ON_MEMORY, hint: '目前只认鱼的记忆（同时支持会话文件 session-*.json 与工作区文件 ws_*.json）。用别的记忆插件也能接：跟你的大肥鱼说一声，让它在 src/memorysource.js 里加一条适配就行' },
+  { group: '数据从哪来', path: 'sources.memory.plugin', label: '用哪个记忆插件', type: 'select', options: [['fish-memory', '鱼的记忆（dsh-fish-memory）'], ['soul-md', 'Soul.md 记忆（dsh-soul-md）'], ['auto', '自动识别（兼容外部记忆插件）'], ['json-generic', '通用 JSON / JSONL 记忆'], ['markdown', 'Markdown 笔记目录']], dep: ON_MEMORY, hint: '支持鱼的记忆（session-*.json / ws_*.json）、dsh-soul-md（soul-md/memory）、自动识别以及通用 JSON/JSONL/Markdown 记忆目录；有特殊结构也能让大肥鱼在 src/memorysource.js 里加一条适配' },
+  { group: '数据从哪来', path: 'sources.memory.dir', label: '外部记忆目录或文件', type: 'str', max: 260, dep: ON_MEMORY, hint: '留空按所选记忆插件的默认路径读取；接入其他记忆插件时可填它的目录或单个 .json / .jsonl / .md 文件路径' },
   { group: '数据从哪来', path: 'exploration.portrait', label: '延续聊天的心情（情绪插件）', type: 'bool', hint: '需要安装 emotion-state-portrait。打开后会按每条私聊实时打分即时心情，同时把私聊、指令与回复自动写入 emotion/inbox.jsonl 并在主动/被动对话里延续情绪画像' },
   { group: '数据从哪来', path: 'mail.enabled', label: '读邮箱', type: 'bool', hint: '开：才会连 IMAP 把手机 App 发来的 FISH 邮件取回来；关着完全不联网。账号和授权码在「高级」里' },
   { group: '数据从哪来', path: 'channels.main.read', label: '读主会话', type: 'bool', hint: '开：把 DSH 主对话也当成一个通道读（TA在这儿说的话也算）。默认关，免得主对话被当成聊天记录反复读' },
-  { group: '数据从哪来', path: 'content.topics.noReplyDouyin', label: '抖音分享也算没回', type: 'bool', dep: [ON_FOLLOW_CASUAL, ON_DOUYIN], hint: '还需启用「追问没回的闲聊或分享」才生效。没装抖音插件或关闭抖音来源时跳过。' },
+  { group: '数据从哪来', path: 'content.topics.noReplyDouyin', label: '抖音分享也算没回', type: 'bool', dep: [ON_FOLLOW_CASUAL, ON_DOUYIN], hint: '还需启用「检查闲聊或分享中的提醒约定」才生效。没装抖音插件或关闭抖音来源时跳过。' },
 
   // ================================================================ 课表与考试
   { group: '课表与考试', path: 'content.agenda.text', label: '我的课表', type: 'text', max: 4000, rows: 8, hint: '一行一节：「周一 08:00-09:40 电机学」，也认「第3-4节」和「1-16周」「单周」。周几可以写「星期一」，冒号全角半角都认；空行和 # 开头的行会跳过。整学期的课表看不懂就直接截图发给我，我帮你整理成这里能认的格式' },
@@ -359,7 +367,7 @@ export const SCHEMA = [
   { group: '高级', path: 'sources.phone.staleHours', label: '数据过期多久算停', type: 'int', min: 6, max: 168, unit: '小时', dep: ON_PHONE, hint: '默认 36 小时。鱼鱼那封邮件超过这么多小时没更新，睡眠/压力/步数/屏幕四类由头就停用——拿旧数据问「昨晚睡得好吗」比不说话更伤' },
   { group: '高级', path: 'sources.phone.staleGuard', label: '数据过期就停用', type: 'bool', dep: ON_PHONE, hint: '开（默认）：邮件太旧时上面那四类由头不参与判定，--why 里会写原因；关：不管多旧都照旧用（阈值还留着，想恢复不用重填）' },
   { group: '高级', path: 'sources.memory.max', label: '一次带几条', type: 'int', min: 1, max: 8, dep: ON_MEMORY, hint: '默认 3 条。长期画像（喜好、约定）优先，剩下给最近的事；带太多会把这一句挤成汇报' },
-  { group: '高级', path: 'sources.memory.session', label: '读哪个会话的记忆', type: 'str', max: 80, dep: ON_MEMORY, hint: '留空 = 同时读取最近改过的工作区文件与会话文件（按文本去重）；填会话 id 或 ws_ 前几位锁一份；填 all 全合并' },
+  { group: '高级', path: 'sources.memory.session', label: '读哪个会话的记忆', type: 'str', max: 80, dep: ON_MEMORY, hint: '留空 = 自动读取最近有记忆的文件（鱼的记忆会同时看工作区与最新旧会话）；填文件名或 id 前缀锁定某一份；填 all 全合并' },
   { group: '高级', path: 'mail.user', label: '邮箱账号', type: 'str', max: 120, dep: ON_MAIL_OR_PHONE, hint: '填完整地址（比如 123456@qq.com）。IMAP 服务器按域名自动猜，QQ/163/126/Gmail/Outlook 都在表里' },
   { group: '高级', path: 'mail.authCode', label: 'IMAP 授权码', type: 'secret', max: 200, dep: ON_MAIL_OR_PHONE, hint: '不是登录密码。QQ 邮箱：设置 → 账号 → 开启 IMAP 服务后生成的那串。只存进 credentials.json，界面永远只显示「已设置」' },
   { group: '高级', path: 'mail.host', label: 'IMAP 服务器', type: 'str', max: 120, dep: ON_MAIL_OR_PHONE, hint: '留空 = 按邮箱域名自动猜；猜不准才填，比如 imap.exmail.qq.com' },
@@ -370,9 +378,9 @@ export const SCHEMA = [
   { group: '高级', path: 'perception.l3.enabled', label: '看屏幕（OCR）', type: 'bool', hint: '截前台窗口做系统 OCR，约 1 秒。只在判到要发的那一拍才截，只当「当时我在干什么」的记录，不参与发不发。中文认错得厉害，结构化信号能说清时就不用它。默认关' },
   { group: '高级', path: 'rules.askProjectOnce', label: '问一次最近在忙的项目', type: 'bool', hint: '对当前主通道联系人只主动问一次；不催回复。读到相关回答才保存为本地记忆，近期聊天可参考。' },
   { group: '高级', path: 'exploration.mood', label: '探索心情', type: 'bool', hint: '探索时可顺手记一句感受，有效时长可在「时间间隔」调整。只影响已经决定要发的主动消息，不会主动多发一条。' },
-  { group: '高级', path: 'content.topics.followCasualSilence', label: '追问没回的闲聊或分享', type: 'bool', hint: '默认关闭。关闭后，问候、闲聊或分享没收到回复就放下。' },
+  { group: '高级', path: 'content.topics.followCasualSilence', label: '检查闲聊或分享中的提醒约定', type: 'bool', hint: '默认关闭。开启后这几类消息也可检查是否含明确约定。单凭未回复不会追问。' },
   { group: '高级', path: 'exploration.web', label: '探索时搜索网页', type: 'bool', hint: '优先用 dsh-free-search，找不到结果时用 DSH 的 web_search。再用 web_fetch 读最多两页正文；仅搜到摘要时会标明。' },
-  { group: '高级', path: 'exploration.leisureEvery', label: '每几轮安排一次休闲', type: 'int', min: 0, max: 20, unit: '轮', hint: '默认 3。填 1 每轮休闲，填 0 关闭休闲轮。研究题本身也可以是小说、漫画等娱乐兴趣。' },
+  { group: '高级', path: 'exploration.leisureEvery', label: '每几轮安排一次休闲', type: 'int', min: 0, max: 20, unit: '轮', dep: ON_EXP_DEEP, hint: '默认 3。填 1 每轮休闲，填 0 关闭休闲轮。仅在「深度推进」探索方式下生效。' },
   { group: '高级', path: 'exploration.video', label: '探索时找视频', type: 'bool', hint: '每轮最多看一条。画面需要 dsh-video-storyboard 和支持图片的模型；抖音还需要取流配置。有字幕或转写时可退回文字，只有标题会标明。' },
   { group: '高级', path: 'perception.l3.everyMin', label: '看屏幕隔多久', type: 'int', min: 5, max: 720, unit: '分钟', dep: ON_L3, hint: '默认 30 分钟。上一次看屏幕不到这么久就跳过，免得同一张桌面反复截' },
   { group: '高级', path: 'perception.signals.enabled', label: '看窗口和网页（不截屏）', type: 'bool', hint: '只读前台窗口标题、进程名和浏览器当前标签页，不截屏、不 OCR、不联网。比 L3 准，默认开' },
@@ -397,7 +405,7 @@ export const SCHEMA = [
   { group: '高级', path: 'content.topics.noReplyMin', label: '隔多久没回才问', type: 'int', min: 30, max: 1440, unit: '分钟', dep: onTopic('noReply'), hint: '默认 120 分钟。指距我那条消息（或分享的视频）' },
   { group: '高级', path: 'content.topics.noReplyAfterHerMin', label: 'TA说话后至少隔', type: 'int', min: 0, max: 720, unit: '分钟', dep: onTopic('noReply'), hint: '默认 120 分钟。TA刚说完话就别追着问，这一条和上面的「隔多久」都要满足' },
   { group: '高级', path: 'content.topics.noReplyAfterBusyMin', label: 'TA忙完后等', type: 'int', min: 0, max: 240, unit: '分钟', dep: onTopic('noReply'), hint: '默认 20 分钟。模型判断TA那会儿在忙/睡了：等TA忙完（或忙碌时段结束）之后再等这么久才问' },
-  { group: '高级', path: 'content.topics.noReplyJudge', label: '先判断TA是不是去忙了', type: 'bool', dep: onTopic('noReply'), hint: '开：叫一次模型看最近的对话，判「忙/睡了」还是「在回避」。判不准就按「不是忙」处理，不会凭空压着不问' },
+  { group: '高级', path: 'content.topics.noReplyJudge', label: '核对是否约好追问或提醒', type: 'bool', dep: onTopic('noReply'), hint: '开：先核对用户是否明确约好就这件事提醒，再按现有等待时间判断。关：停用这条自动追问。' },
   { group: '高级', path: 'content.topics.agendaTomorrowHour', label: '几点后说明天的课', type: 'int', min: 18, max: 23, unit: '点', dep: onTopic('agenda'), hint: '默认 21 点。太早说像通知，太晚TA已经睡了' },
   { group: '高级', path: 'content.topics.agendaEarlyBeforeHour', label: '几点前算早课', type: 'int', min: 6, max: 12, unit: '点', dep: onTopic('agenda'), hint: '默认 9 点。8:00 和 8:55 的课都会提醒，9:50 的不会' },
   { group: '高级', path: 'content.topics.agendaSoonMin', label: '课前多久提一句', type: 'int', min: 5, max: 120, unit: '分钟', dep: onTopic('agenda'), hint: '默认 20 分钟' },
@@ -493,7 +501,7 @@ export function coerce(path, raw) {
         }
         return { ok: true, path: spec.path, value: v };
       }
-      if (spec.path === 'channels.douyin.peerSecUid' || spec.path === 'channels.douyin.peerName') {
+      if (spec.path === 'channels.douyin.peerSecUid' || spec.path === 'channels.douyin.peerName' || spec.path === 'sources.memory.dir') {
         return { ok: true, path: spec.path, value: s.trim() };
       }
       return { ok: true, path: spec.path, value: s };
@@ -508,7 +516,7 @@ export function coerce(path, raw) {
     case 'select': {
       const s = String(raw);
       if (!(spec.options || []).some(([k]) => k === s)) return bad(`只能是 ${(spec.options || []).map(([k]) => k).join(' / ')}`);
-      if (spec.path === 'channels.douyin.peerSecUid' || spec.path === 'channels.douyin.peerName') {
+      if (spec.path === 'channels.douyin.peerSecUid' || spec.path === 'channels.douyin.peerName' || spec.path === 'sources.memory.dir') {
         return { ok: true, path: spec.path, value: s.trim() };
       }
       return { ok: true, path: spec.path, value: s };

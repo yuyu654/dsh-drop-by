@@ -159,6 +159,6 @@ test('snapshot：随口说话（chitchat）把人设自身起点送进 judge 快
     now: NOW,
     tz: TZ,
   });
-  assert.match(s, /这一拍可用「我」自己的日常起点.*爱喝冰饮料/);
-  assert.match(s, /站在「我」的第一人称当下开口/);
+  assert.match(s, /这一拍可聊的角色偏好或习惯.*爱喝冰饮料/);
+  assert.match(s, /只有聊天或候选事实支持时才说已经发生的事/);
 });

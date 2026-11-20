@@ -41,13 +41,13 @@ test('首屏日常组保持精简清爽（其余组分类折叠）', () => {
   offExp.exploration = { ...offExp.exploration, auto: false };
   assert.deepEqual(
     explorationItemsForUi(offExp).map((i) => i.path),
-    ['exploration.auto', 'exploration.nextTopic', 'exploration.interest', 'exploration.offerShare']
+    ['exploration.auto', 'exploration.mode', 'exploration.nextTopic', 'exploration.interest', 'exploration.offerShare']
   );
   const autoExp = cfg();
   autoExp.exploration = { ...autoExp.exploration, auto: true };
   assert.deepEqual(
     explorationItemsForUi(autoExp).map((i) => i.path),
-    ['exploration.auto', 'exploration.intervalMinutes', 'exploration.offPeakOnly', 'exploration.nextTopic', 'exploration.interest', 'exploration.offerShare']
+    ['exploration.auto', 'exploration.mode', 'exploration.intervalMinutes', 'exploration.offPeakOnly', 'exploration.nextTopic', 'exploration.interest', 'exploration.offerShare']
   );
   for (const p of explorationItemsForUi(autoExp).map((i) => i.path)) {
     assert.ok(!daily.items.some((i) => i.path === p), `日常里不再重复出现 ${p}`);
@@ -177,4 +177,12 @@ test('所有从属子项跟随对应主功能开关显隐（日常、内容、�
   assert.equal(has(noMailOrPhone, 'content.topics.sleepShortMin'), false);
   noMailOrPhone.mail.enabled = true;
   assert.equal(has(noMailOrPhone, 'mail.user'), true);
+
+  // 轻量化探索隐藏只属于深度推进的休闲轮次参数，切回深度推进时恢复
+  const lightCfg = cfg();
+  lightCfg.exploration = { ...lightCfg.exploration, mode: 'light' };
+  assert.equal(has(lightCfg, 'exploration.leisureEvery'), false);
+  const deepCfg = cfg();
+  deepCfg.exploration = { ...deepCfg.exploration, mode: 'deep' };
+  assert.equal(has(deepCfg, 'exploration.leisureEvery'), true);
 });

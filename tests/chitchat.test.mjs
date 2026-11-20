@@ -296,7 +296,7 @@ test('轻招呼每日次数上限可由 rules.chitchat.barePerDay 配置与校�
   assert.equal(bareRemainingToday(st, NOON + DAY, TZ, cfg2), 2);
 });
 
-test('persona 类型随口话种子在 prompt 里强调第一人称自身生活而非围着用户转', async () => {
+test('persona 类型随口话种子可聊偏好，但已发生的事需要依据', async () => {
   const { judgePrompt } = await import('../src/judge.js');
   const pTopic = chitchatTopic(cfgOf(), {
     seedKind: 'persona',
@@ -304,7 +304,7 @@ test('persona 类型随口话种子在 prompt 里强调第一人称自身生活�
   });
   const prompt = buildChitchatPrompt({ ctx: ctxOf({ now: NOON }), topic: pTopic, persona: null, cfg: cfgOf(), st: {} });
   assert.match(prompt, /不必每条都围着她转/);
-  assert.match(prompt, /这是「我」自己人设里的身体、习惯或偏好/);
+  assert.match(prompt, /已发生的动作.*要有本轮候选或对话事实支撑/);
   const jp = judgePrompt({ snapshot: '现在：12:00', persona: { text: '短句' } });
-  assert.match(jp, /不必每句话都围着她转/);
+  assert.match(jp, /人设只提供口吻、偏好和表达习惯/);
 });

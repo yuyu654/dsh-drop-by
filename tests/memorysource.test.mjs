@@ -242,3 +242,115 @@ test('inspectMemory & mergeMemorySessions：只增不删地将历史会话并入
   assert.equal(selective.added, 1);
   assert.equal(selective.totalAfter, 2);
 });
+
+test('多插件适配：json-generic 支持多种结构与 JSONL，markdown 支持笔记目录，auto 自动识别且非 fish-memory 禁用合并', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pg-mem-multi-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const nowSec = Math.floor(Date.now() / 1000);
+  const nowIso = new Date().toISOString();
+
+  // 1. json-generic 目录：包装对象 + JSONL + 字段别名
+  const jsonDir = path.join(root, 'json-plugin');
+  fs.mkdirSync(jsonDir, { recursive: true });
+  fs.writeFileSync(path.join(jsonDir, 'facts.json'), JSON.stringify({
+    facts: [
+      { id: 'f1', content: '喜欢深夜写代码时喝冰美式', type: 'preference', score: 9, created_at: nowSec },
+      { id: 'f2', content: '已归档条目', type: 'event', archived: true, created_at: nowSec },
+      { id: 'f3', fact: '周三晚上要上选修课', kind: 'event', timestamp: nowIso },
+    ],
+    deleted: ['f4'],
+  }));
+  fs.writeFileSync(path.join(jsonDir, 'stream.jsonl'), [
+    JSON.stringify({ summary: '昨天顺手修好了定时器测试', ts: nowSec }),
+    '{bad json line',
+    JSON.stringify({ memory: '已经删掉的记录', deleted: true }),
+  ].join('\n'));
+
+  const jsonCfg = { sources: { memory: { enabled: true, plugin: 'json-generic', dir: jsonDir, max: 6 } } };
+  const jsonMem = readMemory({ cfg: jsonCfg });
+  assert.equal(jsonMem.ok, true);
+  assert.equal(jsonMem.resolvedPlugin, 'json-generic');
+  assert.equal(jsonMem.items[0].category, 'stable_profile');
+  assert.match(jsonMem.items[0].text, /冰美式/);
+  assert.ok(jsonMem.items.some((i) => /选修课/.test(i.text)));
+  assert.ok(jsonMem.items.some((i) => /定时器测试/.test(i.text)));
+  assert.equal(jsonMem.items.some((i) => /已归档|已经删掉/.test(i.text)), false);
+
+  // 非 fish-memory 不允许 merge/restore，也不篡改外部文件
+  const jsonInspect = inspectMemory({ cfg: jsonCfg });
+  assert.equal(jsonInspect.supportsMerge, false);
+  assert.equal(jsonInspect.mergePreview, null);
+  assert.equal(mergeMemorySessions({ cfg: jsonCfg }).reason, 'MERGE_NOT_SUPPORTED');
+  assert.equal(restoreMemoryBackup({ cfg: jsonCfg }).reason, 'MERGE_NOT_SUPPORTED');
+
+  // 2. auto 自动识别单文件与目录
+  const singleJsonl = path.join(jsonDir, 'stream.jsonl');
+  const autoSingle = readMemory({ cfg: { sources: { memory: { enabled: true, plugin: 'auto', dir: singleJsonl, max: 4 } } } });
+  assert.equal(autoSingle.ok, true);
+  assert.equal(autoSingle.resolvedPlugin, 'json-generic');
+  assert.match(memoryLine(autoSingle), /auto→json-generic/);
+
+  // 3. markdown 目录与单文件
+  const mdDir = path.join(root, 'md-notes');
+  fs.mkdirSync(mdDir, { recursive: true });
+  fs.writeFileSync(path.join(mdDir, '2026-11-16.md'), [
+    '---',
+    'title: notes',
+    '---',
+    '## 长期偏好',
+    '- 讨厌说教腔，喜欢直来直去的回答',
+    '## 2026-11-16',
+    '- [11-16] 晚上刚把电感参数算清楚',
+    '```js',
+    'const ignored = "代码块里的内容不算记忆";',
+    '```',
+  ].join('\n'));
+  const mdCfg = { sources: { memory: { enabled: true, plugin: 'auto', dir: mdDir, max: 5 } } };
+  const mdMem = readMemory({ cfg: mdCfg });
+  assert.equal(mdMem.ok, true);
+  assert.equal(mdMem.resolvedPlugin, 'markdown');
+  assert.equal(mdMem.items[0].category, 'stable_profile');
+  assert.match(mdMem.items[0].text, /直来直去/);
+  assert.ok(mdMem.items.some((i) => i.day === '2026-11-16' && /电感参数/.test(i.text)));
+  assert.equal(mdMem.items.some((i) => /代码块/.test(i.text)), false);
+});
+
+test('dsh-soul-md 适配：支持 layered 目录（core.md + topics/*.md）、HH:mm 标题和注释过滤', (t) => {
+  const prevHome = process.env.PG_DSH_HOME;
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pg-soul-home-'));
+  t.after(() => {
+    if (prevHome === undefined) delete process.env.PG_DSH_HOME;
+    else process.env.PG_DSH_HOME = prevHome;
+    fs.rmSync(fakeHome, { recursive: true, force: true });
+  });
+  process.env.PG_DSH_HOME = fakeHome;
+
+  const soulRoot = path.join(fakeHome, 'soul-md', 'memory');
+  const topicsDir = path.join(soulRoot, 'Kira', 'topics');
+  fs.mkdirSync(topicsDir, { recursive: true });
+  fs.writeFileSync(path.join(soulRoot, 'Kira', 'core.md'), [
+    '<!-- internal note -->',
+    '## 2026-11-17 18:20 — 用户偏好',
+    '- 平时喜欢喝冰美式，讨厌说教腔',
+  ].join('\n'));
+  fs.writeFileSync(path.join(topicsDir, 'motor-sim.md'), [
+    '## 2026-11-17 18:25 — motor-sim',
+    '已完成电机热仿真第一阶段边界条件确认',
+  ].join('\n'));
+
+  const soulCfg = { sources: { memory: { enabled: true, plugin: 'soul-md', max: 5 } } };
+  const mem = readMemory({ cfg: soulCfg });
+  assert.equal(mem.ok, true);
+  assert.equal(mem.resolvedPlugin, 'soul-md');
+  assert.ok(mem.files.includes('Kira/core.md'));
+  assert.ok(mem.files.includes('Kira/topics/motor-sim.md'));
+  assert.equal(mem.items[0].category, 'stable_profile');
+  assert.match(mem.items[0].text, /冰美式/);
+  assert.ok(mem.items.some((i) => /电机热仿真/.test(i.text) && i.day === '2026-11-17'));
+  assert.equal(mem.items.some((i) => /internal note/.test(i.text)), false);
+
+  // auto 在没有 fish-memory 时也能自动识别 soul-md/memory
+  const autoMem = readMemory({ cfg: { sources: { memory: { enabled: true, plugin: 'auto', max: 5 } } } });
+  assert.equal(autoMem.ok, true);
+  assert.equal(autoMem.resolvedPlugin, 'soul-md');
+});

@@ -26,12 +26,12 @@ export function summarizeExplorationNotes(state, persona, target, now, tz) {
   const today = dayKey(now, tz);
   const day = target === '昨天' ? shiftDay(today, -1) : target === '今天' ? today : null;
   const seen = new Set();
-  const notes = [...(status.notes || []), status.thread, status.leisure].filter((entry) =>
-    entry?.topic && entry?.progress && Number.isFinite(entry.at) && entry.at <= now &&
+  const notes = [...(status.notes || []), status.thread, status.leisure, status.light].filter((entry) =>
+    entry?.topic && (entry.progress || entry.summary) && Number.isFinite(entry.at) && entry.at <= now &&
     (!day || dayKey(entry.at, tz) === day))
     .sort((a, b) => b.at - a.at)
     .filter((entry) => {
-      const key = JSON.stringify([entry.at, entry.topic, entry.progress]);
+      const key = JSON.stringify([entry.at, entry.topic, entry.progress || entry.summary]);
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -39,7 +39,7 @@ export function summarizeExplorationNotes(state, persona, target, now, tz) {
     .slice(0, 4);
   if (!notes.length) return target + '没找到已保存的探索笔记。';
   return [target + '的探索笔记', ...notes.map((note) =>
-    '· ' + brief(note.topic, 35) + '｜' + brief(note.progress, 100) +
+    '· ' + brief(note.topic, 35) + '｜' + brief(note.progress || note.summary, 100) +
     (note.next ? '\n  接下来：' + brief(note.next, 60) : ''))].join('\n');
 }
 

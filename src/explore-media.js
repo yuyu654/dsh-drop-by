@@ -114,12 +114,14 @@ export function createExplorationMedia({ tools, web, video, watchDouyin, observe
     calls,
     web: Boolean(webReady),
     video: Boolean(videoReady),
-    async collect(kind, query, { excluded = [], excludedUrls = [], preferredSites = [] } = {}) {
+    async collect(kind, query, { excluded = [], excludedUrls = [], preferredSites = [], light = false } = {}) {
       if ((kind === 'web' && !webReady) || (kind === 'video' && !videoReady)) return [];
       const options = { excluded, excludedUrls, preferredSites };
       const sources = await search(query, kind, options);
       if (kind === 'web') {
-        return Promise.all(sources.slice(0, 2).map(async ({ url, title, snippet }) => {
+        const limit = light ? 1 : 2;
+        const maxChars = light ? 1800 : 3200;
+        return Promise.all(sources.slice(0, limit).map(async ({ url, title, snippet }) => {
           const page = await call('web_fetch', { url });
           const finalUrl = publicExplorationUrl(page?.url);
           if (finalUrl && !allowedSource(finalUrl, options)) return { url, title, evidence: '搜索摘要', content: snippet };
@@ -127,7 +129,7 @@ export function createExplorationMedia({ tools, web, video, watchDouyin, observe
             return { url, title, evidence: '需要登录', content: '请在 DSH 打开来源链接，在网站登录页完成登录。' };
           }
           const body = page?.statusCode >= 200 && page.statusCode < 300
-            ? String(page.body?.content || '').replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ').replace(/<[^>]+>/g, ' ').trim().slice(0, 3200)
+            ? String(page.body?.content || '').replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ').replace(/<[^>]+>/g, ' ').trim().slice(0, maxChars)
             : '';
           return { url, title, evidence: body ? '网页正文' : '搜索摘要', content: body || snippet };
         }));

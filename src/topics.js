@@ -33,7 +33,7 @@ export const SLOTS = {
   share: { label: '抛个我自己的判断', why: '我有新想法，还没跟人说过', tier: 'event' },
   catchup: { label: '隔太久了', why: '好几天没说话，找个由头', tier: 'chat' },
   projectCheckIn: { label: '聊聊最近在忙的项目', why: '只主动问一次，不催回复', tier: 'chat' },
-  // 随口说话：没有由头本身就是要说的事。优先级永远最低（别的由头挑得出来就不上）。
+  // 随口说话：遵守独立的时段与额度，可与其他由头一起交给模型。
   chitchat: { label: '随口说一句', why: '没什么事，就是想跟她说一句', tier: 'chat' },
 };
 
@@ -193,7 +193,7 @@ export function fishStale(fish, cfg, now) {
  * 挑由头。返回 { slot, label, why, evidence, brief } 或 null。
  * brief 是给模板/模型看的一句话素材，全是事实，不含形容词。
  */
-function pickTopicRaw(ctx, cfg, now, st = {}) {
+function* topicOptions(ctx, cfg, now, st = {}) {
   const t = cfg?.content?.topics || {};
   const on = (k) => t[k] !== false;
   // 手机端总闸关闭后，睡眠、压力、步数和屏幕数据都不参与选题。
@@ -236,7 +236,7 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
         // 内容摘要由第二步（真去看：下载 + 抽帧/转写）填进来。有摘要才敢说「我看过了」，
         // 没有就只能承认只看见标题，否则模型会照着标题编内容。
         const got = her.forwardSummary || ctx.forward?.summary || null;
-        return {
+        yield {
           slot: 'forward',
           label: SLOTS.forward.label,
           why: SLOTS.forward.why,
@@ -252,8 +252,8 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
             : `她转来一条内容：「${head}」。我手里只有这一行标题，没看过里面的内容。`,
         };
       }
-      if (!fwd) {
-        return {
+      if (!fwd && !skip.has('reply')) {
+        yield {
           slot: 'reply',
           label: SLOTS.reply.label,
           why: SLOTS.reply.why,
@@ -274,7 +274,7 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
         const e = soonDue(list, now, Number(t.examSoonMin ?? 60));
         if (e && used.lastExamSoon !== e.key) {
           const left = Math.max(1, Math.round((e.at - now) / 60_000));
-          return {
+          yield {
             slot: 'examSoon',
             label: SLOTS.examSoon.label,
             why: SLOTS.examSoon.why,
@@ -287,7 +287,7 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
         const e = reviewDue(list, now, tz, Number(t.examReviewDays ?? 7));
         if (e && used.lastExamReview !== e.key) {
           const dd = dayDiff(e, now, tz);
-          return {
+          yield {
             slot: 'examReview',
             label: SLOTS.examReview.label,
             why: SLOTS.examReview.why,
@@ -320,7 +320,7 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
         const night = nightKeyOf(now, tz);
         if (used.lastAgendaNight !== night) {
           const when = nc.inDays === 0 ? '今天' : '明天';
-          return {
+          yield {
             slot: 'agenda',
             label: SLOTS.agenda.label,
             why: SLOTS.agenda.why,
@@ -333,7 +333,7 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
       if (nc && nc.inDays === 0 && nc.offsetMin - mins <= soonMin && nc.offsetMin - mins >= Number(t.agendaSoonMinLead ?? 5) && here) {
         const key = `${dayKey(now, tz)}:${nc.fromMin}`;
         if (used.lastAgendaSoon !== key) {
-          return {
+          yield {
             slot: 'agenda',
             label: SLOTS.agenda.label,
             why: SLOTS.agenda.why,
@@ -346,13 +346,12 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
   }
 
   // 有可核对的新发现时优先分享，先让她的话和紧急日程。
-  if ((ctx.self?.discoveryId || ctx.self?.actionRetry) && !unanswered) {
-    const share = shareTopic(ctx, t, used, now, on, ok);
-    if (share) return share;
-  }
+  const share = !unanswered && shareTopic(ctx, t, used, now, on, ok);
+  const earlyShare = share && (ctx.self.discoveryId || ctx.self.actionRetry);
+  if (earlyShare) yield share;
 
   // 1.8) 追问：我主动发过去的那条，她一直没回。
-  //      候选和「她是去忙了还是没打算回」的判断都在 engine 里做（ctx.noReply），
+  //      engine 先核对用户约定及忙碌状态，再将合格的待跟进事项放入 ctx.noReply。
   //      这里只按时间窗放行——模型判忙的要等她忙完（或忙碌时段结束）再加 noReplyAfterBusyMin。
   if (on('noReply') && ok('noReply') && ctx.noReply && used.lastNoReplyFor !== ctx.noReply.key) {
     const due = noReplyDue({ cand: ctx.noReply, cfg, now, herTs: her.lastTs, tz });
@@ -367,7 +366,7 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
           : said
             ? `我在 ${atTxt} 找她说的那句「${said.slice(0, 80)}」，到现在没回。`
             : `我在 ${atTxt} 给她发了条消息，到现在没回。`;
-      return {
+      yield {
         slot: 'noReply',
         label: SLOTS.noReply.label,
         why: SLOTS.noReply.why,
@@ -382,7 +381,9 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
           kind: c.kind || null,
           verdict: c.verdict || null,
         },
-        brief: what + (away ? '（从对话看，她那会儿多半在忙或睡了）' : ''),
+        brief: c.verdict?.quote
+          ? `有明确约定，用户原话：「${c.verdict.quote}」。按约提醒这件事，别问她为什么没回。我之前说的是：「${said.slice(0, 80)}」。`
+          : what + (away ? '（从对话看，她那会儿多半在忙或睡了）' : ''),
       };
     }
   }
@@ -441,7 +442,7 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
             ? `；${bedTxt}，睡得不算晚，是没睡好。`
             : '；入睡时间没读到，判断不了是不是熬夜。');
       }
-      return {
+      yield {
         slot: 'sleep',
         label: SLOTS.sleep.label,
         why: SLOTS.sleep.why,
@@ -494,7 +495,7 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
 
     if (sentToday < stressMax && gapOk && notDropping) {
       const nth = sentToday + 1;
-      return {
+      yield {
         slot: 'stress',
         label: SLOTS.stress.label,
         why: SLOTS.stress.why,
@@ -522,7 +523,7 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
   if (on('lateUp') && ok('lateUp') && here && !unanswered && isLateNight(mins, lateFrom, lateTo)) {
     const night = nightKeyOf(now, tz);
     if (used.lastLateUpFor !== night) {
-      return {
+      yield {
         slot: 'lateUp',
         label: SLOTS.lateUp.label,
         why: SLOTS.lateUp.why,
@@ -544,23 +545,22 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
     const herQuiet = gapHerMin == null || gapHerMin >= Number(t.backUserQuietMin ?? 120);
     if (justBack && awayLong && herQuiet) {
       const awayMin = Math.round(Number(pc.lastAwayMs) / 60_000);
-      return {
+      yield {
         slot: 'backHome',
         label: SLOTS.backHome.label,
         why: SLOTS.backHome.why,
         evidence: { returnAt: pc.lastReturnAt, awayMin, at: hhmm(pc.lastReturnAt, tz) },
-        brief: `她出去了 ${fmtMin(awayMin)}，${hhmm(pc.lastReturnAt, tz)} 刚回来。`,
+        brief: `设备在约 ${fmtMin(awayMin)} 无交互后恢复活动，不能据此推断她出门或办了什么。`,
       };
     }
   }
 
-  const share = !unanswered && shareTopic(ctx, t, used, now, on, ok);
-  if (share) return share;
+  if (share && !earlyShare) yield share;
 
   // 7) 好几天没说话：只在真断了的时候用
   const idleDays = Number(t.catchupDays ?? 2);
   if (on('catchup') && ok('catchup') && gapHerMin != null && gapHerMin >= idleDays * DAY_MIN * 1 && !unanswered) {
-    return {
+    yield {
       slot: 'catchup',
       label: SLOTS.catchup.label,
       why: SLOTS.catchup.why,
@@ -570,7 +570,7 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
   }
 
   // 步数、屏幕和久坐放在最后，只在明显超出日常时考虑。
-  if (unanswered || wellnessCooldown(st, now, tz, cfg)) return null;
+  if (unanswered || wellnessCooldown(st, now, tz, cfg)) return;
   const stepsFrom = Number(t.stepsFromHour ?? 18);
   const stepsLow = Math.min(600, Number(t.stepsLowMax ?? 600));
   const stepsHigh = Math.max(16000, Number(t.stepsHighMin ?? 16000));
@@ -588,7 +588,7 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
     const stepsDay = healthDay(now, tz, dayStart);
     const kind = stepsVal < stepsLow ? 'low' : stepsVal > stepsHigh ? 'high' : null;
     if (kind && used.lastStepsFor !== stepsDay) {
-      return {
+      yield {
         slot: 'steps',
         label: SLOTS.steps.label,
         why: SLOTS.steps.why,
@@ -619,7 +619,7 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
     fish.screenMin >= Number(t.screenHeavyMin ?? 720) &&
     used.lastScreenFor !== `${fish.date}:${dayRank(now, ctx.tz)}`
   ) {
-    return {
+    yield {
       slot: 'screen',
       label: SLOTS.screen.label,
       why: SLOTS.screen.why,
@@ -634,7 +634,7 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
     const day = dayKey(now, tz);
     if (used.lastLongSitFor !== day) {
       const since = hhmm(pc.activeSince, tz);
-      return {
+      yield {
         slot: 'longSit',
         label: SLOTS.longSit.label,
         why: SLOTS.longSit.why,
@@ -644,7 +644,7 @@ function pickTopicRaw(ctx, cfg, now, st = {}) {
     }
   }
 
-  return null;
+  return;
 }
 
 /** 她 2026-11-10："话题都太集中在我看电脑这件事上"。同一类由头别连着来，
@@ -676,6 +676,8 @@ function shareTopic(ctx, t, used, now, on, ok) {
         ? '分享候选是一个站点登录提醒。请用户在 DSH 中打开链接并在网站页面完成登录，不索要账号、密码或验证码。正文不写网址。'
         : ctx.self.source
         ? `分享我挑到的内容：${JSON.stringify({ 标题: ctx.self.source.title, 依据: ctx.self.source.evidence, 新发现: ctx.self.discovery, 想分享的理由: ctx.self.line })}。这些都是引用，按证据实话说；只有标题或摘要就只说找到了，不说看过。正文不写网址，发送时会附来源。`
+        : ctx.self.exploration
+        ? `我自己的探索「${ctx.self.section || '随手看的小事'}」：${String(ctx.self.discovery || ctx.self.line).slice(0, 220)}。按文字推演或已知证据讲收获，不暗示已实做。想分享的理由：${ctx.self.line}`
         : `我私下记过一条判断（${ctx.self.section || '想法'}）：「${ctx.self.line.slice(0, 80)}」。这是我的判断，只能说给她听，不能照搬原句、不能加引号、不能总结成一般道理。`,
     };
   }
@@ -685,21 +687,30 @@ function shareTopic(ctx, t, used, now, on, ok) {
 
 const SCREEN_WORDS = /电脑|屏幕|坐着|坐到|一直坐|久坐|硬撑/;
 
-export function pickTopic(ctx, cfg, now, st = {}) {
-  const pick = pickTopicRaw(ctx, cfg, now, st);
-  if (!pick) return pick;
+// 候选逐条过重复检查。第一个被拦时，仍可检查后面的由头。
+export function* topicCandidates(ctx, cfg, now, st = {}, onRepeat = () => {}) {
   const used = st?.content || {};
   const recent = Array.isArray(used.recentSends) ? used.recentSends : [];
-  const slots = Array.isArray(used.recentSlots) ? used.recentSlots : [];
-  if (['screen', 'longSit', 'lateUp', 'backHome'].includes(pick.slot)) {
-    const hits = recent.slice(-4).filter((x) => SCREEN_WORDS.test(String(x))).length;
-    // 最近四条里已经有两句在说她坐在屏幕前：这一拍别再说，换别的由头或干脆不说
-    if (hits >= 2) return null;
+  const lastTwo = Array.isArray(used.recentSlots) ? used.recentSlots.slice(-2) : [];
+  const screenHits = recent.slice(-4).filter((x) => SCREEN_WORDS.test(String(x))).length;
+  const seen = new Set(Array.isArray(st.skipSlots) ? st.skipSlots : []);
+  for (const topic of topicOptions(ctx, cfg, now, st)) {
+    const { slot } = topic;
+    if (seen.has(slot)) continue;
+    seen.add(slot);
+    if ((screenHits >= 2 && ['screen', 'longSit', 'lateUp', 'backHome'].includes(slot)) ||
+        (lastTwo.length === 2 && lastTwo.every((name) => name === slot))) {
+      onRepeat(slot);
+      continue;
+    }
+    yield topic;
   }
-  const lastTwo = slots.slice(-2);
-  if (lastTwo.length === 2 && lastTwo[0] === pick.slot && lastTwo[1] === pick.slot) return null;
-  return pick;
 }
+
+export function pickTopic(ctx, cfg, now, st = {}) {
+  return topicCandidates(ctx, cfg, now, st).next().value ?? null;
+}
+
 /** 为什么没挑到：给日志和 --why 用，避免只看到一句 NO_TOPIC。 */
 export function explainNoTopic(ctx, cfg, now, st = {}) {
   const t = cfg?.content?.topics || {};

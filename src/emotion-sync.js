@@ -403,11 +403,13 @@ export function appendEmotionInbox({ dshHome: homeArg, env = process.env, user, 
 
 /** 把一轮自主探索结果整理成可读摘要，供情绪打分与 inbox 记录共用。 */
 export function formatExplorationMoodText(state) {
-  const mode = state?.lastRun?.mode === 'leisure' ? '休闲' : '研究';
-  const entry = mode === '休闲' ? state?.leisure : state?.thread;
+  const rawMode = state?.lastRun?.mode;
+  const mode = rawMode === 'leisure' ? '休闲' : rawMode === 'light' ? '轻探索' : '研究';
+  const entry = mode === '休闲' ? state?.leisure : mode === '轻探索' ? state?.light : state?.thread;
   const parts = [];
   if (entry?.topic) parts.push(`题目：${entry.topic}`);
-  if (entry?.progress) parts.push(`进展：${entry.progress}`);
+  const detail = entry?.summary || entry?.progress;
+  if (detail) parts.push(`${mode === '轻探索' ? '收获' : '进展'}：${detail}`);
   if (entry?.discovery) parts.push(`新发现：${entry.discovery}`);
   if (state?.candidate?.line) parts.push(`想分享：${state.candidate.line}`);
   if (state?.mood?.text) parts.push(`感受：${state.mood.text}`);

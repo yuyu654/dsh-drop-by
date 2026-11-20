@@ -18,7 +18,7 @@
 
 if (typeof window !== 'undefined' && window.__ModuleLoader__) {
   window.__ModuleLoader__.load({
-    id: 'dsh-drop-by',
+    id: '@joshin/dsh-drop-by',
     factory: function (require) {
       var module = { exports: {} };
       var React = require('react');
@@ -848,6 +848,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         var exploring = explorePending || Boolean(exploration && exploration.running);
         var thread = exploration && exploration.thread;
         var leisure = exploration && exploration.leisure;
+        var lightExp = exploration && exploration.light;
         function sourceLinks(entry) {
           return (entry && entry.sources || []).filter(function (s) { return /^https?:\/\//i.test(s.url); }).map(function (s) {
             return h('div', { className: 'pg-exp-item', key: s.url },
@@ -949,8 +950,8 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           memory && memory.enabled && memory.files && memory.files.length ? (function () {
             var sVal = memory.sessionSetting || '';
             var nonEmpty = memory.files.filter(function (f) { return f.count > 0; });
-            var wsFiles = memory.files.filter(function (f) { return f.kind === 'workspace'; });
-            var sessFiles = nonEmpty.filter(function (f) { return f.kind === 'session'; });
+            var wsFiles = memory.supportsMerge !== false ? memory.files.filter(function (f) { return f.kind === 'workspace'; }) : [];
+            var sessFiles = memory.supportsMerge !== false ? nonEmpty.filter(function (f) { return f.kind === 'session'; }) : [];
             var known = sVal === '' || sVal === 'all' || nonEmpty.some(function (f) { return f.id === sVal; });
             var activeTarget = mergeTargetFile && wsFiles.some(function (f) { return f.name === mergeTargetFile; })
               ? mergeTargetFile
@@ -976,9 +977,10 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
               runMergePreview(activeTarget, list);
             };
             var readBadge = sVal === 'all' ? '全部只读汇总' : sVal ? '指定文件' : '自动';
+            var memTitleName = memory.label || memory.resolvedPlugin || memory.plugin || 'fish-memory';
             return h('div', { className: 'pg-card' },
               h('div', { className: 'pg-card-head' },
-                h('div', { className: 'pg-card-title' }, '长期记忆（' + (memory.plugin || 'fish-memory') + ' · 共 ' + memory.files.length + ' 份）'),
+                h('div', { className: 'pg-card-title' }, '长期记忆（' + memTitleName + ' · 共 ' + memory.files.length + ' 份）'),
                 h('span', { className: 'pg-badge ' + (sVal && sVal !== 'all' ? 'pg-badge-dry' : 'pg-badge-live') }, readBadge)
               ),
               h('div', { className: 'pg-rows' },
@@ -990,7 +992,9 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
                         : '当前未命中有效记忆文件'
                     ),
                     h('div', { className: 'pg-row-hint' },
-                      '这里只决定写消息时看哪几份文件，不会改动磁盘。工作区（ws_*）按目录跨对话共享；旧会话（session-*）是早期的单次对话记录。'
+                      memory.supportsMerge === false
+                        ? '当前记忆源按只读适配读取，不会修改外部插件文件。可在「数据从哪来」切换插件类型或自定义目录。'
+                        : '这里只决定写消息时看哪几份文件，不会改动磁盘。工作区（ws_*）按目录跨对话共享；旧会话（session-*）是早期的单次对话记录。'
                     )
                   ),
                   h('div', { className: 'pg-row-ctl' },
@@ -1176,7 +1180,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
                 exploring
                   ? h('span', { className: 'pg-badge pg-badge-dry' }, '探索中')
                   : exploration.lastRun
-                    ? h('span', { className: 'pg-badge pg-badge-live' }, (exploration.lastRun.mode === 'leisure' ? '休闲' : '研究') + ' · ' + exploration.lastRun.outcome)
+                    ? h('span', { className: 'pg-badge pg-badge-live' }, (exploration.lastRun.mode === 'leisure' ? '休闲' : exploration.lastRun.mode === 'light' ? '轻探' : '研究') + ' · ' + exploration.lastRun.outcome)
                     : h('span', { className: 'pg-badge pg-badge-off' }, '待试跑')
               )
             ),
@@ -1186,7 +1190,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
               exploration.candidate && exploration.candidate.loginSite ? h('div', { className: 'pg-row-hint' },
                 '待登录 · ', h('a', { className: 'pg-link', href: exploration.candidate.source.url, target: '_blank', rel: 'noopener noreferrer' }, exploration.candidate.loginSite),
                 '。请在网站页面完成登录；公开网页工具可能仍无法读取登录后的页面。') : null,
-              thread || leisure ? h('details', {
+              thread || leisure || lightExp ? h('details', {
                 className: 'pg-exp-details',
                 open: showExplorationDetails,
                 onToggle: function (event) { setShowExplorationDetails(event.currentTarget.open); }
@@ -1201,10 +1205,12 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
                       });
                   }),
                   thread ? h('div', { className: 'pg-exp-highlight' }, thread.topic + '：' + thread.progress) : null,
-                  thread ? h('div', { className: 'pg-exp-item' }, '下一步：' + thread.next) : null,
+                  thread && thread.next ? h('div', { className: 'pg-exp-item' }, '下一步：' + thread.next) : null,
                   ...sourceLinks(thread),
                   leisure ? h('div', { className: 'pg-exp-highlight' }, '随便逛逛 · ' + leisure.topic + '：' + leisure.progress) : null,
                   ...sourceLinks(leisure),
+                  lightExp ? h('div', { className: 'pg-exp-highlight' }, '随手看看 · ' + lightExp.topic + '：' + (lightExp.summary || lightExp.progress)) : null,
+                  ...sourceLinks(lightExp),
                   exploration.candidate ? h('div', { className: 'pg-exp-item' }, '可分享：' + exploration.candidate.line) : null,
                   exploration.mood ? h('div', { className: 'pg-exp-item' }, '探索感受：' + exploration.mood.text) : null
                 )

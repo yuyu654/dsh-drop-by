@@ -1,83 +1,554 @@
-// memorysource.js —— 从「别的记忆插件」里读记忆。
+// memorysource.js —— 从外部记忆插件读取记忆（只读，绝不改动外部插件格式不兼容的文件）。
 //
-// 为什么要有这个：dsh-drop-by 自己只有 self.md（我写的），而会话里的长期记忆
-// 是记忆插件在管（比如 dsh-fish-memory）。要说起「她十月说过的话」，就得去那份库里拿。
-//
-// 只读，不写、不删、不改别人的文件；读不到就如实标原因（没装 / 没记录 / 关着）。
-// 「选哪个插件」是配置里的 sources.memory.plugin，内置只支持 fish-memory，别的名字当没装。
-// 用别的记忆插件时不用改判定逻辑：在下面的 MEMORY_PLUGINS 里加一项（会给你的大肥鱼加），其余代码不用动。
+// 支持多适配器：
+//   - fish-memory   鱼的记忆（dsh-fish-memory：ws_*.json / session-*.json，支持合并与回滚）
+//   - auto          自动探测（按自定义目录或 DSH 目录自动识别 fish-memory / json-generic / markdown）
+//   - json-generic  通用 JSON / JSONL 记忆文件或目录
+//   - markdown      Markdown 记忆/笔记文件或目录
 import fs from 'node:fs';
 import path from 'node:path';
 import { dshHome } from './detect.js';
 
-/** 支持的记忆插件。加新插件就在这儿加一项，其余代码不用动。 */
-export const MEMORY_PLUGINS = {
-  'fish-memory': {
-    label: '鱼的记忆（dsh-fish-memory）',
-    dir: () => path.join(dshHome(), 'fish-memory'),
-    // 会话模式：session-<id>.json；工作区模式：ws_<slug>.json
-    match: /^(session-|ws_)(.+)\.json$/,
-  },
-};
-
 const DAY = 24 * 60 * 60 * 1000;
+const SKIP_JSON_FILES = new Set(['package.json', 'package-lock.json', 'tsconfig.json', 'config.json', 'state.json']);
 
 function memoryCfg(cfg) {
   return cfg?.sources?.memory || {};
 }
 
-/** 这个插件该去哪个目录找（配置里写了 dir 就用它，测试靠这个指临时目录）。 */
-export function memoryDir(cfg) {
-  const c = memoryCfg(cfg);
-  if (c.dir) return String(c.dir);
-  const p = MEMORY_PLUGINS[c.plugin || 'fish-memory'];
-  return p ? p.dir() : null;
+function statSafe(p) {
+  try {
+    return fs.statSync(p);
+  } catch {
+    return null;
+  }
 }
 
-/** 目录里有哪些会话，按「最近改过」排。 */
-export function listSessions(dir, plugin = 'fish-memory') {
-  const p = MEMORY_PLUGINS[plugin];
-  if (!p) return [];
+function readRawJson(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function parseTimestamp(raw) {
+  if (raw == null || raw === '') return null;
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    if (raw <= 0) return null;
+    return raw < 1e12 ? raw * 1000 : raw;
+  }
+  const s = String(raw).trim();
+  if (!s) return null;
+  if (/^\d{10,13}$/.test(s)) {
+    const n = Number(s);
+    return n < 1e12 ? n * 1000 : n;
+  }
+  const ts = Date.parse(s);
+  return Number.isFinite(ts) ? ts : null;
+}
+
+function normalizeImportance(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  if (n > 1 && n <= 10) return Math.min(1, n / 10);
+  if (n > 10) return Math.min(1, n / 100);
+  return n;
+}
+
+function normalizeCategory(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return 'event';
+  if (/^(?:stable_profile|stable|profile|persona|preference|long_term|user_profile)$/i.test(s)) {
+    return 'stable_profile';
+  }
+  return s;
+}
+
+function fmtDay(ts) {
+  const d = new Date(ts);
+  if (!Number.isFinite(d.getTime())) return '';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+// ---- fish-memory 解析 ------------------------------------------------------
+
+function readFishEntries(file) {
+  const j = readRawJson(file);
+  if (!j || typeof j !== 'object') return null;
+  const memories = Array.isArray(j.memories) ? j.memories : [];
+  const deleted = new Set((Array.isArray(j.deleted) ? j.deleted : []).map((d) => (typeof d === 'string' ? d : d?.id)).filter(Boolean));
+  const items = [];
+  for (const m of memories) {
+    if (!m || !m.text || deleted.has(m.id)) continue;
+    const ts = parseTimestamp(m.at ?? m.createdAt);
+    items.push({
+      id: m.id ?? null,
+      text: String(m.text).slice(0, 200),
+      at: ts,
+      day: ts ? fmtDay(ts) : '',
+      category: m.category || 'event',
+      importance: Number(m.importance) || 0,
+      tags: Array.isArray(m.tags) ? m.tags.slice(0, 4).map(String) : [],
+    });
+  }
+  return items;
+}
+
+function readFishRawActive(file) {
+  const raw = readRawJson(file);
+  if (!raw || typeof raw !== 'object') return [];
+  const memories = Array.isArray(raw.memories) ? raw.memories : [];
+  const deleted = new Set((Array.isArray(raw.deleted) ? raw.deleted : []).map((d) => (typeof d === 'string' ? d : d?.id)).filter(Boolean));
+  return memories.filter((m) => m && m.text && !deleted.has(m.id));
+}
+
+// ---- 通用 JSON / JSONL 解析 ------------------------------------------------
+
+function mapGenericItem(m, deletedSet) {
+  if (m == null) return null;
+  if (typeof m === 'string') {
+    const text = m.trim();
+    return text ? { id: null, text: text.slice(0, 200), at: null, day: '', category: 'event', importance: 0, tags: [] } : null;
+  }
+  if (typeof m !== 'object' || Array.isArray(m)) return null;
+  if (m.deleted === true || m.archived === true || m.enabled === false) return null;
+  const id = m.id ?? m.key ?? m.uid ?? null;
+  if (id != null && deletedSet.has(id)) return null;
+  const rawText = m.text ?? m.content ?? m.fact ?? m.summary ?? m.memory ?? m.note ?? m.value ?? m.title;
+  const text = String(rawText ?? '').trim();
+  if (!text) return null;
+  const ts = parseTimestamp(m.at ?? m.createdAt ?? m.created_at ?? m.updatedAt ?? m.updated_at ?? m.timestamp ?? m.ts ?? m.time ?? m.date);
+  const rawTags = Array.isArray(m.tags) ? m.tags : (Array.isArray(m.labels) ? m.labels : (Array.isArray(m.keywords) ? m.keywords : []));
+  return {
+    id,
+    text: text.slice(0, 200),
+    at: ts,
+    day: ts ? fmtDay(ts) : '',
+    category: normalizeCategory(m.category ?? m.type ?? m.kind),
+    importance: normalizeImportance(m.importance ?? m.score ?? m.weight),
+    tags: rawTags.slice(0, 4).map((x) => String(x || '').trim()).filter(Boolean),
+  };
+}
+
+function extractGenericRecords(raw) {
+  if (Array.isArray(raw)) return { list: raw, deleted: new Set() };
+  if (!raw || typeof raw !== 'object') return { list: [], deleted: new Set() };
+  const deleted = new Set((Array.isArray(raw.deleted) ? raw.deleted : []).map((d) => (typeof d === 'string' ? d : d?.id)).filter(Boolean));
+  for (const key of ['memories', 'items', 'facts', 'records', 'entries', 'notes', 'data', 'list']) {
+    if (Array.isArray(raw[key])) return { list: raw[key], deleted };
+  }
+  if (raw.text || raw.content || raw.fact || raw.summary || raw.memory) {
+    return { list: [raw], deleted };
+  }
+  return { list: [], deleted };
+}
+
+function readGenericJsonItems(file) {
+  let rawText = '';
+  try {
+    rawText = fs.readFileSync(file, 'utf8');
+  } catch {
+    return null;
+  }
+  const trimmed = rawText.trim();
+  if (!trimmed) return [];
+
+  if (!file.toLowerCase().endsWith('.jsonl')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      const { list, deleted } = extractGenericRecords(parsed);
+      return list.map((m) => mapGenericItem(m, deleted)).filter(Boolean);
+    } catch {
+      /* 若非整包 JSON，尝试按 JSONL 逐行解析 */
+    }
+  }
+
+  const items = [];
+  const emptyDel = new Set();
+  for (const line of trimmed.split(/\r?\n/)) {
+    const s = line.trim();
+    if (!s) continue;
+    try {
+      const parsed = JSON.parse(s);
+      if (Array.isArray(parsed) || (parsed && typeof parsed === 'object' && ['memories', 'items', 'facts', 'records', 'entries'].some((k) => Array.isArray(parsed[k])))) {
+        const { list, deleted } = extractGenericRecords(parsed);
+        for (const m of list) {
+          const item = mapGenericItem(m, deleted);
+          if (item) items.push(item);
+        }
+      } else {
+        const item = mapGenericItem(parsed, emptyDel);
+        if (item) items.push(item);
+      }
+    } catch {
+      /* 跳过坏行 */
+    }
+  }
+  return items;
+}
+
+// ---- Markdown 解析 ---------------------------------------------------------
+
+const MD_STABLE_HEADING = /长期|画像|偏好|喜好|习惯|约定|设定|profile|stable|preference/iu;
+
+function readMarkdownItems(file, { defaultStable = false } = {}) {
+  let rawText = '';
+  try {
+    rawText = fs.readFileSync(file, 'utf8');
+  } catch {
+    return null;
+  }
+  const baseDateMatch = path.basename(file).match(/(\d{4}-\d{2}-\d{2})/);
+  let currentDate = baseDateMatch ? baseDateMatch[1] : '';
+  let currentTime = '';
+  let heading = '';
+  let inCode = false;
+  let inComment = false;
+  const lines = rawText.split(/\r?\n/);
+
+  // 跳过顶部 YAML frontmatter
+  let startIdx = 0;
+  if (lines[0]?.trim() === '---') {
+    const endIdx = lines.slice(1).findIndex((l) => l.trim() === '---');
+    if (endIdx >= 0) startIdx = endIdx + 2;
+  }
+
+  const items = [];
+  for (let i = startIdx; i < lines.length; i += 1) {
+    const t = lines[i].trim();
+    if (/^```/.test(t)) {
+      inCode = !inCode;
+      continue;
+    }
+    if (inComment || t.startsWith('<!--')) {
+      inComment = !t.includes('-->');
+      continue;
+    }
+    if (inCode || !t || t.startsWith('|') || t.startsWith('>') || /^[-*_]{3,}$/.test(t)) continue;
+    if (/^#{1,6}\s+/.test(t)) {
+      heading = t.replace(/^#{1,6}\s+/, '').trim();
+      const dm = heading.match(/(\d{4}-\d{2}-\d{2})(?:\s+(\d{2}:\d{2}))?/);
+      if (dm) {
+        currentDate = dm[1];
+        currentTime = dm[2] || '';
+      }
+      continue;
+    }
+
+    let body = t
+      .replace(/^[-*·]\s+/, '')
+      .replace(/^\d+[.、]\s+/, '')
+      .replace(/^\[[ xX]\]\s+/, '')
+      .trim();
+
+    let lineDate = currentDate;
+    let lineTime = currentTime;
+    const prefixDate = body.match(/^\[(\d{4}-\d{2}-\d{2}|\d{2}-\d{2})\]\s*(.+)$/) || body.match(/^(\d{4}-\d{2}-\d{2})\s*[:：\-]\s*(.+)$/);
+    if (prefixDate) {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(prefixDate[1])) {
+        lineDate = prefixDate[1];
+      } else if (currentDate && /^\d{2}-\d{2}$/.test(prefixDate[1])) {
+        lineDate = `${currentDate.slice(0, 4)}-${prefixDate[1]}`;
+      }
+      lineTime = '';
+      body = prefixDate[2].trim();
+    }
+
+    body = body.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/`([^`]+)`/g, '$1').replace(/\s+/g, ' ').trim();
+    if (body.length < 4) continue;
+
+    const ts = lineDate ? parseTimestamp(`${lineDate}T${lineTime || '12:00'}:00`) : null;
+    const stable = MD_STABLE_HEADING.test(heading) || (defaultStable && !lineDate);
+    items.push({
+      id: null,
+      text: body.slice(0, 200),
+      at: ts,
+      day: ts ? fmtDay(ts) : '',
+      category: stable ? 'stable_profile' : 'event',
+      importance: stable ? 0.85 : (defaultStable ? 0.7 : 0.5),
+      tags: heading && !/^\d{4}-\d{2}-\d{2}/.test(heading) ? [heading.slice(0, 24)] : [],
+    });
+  }
+  return items;
+}
+
+// ---- 文件列举 --------------------------------------------------------------
+
+function listDirectoryFiles(targetPath, filterFn, kindFn = () => 'memory') {
+  if (!targetPath) return [];
+  const st = statSafe(targetPath);
+  if (!st) return [];
+  if (st.isFile()) {
+    const name = path.basename(targetPath);
+    const meta = filterFn(name);
+    if (!meta) return [];
+    return [{
+      file: targetPath,
+      name,
+      id: name.replace(/\.[^.]+$/, ''),
+      kind: kindFn(name, meta),
+      session: meta.session || name.replace(/\.[^.]+$/, ''),
+      mtime: st.mtimeMs,
+      bytes: st.size,
+    }];
+  }
+  if (!st.isDirectory()) return [];
+
   let names = [];
   try {
-    names = fs.readdirSync(dir);
+    names = fs.readdirSync(targetPath);
   } catch {
     return [];
   }
   const out = [];
   for (const name of names) {
-    const m = name.match(p.match);
-    if (!m) continue;
-    const file = path.join(dir, name);
-    let st = null;
-    try {
-      st = fs.statSync(file);
-    } catch {
-      continue;
-    }
+    const meta = filterFn(name);
+    if (!meta) continue;
+    const file = path.join(targetPath, name);
+    const fst = statSafe(file);
+    if (!fst || !fst.isFile()) continue;
     out.push({
       file,
       name,
-      id: name.replace(/\.json$/, ''),
-      kind: m[1] === 'ws_' ? 'workspace' : 'session',
-      session: m[2],
-      mtime: st.mtimeMs,
-      bytes: st.size,
+      id: name.replace(/\.[^.]+$/, ''),
+      kind: kindFn(name, meta),
+      session: meta.session || name.replace(/\.[^.]+$/, ''),
+      mtime: fst.mtimeMs,
+      bytes: fst.size,
     });
   }
   return out.sort((a, b) => b.mtime - a.mtime);
 }
 
-function readOne(file) {
-  try {
-    const j = JSON.parse(fs.readFileSync(file, 'utf8'));
-    return {
-      memories: Array.isArray(j?.memories) ? j.memories : [],
-      deleted: new Set((Array.isArray(j?.deleted) ? j.deleted : []).map((d) => (typeof d === 'string' ? d : d?.id)).filter(Boolean)),
-    };
-  } catch {
-    return null;
+const fishMatch = /^(session-|ws_)(.+)\.json$/;
+function listFishFiles(dir) {
+  return listDirectoryFiles(
+    dir,
+    (name) => {
+      const m = name.match(fishMatch);
+      return m ? { prefix: m[1], session: m[2] } : null;
+    },
+    (_name, meta) => (meta.prefix === 'ws_' ? 'workspace' : 'session'),
+  );
+}
+
+function listGenericJsonFiles(dir) {
+  return listDirectoryFiles(dir, (name) => {
+    const low = name.toLowerCase();
+    if (name.startsWith('.') || low.includes('.bak') || SKIP_JSON_FILES.has(low)) return null;
+    if (!low.endsWith('.json') && !low.endsWith('.jsonl')) return null;
+    return { session: name.replace(/\.(?:json|jsonl)$/i, '') };
+  });
+}
+
+function listMarkdownFiles(dir, { recursive = true, maxDepth = 3 } = {}) {
+  if (!dir) return [];
+  const st = statSafe(dir);
+  if (!st) return [];
+  if (st.isFile()) {
+    return listDirectoryFiles(dir, (name) => {
+      const low = name.toLowerCase();
+      if (name.startsWith('.') || low.includes('.bak') || !low.endsWith('.md')) return null;
+      return { session: name.replace(/\.md$/i, '') };
+    });
   }
+  if (!st.isDirectory()) return [];
+
+  const out = [];
+  const walk = (curDir, relPrefix, depth) => {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(curDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const ent of entries) {
+      if (ent.name.startsWith('.')) continue;
+      const full = path.join(curDir, ent.name);
+      const rel = relPrefix ? `${relPrefix}/${ent.name}` : ent.name;
+      if (ent.isDirectory()) {
+        if (recursive && depth < maxDepth) walk(full, rel, depth + 1);
+        continue;
+      }
+      if (!ent.isFile()) continue;
+      const low = ent.name.toLowerCase();
+      if (low.includes('.bak') || !low.endsWith('.md')) continue;
+      const fst = statSafe(full);
+      if (!fst) continue;
+      const id = rel.replace(/\.md$/i, '');
+      const isTopic = /(?:^|\/)topics\//i.test(rel);
+      out.push({
+        file: full,
+        name: rel,
+        id,
+        kind: isTopic ? 'topic' : 'core',
+        session: id,
+        mtime: fst.mtimeMs,
+        bytes: fst.size,
+      });
+    }
+  };
+  walk(dir, '', 0);
+  return out.sort((a, b) => b.mtime - a.mtime);
+}
+
+function listSoulMdFiles(dir) {
+  return listMarkdownFiles(dir, { recursive: true, maxDepth: 3 });
+}
+
+function readSoulMdItems(file) {
+  const isCore = !/(?:^|[\\/])topics[\\/]/i.test(file);
+  return readMarkdownItems(file, { defaultStable: isCore });
+}
+
+function looksLikeFishJson(file) {
+  const j = readRawJson(file);
+  return Boolean(j && typeof j === 'object' && Array.isArray(j.memories));
+}
+
+function autoCandidateDirs(home) {
+  const fixed = [
+    path.join(home, 'fish-memory'),
+    path.join(home, 'soul-md', 'memory'),
+    path.join(home, 'mnemon'),
+    path.join(home, 'memory'),
+  ];
+  const extra = [];
+  try {
+    for (const ent of fs.readdirSync(home, { withFileTypes: true })) {
+      if (!ent.isDirectory()) continue;
+      if (['fish-memory', 'soul-md', 'mnemon', 'memory', 'douyin-duty', 'presence-gate', 'dsh-drop-by', 'qq-bridge', 'autonomy', 'profiles', 'logs'].includes(ent.name)) continue;
+      if (/mem|note/i.test(ent.name)) extra.push(path.join(home, ent.name));
+    }
+  } catch {
+    /* 忽略不可读根目录 */
+  }
+  return [...fixed, ...extra];
+}
+
+function isSoulMdLayout(dir, files) {
+  return /[\\/]soul-md[\\/]memory$/i.test(String(dir || '')) ||
+    files.some((f) => /(?:^|\/)(?:core\.md|topics\/.+\.md)$/i.test(f.name));
+}
+
+function resolveAutoDirAndAdapter(cfg, home = dshHome()) {
+  const explicit = String(memoryCfg(cfg).dir || '').trim();
+  if (explicit) {
+    const st = statSafe(explicit);
+    if (st?.isFile()) {
+      const low = explicit.toLowerCase();
+      if (low.endsWith('.md')) return { plugin: 'markdown', dir: explicit };
+      if (fishMatch.test(path.basename(explicit)) || looksLikeFishJson(explicit)) {
+        return { plugin: 'fish-memory', dir: explicit };
+      }
+      return { plugin: 'json-generic', dir: explicit };
+    }
+    if (listFishFiles(explicit).length) return { plugin: 'fish-memory', dir: explicit };
+    if (listGenericJsonFiles(explicit).length) return { plugin: 'json-generic', dir: explicit };
+    const mdFiles = listMarkdownFiles(explicit);
+    if (mdFiles.length) return { plugin: isSoulMdLayout(explicit, mdFiles) ? 'soul-md' : 'markdown', dir: explicit };
+    return { plugin: 'json-generic', dir: explicit };
+  }
+
+  for (const dir of autoCandidateDirs(home)) {
+    if (!statSafe(dir)) continue;
+    if (listFishFiles(dir).length) return { plugin: 'fish-memory', dir };
+    if (listGenericJsonFiles(dir).length) return { plugin: 'json-generic', dir };
+    const mdFiles = listMarkdownFiles(dir);
+    if (mdFiles.length) return { plugin: isSoulMdLayout(dir, mdFiles) ? 'soul-md' : 'markdown', dir };
+  }
+  return { plugin: 'fish-memory', dir: path.join(home, 'fish-memory') };
+}
+
+/** 支持的记忆插件适配器。 */
+export const MEMORY_PLUGINS = {
+  'fish-memory': {
+    id: 'fish-memory',
+    label: '鱼的记忆（dsh-fish-memory）',
+    supportsMerge: true,
+    dir: () => path.join(dshHome(), 'fish-memory'),
+    match: fishMatch,
+    list: listFishFiles,
+    readItems: readFishEntries,
+  },
+  'soul-md': {
+    id: 'soul-md',
+    label: 'Soul.md 记忆（dsh-soul-md）',
+    supportsMerge: false,
+    dir: () => path.join(dshHome(), 'soul-md', 'memory'),
+    list: listSoulMdFiles,
+    readItems: readSoulMdItems,
+  },
+  auto: {
+    id: 'auto',
+    label: '自动识别记忆插件',
+    supportsMerge: false,
+    dir: (cfg) => resolveAutoDirAndAdapter(cfg).dir,
+    list: (dir, cfg) => {
+      const target = resolveAutoDirAndAdapter(cfg || { sources: { memory: { dir } } });
+      return (MEMORY_PLUGINS[target.plugin]?.list || listFishFiles)(dir || target.dir);
+    },
+    readItems: readGenericJsonItems,
+  },
+  'json-generic': {
+    id: 'json-generic',
+    label: '通用 JSON / JSONL 记忆',
+    supportsMerge: false,
+    dir: () => {
+      const home = dshHome();
+      for (const name of ['mnemon', 'memory']) {
+        const d = path.join(home, name);
+        if (statSafe(d)) return d;
+      }
+      return path.join(home, 'memory');
+    },
+    list: listGenericJsonFiles,
+    readItems: readGenericJsonItems,
+  },
+  markdown: {
+    id: 'markdown',
+    label: 'Markdown 笔记目录',
+    supportsMerge: false,
+    dir: () => path.join(dshHome(), 'memory'),
+    list: listMarkdownFiles,
+    readItems: readMarkdownItems,
+  },
+};
+
+export function resolveMemoryAdapter(cfg, { home = dshHome() } = {}) {
+  const c = memoryCfg(cfg);
+  const plugin = String(c.plugin || 'fish-memory');
+  if (!MEMORY_PLUGINS[plugin]) return null;
+  if (plugin === 'auto') {
+    const resolved = resolveAutoDirAndAdapter(cfg, home);
+    const adapter = MEMORY_PLUGINS[resolved.plugin] || MEMORY_PLUGINS['fish-memory'];
+    return { configured: 'auto', resolved: adapter.id, adapter, dir: resolved.dir };
+  }
+  const adapter = MEMORY_PLUGINS[plugin];
+  const dir = c.dir ? String(c.dir) : adapter.dir(cfg);
+  return { configured: plugin, resolved: adapter.id, adapter, dir };
+}
+
+/** 这个插件该去哪个目录找（配置里写了 dir 就用它，测试靠这个指临时目录）。 */
+export function memoryDir(cfg) {
+  const c = memoryCfg(cfg);
+  const plugin = String(c.plugin || 'fish-memory');
+  if (!MEMORY_PLUGINS[plugin]) return null;
+  if (c.dir) return String(c.dir);
+  return MEMORY_PLUGINS[plugin].dir(cfg);
+}
+
+/** 目录里有哪些会话/记忆文件，按「最近改过」排。 */
+export function listSessions(dir, plugin = 'fish-memory', cfg = null) {
+  if (plugin === 'auto') {
+    const resolved = resolveAutoDirAndAdapter({ ...cfg, sources: { ...(cfg?.sources || {}), memory: { ...(cfg?.sources?.memory || {}), dir: dir || cfg?.sources?.memory?.dir || '' } } });
+    return MEMORY_PLUGINS[resolved.plugin].list(dir || resolved.dir);
+  }
+  const p = MEMORY_PLUGINS[plugin];
+  if (!p) return [];
+  return p.list(dir, cfg);
 }
 
 /** 去重：只留字（不认标点空白），用双字重合度比。同样的意思换个说法（毕业设计/毕设）也算同一条。 */
@@ -92,9 +563,7 @@ function bigrams(s) {
   return set;
 }
 
-/** 两条记忆是不是同一件事：双字重合占「较短那条」的比例 ≥ 0.55。
- *  为什么不用对称的 Jaccard：真的重复条目常常是「短的那条被长的那条包住」（一条带规则、一条不带），
- *  对称算分会因为长度差被稀释。实测重复写法 0.59，不同的事 0.14。 */
+/** 两条记忆是不是同一件事：双字重合占「较短那条」的比例 ≥ 0.55。 */
 export function similarMemory(a, b) {
   const na = norm(a);
   const nb = norm(b);
@@ -108,63 +577,57 @@ export function similarMemory(a, b) {
   return hit / Math.min(A.size, B.size) >= 0.55;
 }
 
-function fmtDay(ts) {
-  const d = new Date(ts);
-  if (!Number.isFinite(d.getTime())) return '';
-  const p = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-}
-
-/**
- * 读一次记忆。返回：
- *   { ok, plugin, dir, mode, files, items:[{text, at, day, category, importance, tags}], reason }
- * 排序：长期画像（stable_profile）先、事件按时间倒序；同一条（指纹相同）只留一次。
- * 太老的事件（超过 maxAgeDays）不再带——记忆插件一共就没几条，带一堆半年前的旧事反而吵。
- */
-export function readMemory({ cfg, now = Date.now() } = {}) {
-  const c = memoryCfg(cfg);
-  const plugin = String(c.plugin || 'fish-memory');
-  if (c.enabled === false) return { ok: false, plugin, reason: 'MEMORY_OFF', items: [] };
-  const p = MEMORY_PLUGINS[plugin];
-  if (!p) return { ok: false, plugin, reason: 'MEMORY_PLUGIN_UNKNOWN', items: [] };
-
-  const dir = memoryDir(cfg);
-  const sessions = listSessions(dir, plugin);
-  if (!sessions.length) return { ok: false, plugin, dir, reason: 'MEMORY_EMPTY', items: [] };
-
-  const parsedCache = new Map();
-  const loadOne = (file) => {
-    if (!parsedCache.has(file)) parsedCache.set(file, readOne(file));
-    return parsedCache.get(file);
-  };
+function pickMemoryFiles(sessions, want, loadOne, resolvedPlugin) {
   const hasMemories = (s) => {
     const d = loadOne(s.file);
-    return Boolean(d && d.memories.some((m) => m && m.text && !d.deleted.has(m.id)));
+    return Boolean(d && d.length > 0);
   };
-
-  // 选哪一份：session 填了就按前缀锁定（支持 session id 或 ws_ 前缀）；all 全合并；
-  // 留空：工作区模式下同时取最近有记忆的 ws_*.json 与最近有记忆的 session-*.json（按文本去重）。
-  const want = String(c.session || '').trim();
-  let picked = sessions;
-  let mode = 'newest';
-  if (want === 'all') {
-    mode = 'all';
-  } else if (want) {
+  if (want === 'all') return { mode: 'all', picked: sessions };
+  if (want) {
     const hit = sessions.filter((s) => s.session.startsWith(want) || s.id?.startsWith(want) || s.name.startsWith(want));
-    if (!hit.length) return { ok: false, plugin, dir, reason: 'MEMORY_SESSION_NOT_FOUND', items: [] };
-    picked = hit;
-    mode = 'session';
-  } else {
+    if (!hit.length) return { mode: 'session', picked: [], notFound: true };
+    return { mode: 'session', picked: hit };
+  }
+  if (resolvedPlugin === 'fish-memory') {
     const wsFiles = sessions.filter((s) => s.kind === 'workspace');
     if (wsFiles.length) {
       const sessFiles = sessions.filter((s) => s.kind !== 'workspace');
       const newestWs = wsFiles.find(hasMemories) || wsFiles[0];
       const newestSess = sessFiles.find(hasMemories) || null;
-      picked = [newestWs, newestSess].filter(Boolean);
-    } else {
-      picked = sessions.slice(0, 1);
+      return { mode: 'newest', picked: [newestWs, newestSess].filter(Boolean) };
     }
+    return { mode: 'newest', picked: sessions.slice(0, 1) };
   }
+  const nonEmpty = sessions.filter(hasMemories);
+  return { mode: 'newest', picked: (nonEmpty.length ? nonEmpty : sessions).slice(0, 2) };
+}
+
+/**
+ * 读一次记忆。返回：
+ *   { ok, plugin, resolvedPlugin, dir, mode, files, items:[{text, at, day, category, importance, tags}], reason }
+ */
+export function readMemory({ cfg, now = Date.now() } = {}) {
+  const c = memoryCfg(cfg);
+  const plugin = String(c.plugin || 'fish-memory');
+  if (c.enabled === false) return { ok: false, plugin, reason: 'MEMORY_OFF', items: [] };
+  const resolved = resolveMemoryAdapter(cfg);
+  if (!resolved) return { ok: false, plugin, reason: 'MEMORY_PLUGIN_UNKNOWN', items: [] };
+
+  const { adapter, resolved: resolvedPlugin, dir } = resolved;
+  const sessions = adapter.list(dir, cfg);
+  if (!sessions.length) return { ok: false, plugin, resolvedPlugin, dir, reason: 'MEMORY_EMPTY', items: [] };
+
+  const parsedCache = new Map();
+  const loadOne = (file) => {
+    if (!parsedCache.has(file)) parsedCache.set(file, adapter.readItems(file));
+    return parsedCache.get(file);
+  };
+
+  const want = String(c.session || '').trim();
+  const sel = pickMemoryFiles(sessions, want, loadOne, resolvedPlugin);
+  if (sel.notFound) return { ok: false, plugin, resolvedPlugin, dir, reason: 'MEMORY_SESSION_NOT_FOUND', items: [] };
+  const picked = sel.picked;
+  const mode = sel.mode;
 
   const max = Math.min(8, Math.max(1, Number(c.max) || 3));
   const maxAgeDays = Math.min(3650, Math.max(1, Number(c.maxAgeDays) || 120));
@@ -172,21 +635,19 @@ export function readMemory({ cfg, now = Date.now() } = {}) {
 
   const items = [];
   for (const s of picked) {
-    const data = loadOne(s.file);
-    if (!data) continue;
-    for (const m of data.memories) {
-      if (!m || !m.text || data.deleted.has(m.id)) continue;
-      const ts = Date.parse(m.at || m.createdAt || '');
+    const entries = loadOne(s.file);
+    if (!entries) continue;
+    for (const m of entries) {
+      if (!m || !m.text) continue;
       const stable = m.category === 'stable_profile';
-      // 长期事实不看过没过期；事件太老就不带了，除非它被标得很重要
-      if (!stable && Number.isFinite(ts) && ts < horizon && Number(m.importance || 0) < 0.8) continue;
+      if (!stable && Number.isFinite(m.at) && m.at < horizon && Number(m.importance || 0) < 0.8) continue;
       items.push({
-        text: String(m.text).slice(0, 200),
-        at: Number.isFinite(ts) ? ts : null,
-        day: Number.isFinite(ts) ? fmtDay(ts) : '',
+        text: m.text,
+        at: m.at ?? null,
+        day: m.day || '',
         category: m.category || 'event',
         importance: Number(m.importance) || 0,
-        tags: Array.isArray(m.tags) ? m.tags.slice(0, 4) : [],
+        tags: Array.isArray(m.tags) ? m.tags : [],
       });
     }
   }
@@ -199,14 +660,13 @@ export function readMemory({ cfg, now = Date.now() } = {}) {
     return (b.at || 0) - (a.at || 0);
   });
 
-  // 排完再去重：长期画像先留下，同一件事换个说法只算一条。
   const kept = [];
   for (const it of items) {
     if (kept.some((k) => similarMemory(k.text, it.text))) continue;
     kept.push(it);
   }
 
-  return { ok: true, plugin, dir, mode, files: picked.map((s) => s.name), items: kept.slice(0, max) };
+  return { ok: true, plugin, resolvedPlugin, dir, mode, files: picked.map((s) => s.name), items: kept.slice(0, max) };
 }
 
 /** 折成能进 prompt 的几句。不带「记忆插件」这种说法——她听的是话，不是系统名。 */
@@ -228,32 +688,22 @@ export function memoryLine(mem) {
     return `没读到（${why || mem.reason}）`;
   }
   const n = mem.items.length;
-  return `${mem.plugin} ${n} 条（${mem.files.join(', ')}）`;
+  const tag = mem.resolvedPlugin && mem.resolvedPlugin !== mem.plugin ? `${mem.plugin}→${mem.resolvedPlugin}` : mem.plugin;
+  return `${tag} ${n} 条（${mem.files.join(', ')}）`;
 }
 
-function readRawJson(file) {
-  try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch {
-    return null;
-  }
-}
-
-function activeEntries(raw) {
-  if (!raw || typeof raw !== 'object') return [];
-  const memories = Array.isArray(raw.memories) ? raw.memories : [];
-  const deleted = new Set((Array.isArray(raw.deleted) ? raw.deleted : []).map((d) => (typeof d === 'string' ? d : d?.id)).filter(Boolean));
-  return memories.filter((m) => m && m.text && !deleted.has(m.id));
-}
-
-/** 给设置页与工具返回可用工作区/会话文件、当前生效文件及合并预览。 */
+/** 给设置页与工具返回可用文件、当前生效文件及合并预览。 */
 export function inspectMemory({ cfg, now = Date.now() } = {}) {
   const c = memoryCfg(cfg);
   const plugin = String(c.plugin || 'fish-memory');
-  const dir = memoryDir(cfg);
-  const sessions = listSessions(dir, plugin);
+  const resolved = resolveMemoryAdapter(cfg);
+  const adapter = resolved?.adapter || null;
+  const resolvedPlugin = resolved?.resolved || plugin;
+  const dir = resolved?.dir || '';
+  const supportsMerge = Boolean(adapter?.supportsMerge);
+  const sessions = adapter ? adapter.list(dir, cfg) : [];
   const files = sessions.map((s) => {
-    const entries = activeEntries(readRawJson(s.file));
+    const entries = adapter.readItems(s.file) || [];
     return {
       id: s.id,
       name: s.name,
@@ -264,22 +714,25 @@ export function inspectMemory({ cfg, now = Date.now() } = {}) {
       count: entries.length,
       stableCount: entries.filter((m) => m.category === 'stable_profile').length,
       sample: entries.slice(-2).map((m) => String(m.text).replace(/\s+/g, ' ').trim().slice(0, 38)).filter(Boolean),
-      hasBackup: s.kind === 'workspace' && fs.existsSync(`${s.file}.bak-before-merge`),
+      hasBackup: supportsMerge && s.kind === 'workspace' && fs.existsSync(`${s.file}.bak-before-merge`),
     };
   });
   const mem = readMemory({ cfg, now });
-  const wsFiles = files.filter((f) => f.kind === 'workspace');
+  const wsFiles = supportsMerge ? files.filter((f) => f.kind === 'workspace') : [];
   const defaultTarget = (wsFiles.find((f) => f.count > 0) || wsFiles[0] || null)?.name || '';
   const selectedWs = wsFiles.find((f) => f.name === c.session || f.id === c.session) || null;
   const mergeTarget = selectedWs?.name || defaultTarget;
-  const mergeableSessions = files.filter((f) => f.kind === 'session' && f.count > 0).length;
-  const preview = mergeTarget && mergeableSessions > 0
+  const mergeableSessions = supportsMerge ? files.filter((f) => f.kind === 'session' && f.count > 0).length : 0;
+  const preview = supportsMerge && mergeTarget && mergeableSessions > 0
     ? mergeMemorySessions({ cfg, targetFile: mergeTarget, dryRun: true })
     : null;
   return {
     ok: true,
     enabled: c.enabled !== false,
     plugin,
+    resolvedPlugin,
+    label: adapter?.label || plugin,
+    supportsMerge,
     dir: dir || '',
     sessionSetting: String(c.session || '').trim(),
     active: {
@@ -297,15 +750,31 @@ export function inspectMemory({ cfg, now = Date.now() } = {}) {
   };
 }
 
-/**
- * 只增不删地把指定（或全部）历史 session-*.json 里的有效记忆合并进目标工作区 ws_*.json（按 ID 与文本去重，写前保留 .bak-before-merge）。
- * dryRun=true 时只统计预计新增与跳过数，不写磁盘。原 session-*.json 完全不动。
- */
-export function mergeMemorySessions({ cfg, targetFile = '', sourceFiles = null, backup = true, dryRun = false } = {}) {
+export function detectMemory(cfg) {
   const c = memoryCfg(cfg);
   const plugin = String(c.plugin || 'fish-memory');
-  const dir = memoryDir(cfg);
-  const sessions = listSessions(dir, plugin);
+  if (c.enabled === false) return { ready: false, plugin, note: '记忆读取已关' };
+  const resolved = resolveMemoryAdapter(cfg);
+  if (!resolved) return { ready: false, plugin, note: `未识别的记忆插件「${plugin}」` };
+  const { adapter, resolved: resolvedPlugin, dir } = resolved;
+  const files = adapter.list(dir, cfg);
+  if (!files.length) {
+    return { ready: false, plugin, resolvedPlugin, note: `${adapter.label}（未找到记忆文件）` };
+  }
+  const tag = plugin === 'auto' ? `自动命中 ${adapter.label}` : adapter.label;
+  return { ready: true, plugin, resolvedPlugin, count: files.length, note: `${tag}（${files.length} 份）` };
+}
+
+/**
+ * 只增不删地把指定（或全部）历史 session-*.json 里的有效记忆合并进目标工作区 ws_*.json（仅支持 fish-memory）。
+ */
+export function mergeMemorySessions({ cfg, targetFile = '', sourceFiles = null, backup = true, dryRun = false } = {}) {
+  const resolved = resolveMemoryAdapter(cfg);
+  if (!resolved?.adapter?.supportsMerge) {
+    return { ok: false, reason: 'MERGE_NOT_SUPPORTED', added: 0, skipped: 0 };
+  }
+  const dir = resolved.dir;
+  const sessions = listFishFiles(dir);
   const wsFiles = sessions.filter((s) => s.kind === 'workspace');
   if (!wsFiles.length) return { ok: false, reason: 'NO_WORKSPACE_FILE', added: 0, skipped: 0 };
 
@@ -315,7 +784,7 @@ export function mergeMemorySessions({ cfg, targetFile = '', sourceFiles = null, 
     target = wsFiles.find((s) => s.name === want || s.id === want || s.file === want) || null;
     if (!target) return { ok: false, reason: 'TARGET_WORKSPACE_NOT_FOUND', added: 0, skipped: 0 };
   } else {
-    target = wsFiles.find((s) => activeEntries(readRawJson(s.file)).length > 0) || wsFiles[0];
+    target = wsFiles.find((s) => readFishRawActive(s.file).length > 0) || wsFiles[0];
   }
 
   const targetRaw = readRawJson(target.file);
@@ -337,7 +806,7 @@ export function mergeMemorySessions({ cfg, targetFile = '', sourceFiles = null, 
   let added = 0;
   let skipped = 0;
   for (const src of sessFiles) {
-    const entries = activeEntries(readRawJson(src.file));
+    const entries = readFishRawActive(src.file);
     for (const m of entries) {
       if ((m.id && (existingIds.has(m.id) || deletedIds.has(m.id))) ||
           existingTexts.some((t) => similarMemory(t, m.text))) {
@@ -373,12 +842,12 @@ export function mergeMemorySessions({ cfg, targetFile = '', sourceFiles = null, 
   };
 }
 
-/** 若存在 .bak-before-merge，将目标工作区记忆回滚到最近一次合并前的状态，并移除该一次性备份标记。 */
+/** 若存在 .bak-before-merge，将目标工作区记忆回滚到最近一次合并前的状态（仅支持 fish-memory）。 */
 export function restoreMemoryBackup({ cfg, targetFile = '' } = {}) {
-  const c = memoryCfg(cfg);
-  const plugin = String(c.plugin || 'fish-memory');
-  const dir = memoryDir(cfg);
-  const sessions = listSessions(dir, plugin);
+  const resolved = resolveMemoryAdapter(cfg);
+  if (!resolved?.adapter?.supportsMerge) return { ok: false, reason: 'MERGE_NOT_SUPPORTED' };
+  const dir = resolved.dir;
+  const sessions = listFishFiles(dir);
   const wsFiles = sessions.filter((s) => s.kind === 'workspace');
   const want = String(targetFile || '').trim();
   const target = want
@@ -397,6 +866,6 @@ export function restoreMemoryBackup({ cfg, targetFile = '' } = {}) {
     ok: true,
     target: target.name,
     targetFile: target.file,
-    totalRestored: activeEntries(bakRaw).length,
+    totalRestored: readFishRawActive(target.file).length,
   };
 }

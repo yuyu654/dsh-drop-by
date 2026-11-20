@@ -115,3 +115,71 @@ test('HOST_LLM_EMPTY retries once with 4096 token budget and preserves note if s
   assert.equal(failed.reason, 'HOST_LLM_EMPTY');
   assert.match(failed.note, /finish=max-tokens/);
 });
+
+test('lightweight exploration runs a single shallow study without mutating thread or requiring next, and avoids recent topics', async () => {
+  const deepBefore = await exploreRound({
+    persona, now: 100,
+    generate: async () => result({ action: 'start', topic: '长线课题', progress: '第一步想法', next: '第二步验证' }),
+  });
+
+  let fetchCalls = 0;
+  const media = {
+    web: true,
+    calls: [],
+    collect: async (_kind, _query, opts) => {
+      assert.equal(opts?.light, true);
+      fetchCalls++;
+      return [{ url: 'https://example.org/espresso', title: '浅烘豆萃取温度', evidence: '网页正文' }];
+    },
+  };
+  const light1 = await exploreRound({
+    persona,
+    previous: deepBefore.state,
+    now: 200,
+    timing: { mode: 'light' },
+    media,
+    generate: async ({ prompt }) => {
+      if (prompt.includes('挑一件简单')) return result({ kind: 'web', query: '浅烘豆萃取温度' });
+      assert.match(prompt, /轻量化自主探索/);
+      assert.doesNotMatch(prompt, /next/);
+      return result({
+        action: 'light',
+        topic: '浅烘豆水温',
+        summary: '浅烘豆用 92 度左右出酸甜会更干净。',
+        share: '刚看到说浅烘豆用九十二度冲比沸水更顺口，你平时手冲试过降一点水温吗？',
+        progressSourceIndex: 0,
+        sourceIndex: 0,
+      });
+    },
+  });
+  assert.equal(light1.ok, true);
+  assert.equal(light1.action, 'light');
+  assert.equal(fetchCalls, 1);
+  // 不破坏原有长线 thread，且不生成 next
+  assert.equal(light1.state.thread.topic, '长线课题');
+  assert.equal(light1.state.thread.next, '第二步验证');
+  assert.equal(light1.state.light.topic, '浅烘豆水温');
+  assert.equal(light1.state.light.next, undefined);
+  assert.equal(light1.state.lastRun.mode, 'light');
+  assert.match(explorationShare(light1.state, persona, 201).line, /浅烘豆/);
+
+  const lightProgress = explorationProgress(light1.state, persona, 201, { mode: 'light' });
+  assert.equal(lightProgress.length, 1);
+  assert.equal(lightProgress[0].mode, 'light');
+  assert.equal(lightProgress[0].topic, '浅烘豆水温');
+  assert.equal(lightProgress[0].evidence, '网页正文');
+
+  // 下一轮轻量探索应把「浅烘豆水温」放进避重列表，且不重复
+  const light2 = await exploreRound({
+    persona,
+    previous: light1.state,
+    now: 300,
+    timing: { mode: 'light' },
+    generate: async ({ prompt }) => {
+      assert.match(prompt, /浅烘豆水温/);
+      return result({ action: 'light', topic: '雨天书店闲逛', summary: '雨天看老推理短篇很舒服。', share: '' });
+    },
+  });
+  assert.equal(light2.ok, true);
+  assert.deepEqual(light2.state.lightHistory.map((x) => x.topic), ['浅烘豆水温', '雨天书店闲逛']);
+});

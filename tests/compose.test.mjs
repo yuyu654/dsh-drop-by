@@ -414,7 +414,7 @@ test('步数 prompt：没动的那一头不许说教，活动好的那一头不�
 test('renderTemplate：深夜 / 坐太久 / 刚回来都有模板', () => {
   assert.match(renderTemplate(topicOf('lateUp', { at: '23:40' }), ctxOf()), /23:40/);
   assert.match(renderTemplate(topicOf('longSit', { since: '13:20' }), ctxOf()), /13:20/);
-  assert.match(renderTemplate(topicOf('backHome', {}), ctxOf()), /刚回来/);
+  assert.match(renderTemplate(topicOf('backHome', {}), ctxOf()), /有空/);
 });
 
 test('buildPrompt：深夜这条不许讲早睡道理，坐太久不许当妈', () => {
@@ -551,19 +551,18 @@ test('compose：模型两次都只吐「那条」→ 要么不发，要么退回
   }
 });
 
-test('composeDraft / compose：share 探索内容拦公式黑话和无接话口子的独白，有接话口子的大白话放行', async () => {
+test('composeDraft / compose：share 探索内容拦公式黑话，允许自然讲完一个发现', async () => {
   const cfg = { content: { mode: 'llm', maxChars: 60, topics: {} } };
   const exploreTopic = topicOf('share', { section: '探索', at: Date.now() });
 
-  // 1. 纯独白定论（无问句、无接话邀请）被 SHARE_NO_HOOK 拦掉
+  // 1. 分享不需要靠提问收尾。
   const closed = composeDraft({
     ctx: ctxOf(),
     topic: exploreTopic,
     cfg,
     draft: '插排上那只功率计量，别只盯着超没超线——把超出的那点攒成热量，先热起来的才先跳。',
   });
-  assert.equal(closed.ok, false);
-  assert.equal(closed.violations.some((v) => v.code === 'SHARE_NO_HOOK'), true);
+  assert.equal(closed.ok, true);
 
   // 2. 带公式符号被 SHARE_TOO_TECHNICAL 拦掉
   const formula = composeDraft({
@@ -584,7 +583,7 @@ test('composeDraft / compose：share 探索内容拦公式黑话和无接话口�
   });
   assert.equal(good.ok, true);
 
-  // 4. compose 重试闭环：第一版给无钩子独白被退回，第二版改出问句通过
+  // 4. compose 重试闭环：先退回公式，再接受自然表达
   let turn = 0;
   const retried = await compose({
     ctx: ctxOf(),
@@ -596,14 +595,14 @@ test('composeDraft / compose：share 探索内容拦公式黑话和无接话口�
     generate: async () => {
       turn += 1;
       return turn === 1
-        ? { ok: true, text: '插排功率计量其实按发热累积来算才准。', ms: 3 }
+        ? { ok: true, text: '插排的热记忆方程 ds/dt=(P/Pn)^A-1。', ms: 3 }
         : { ok: true, text: '宿舍插排老是忽然跳闸挺烦的，你那边也这样吗？', ms: 3 };
     },
   });
   assert.equal(retried.ok, true);
   assert.equal(retried.source, 'llm-retry');
 
-  // 5. actionRetry / loginSite 不受 share 接话钩子限制误伤
+  // 5. 换源请示维持独立的写作要求
   const retryDraft = composeDraft({
     ctx: ctxOf(),
     topic: topicOf('share', { actionRetry: true, at: Date.now() }),

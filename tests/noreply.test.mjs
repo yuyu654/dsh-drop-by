@@ -306,3 +306,25 @@ test('由头：抖音分享那条走另一句模板；她刚说完话不放行�
   // 模板不写时间词（看不出真实间隔），但必须说清是抖音那条（2026-11-07 修）
   assert.equal(renderTemplate(t, ctx), '在抖音给你发的那个，看了没。');
 });
+
+test('等用户发图本身不能支持到点追问', async () => {
+  const now = at(11, 5, 20);
+  const cand = { channel: 'qq', at: now - 180 * 60_000, silenceMin: 180, text: '改好了发图，我等你' };
+  const verdict = await judgeAway({ cand, cfg: cfgOf(), now, tz: TZ,
+    ctx: { her: { lastText: '好，我改好给你' } },
+    generate: async () => ({ ok: true, text: '{"away":false,"until":null,"followUp":false}' }),
+  });
+  assert.equal(noReplyDue({ cand: { ...cand, verdict }, cfg: cfgOf(), now, tz: TZ }).ok, false);
+});
+
+test('用户明确约了提醒时，才接受引用实际约定的追问判断', async () => {
+  const now = at(11, 5, 20);
+  const cand = { channel: 'qq', at: now - 180 * 60_000, silenceMin: 180, text: '好，到时叫你' };
+  const ctx = { her: { lastText: '晚点提醒我交一下作业' } };
+  for (const [quote, expected] of [['晚点提醒我交一下作业', true], ['改完催我发图', false]]) {
+    const verdict = await judgeAway({ cand, ctx, cfg: cfgOf(), now, tz: TZ,
+      generate: async () => ({ ok: true, text: JSON.stringify({ away: false, followUp: true, quote }) }),
+    });
+    assert.equal(noReplyDue({ cand: { ...cand, verdict }, cfg: cfgOf(), now, tz: TZ }).ok, expected);
+  }
+});

@@ -1032,7 +1032,8 @@ async function main() {
     // 手动看一眼「从记忆插件里读到了什么」：不发消息、不叫模型，只读。
     const cfg = loadConfig();
     const mem = readMemory({ cfg, now: Date.now() });
-    console.log(`=== 记忆（${cfg.sources?.memory?.plugin || 'fish-memory'}）===`);
+    const label = mem.resolvedPlugin && mem.resolvedPlugin !== mem.plugin ? `${mem.plugin}→${mem.resolvedPlugin}` : (cfg.sources?.memory?.plugin || 'fish-memory');
+    console.log(`=== 记忆（${label}）===`);
     console.log(`  ${memoryLine(mem)}`);
     if (mem.dir) console.log(`  目录 ${mem.dir}`);
     if (mem.mode) console.log(`  取法 ${mem.mode === 'all' ? '全部会话合并' : mem.mode === 'session' ? '指定会话' : '最近改过的那份'}`);

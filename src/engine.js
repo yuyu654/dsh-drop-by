@@ -25,7 +25,7 @@ import { chatChanging, readyDouyinBinding } from './channels/chat-switch.js';
 import { recordActionOutbound } from './action-proposal.js';
 import { appendEmotionInbox } from './emotion-sync.js';
 import { buildContext, selfMtime, lastHerMessage } from "./context.js";
-import { pickTopic, withForwardContent, fishStale, tierOfSlot, answerableOn } from "./topics.js";
+import { pickTopic, topicCandidates, withForwardContent, fishStale, tierOfSlot, answerableOn } from "./topics.js";
 import { chitchatGate, chitchatTopic, noteChitchatSent, bareRemainingToday, chitchatYield, chitchatJudgeNo } from "./chitchat.js";
 import { restFor } from "./bedtime.js";
 import { pickSeed, conversationLine } from "./seeds.js";
@@ -281,12 +281,8 @@ export async function tick({
 
   // 连着几条她都没接，就把间隔拉长一点，别在没人应的时候一直敲。
   const extraGapMin = adaptiveExtraMin(st, cfg);
-  const decideCfg = extraGapMin
-    ? { ...cfg, rules: { ...cfg.rules, minGapMin: (Number(cfg.rules?.minGapMin) || 240) + extraGapMin } }
-    : cfg;
-
   const d = decide({
-    cfg: decideCfg,
+    cfg,
     now,
     idleSec,
     locked: isScreenLocked(sys),
@@ -314,6 +310,7 @@ export async function tick({
   //    任何一步失败都退回 skip，并且**不消耗当日配额**（见下面计数那块）。
   let ctx = null;
   let topic = null;
+  let candidates = [];
   let content = null;
   let persona = null;
   let activity = null;
@@ -354,10 +351,10 @@ export async function tick({
           cfg,
         );
       }
-      // —— 「我主动发过、她一直没回」这条追问。
-      //    先挑候选（QQ pending / 抖音分享），再让模型判一次「她是去忙了还是没打算回」。
-      //    判过就缓存在 st.noReply 里（同一条不重复判），判不准/没开模型都当「不是忙」。
+      // 等待型候选只在有用户约定时入选。判断按原消息缓存，后续来信会让旧候选失效。
       ctx.noReply = null;
+      const rejectedTopics = [];
+      d.rejectedTopics = rejectedTopics;
       if (cfg.content?.topics?.noReply !== false && !busy) {
         // 通道侧的 lastUserTs 有时读不到（比如只在 QQ 上说过、这一拍抖音优先），
         // 用 ctx.her（对话解析出的「她最后一句」）兜底，否则会拿一条她其实已经应过的旧消息去追问。
@@ -367,7 +364,7 @@ export async function tick({
         const cand = pickNoReply({ st, cfg, now, herTs, herOnDouyin });
         if (cand && st.content?.lastNoReplyFor !== cand.key) {
           let verdict = st.noReply && st.noReply.key === cand.key ? st.noReply.verdict || null : null;
-          if (!verdict && cfg.content?.topics?.noReplyJudge !== false) {
+          if ((!verdict || (verdict.judge === 'llm' && verdict.followUp == null)) && cfg.content?.topics?.noReplyJudge !== false) {
             const afterHerMin = Math.max(0, Number(cfg.content?.topics?.noReplyAfterHerMin ?? 120));
             const herOk = !herTs || now - herTs >= afterHerMin * 60000;
             if (herOk) {
@@ -375,7 +372,11 @@ export async function tick({
               st.noReply = { key: cand.key, verdict };
             }
           }
-          ctx.noReply = { ...cand, verdict };
+          if (verdict?.followUp === true && cfg.content?.topics?.noReplyJudge !== false) {
+            ctx.noReply = { ...cand, verdict };
+          } else {
+            rejectedTopics.push({ slot: 'noReply', reason: verdict?.followUp === false ? 'NO_FOLLOWUP_AGREEMENT' : 'FOLLOWUP_UNCONFIRMED' });
+          }
         }
       }
       // —— L2/L3/结构化信号必须在 compose 之前算：否则模型写的这句话里永远没有「她这会儿在干什么」。
@@ -412,10 +413,33 @@ export async function tick({
       if (screen) ctx.screen = screen;
       if (signals) ctx.signals = signals;
       persona = loadPersona({ cfg });
-      topic = pickTopic(ctx, cfg, now, st);
+      const offers = topicCandidates(ctx, cfg, now, st, (slot) => rejectedTopics.push({ slot, reason: 'TOPIC_REPEATED' }));
+      let compare = d.track === 'proactive' && cfg.rules?.judge?.enabled === true;
+      const gapFor = (item) => checkTierGap({
+        cfg, now,
+        tier: tierOfSlot(item.slot),
+        lastByTier: lastSendByTier, lastSendTs, extraMin: extraGapMin,
+        triggered: triggers.fired.length > 0,
+      });
+      for (const item of offers) {
+        const responding = item.slot === 'reply' || item.slot === 'forward';
+        if (responding) compare = false;
+        const gap = gapFor(item);
+        if (!gap.ok) {
+          rejectedTopics.push({ slot: item.slot, reason: 'GAP_TOO_SHORT' });
+          d.gap ??= gap;
+          // 回复必须先过本档限制。
+          if (responding || d.track === 'reply') break;
+          continue;
+        }
+        candidates.push(item);
+        if (!compare || candidates.length === 3) break;
+      }
+      topic = candidates[0] || null;
       if (!topic && d.track === 'proactive' && !useSim && cfg.send?.enabled === true &&
           ch.list?.some((c) => c.channel === channel && c.ok && c.lastUserTs > 0)) {
-        topic = projectQuestion(cfg, st);
+        const project = projectQuestion(cfg, st);
+        if (project && gapFor(project).ok) topic = project;
       }
       // —— 哪来哪回：只有 QQ 这一条发送路。她在抖音/主会话说的话只当信号，
       //    「回她」的由头不能拿到 QQ 上发——她会以为我在答非所问。
@@ -426,15 +450,10 @@ export async function tick({
         d.reason = 'REPLY_ON_OTHER_CHANNEL';
         topic = null;
       }
-      // —— 随口话的「让位」也记一笔：这一拍有真由头，最低优先级的候选根本没上桌。
-      //    只记账，不改任何判定；开关关着不写，跟加它之前逐字节一致。
-      if (topic && d.decision === 'send' && cfg.rules?.chitchat?.enabled === true) {
-        d.chitchat = chitchatYield(topic.slot);
-      }
-      // —— 随口说话（阶段 1）：别的由头一个都没挑到时，最低优先级的候选。
-      //    开关关着（默认）时这一段什么都不做，NO_TOPIC 的行为与加它之前逐字节一致。
-      //    刚被「哪来哪回」拦下这一拍也不补随口话：她现在在别的通道上，这边开口更怪。
-      if (!topic && d.decision === 'send') {
+      // 普通闲聊使用自己的设置和额度。只有主动轨道可以把它加入候选。
+      let casual = null;
+      let casualMeta = null;
+      if (cfg.rules?.chitchat?.enabled === true && d.track === 'proactive' && d.decision === 'send' && (!topic || (compare && !['projectCheckIn', 'examSoon'].includes(topic.slot)))) {
         // 睡着时段先用鱼鱼邮件推（7 天中位数，不够 3 天退回 23:00–07:00），一天只推一次。
         const rest = restFor({ cfg, now, tz, st });
         const g = chitchatGate({ cfg, now, st, ctx, tz, rest });
@@ -443,7 +462,7 @@ export async function tick({
           const pk = pickSeed({ cfg, persona, now, st, tz });
           const seed = pk.seed;
           const bareLeft = bareRemainingToday(st, now, tz, cfg);
-          topic = chitchatTopic(cfg, {
+          casual = chitchatTopic(cfg, {
             allowBare: bareLeft > 0,
             bareLeft,
             seed: seed?.text || '',
@@ -453,7 +472,7 @@ export async function tick({
             conversation: conversationLine(ctx),
           });
           st.chitchat = g.state;
-          d.chitchat = {
+          casualMeta = {
             produced: true,
             seed: seed ? { kind: seed.kind, day: seed.day, id: seed.id } : null,
             seedWhy: pk.why,
@@ -463,27 +482,20 @@ export async function tick({
           d.chitchat = { reason: g.reason, why: g.why };
         }
       }
-      // —— 阶段 1.1：间隔分档。由头是刚挑出来的，所以这一闸放在这里；
-      //    decide 那边只兜 replyMin 这道全局地板（跨档不许比回复档还密）。
-      if (topic && cfg.rules?.gapByTier?.enabled === true) {
-        const gapTier = triggers.fired.length ? 'event' : tierOfSlot(topic.slot);
-        const gap = checkTierGap({
-          cfg,
-          now,
-          tier: gapTier,
-          lastByTier: lastSendByTier,
-          lastSendTs,
-          extraMin: extraGapMin,
-          triggered: triggers.fired.length > 0,
-        });
-        d.tier = gapTier;
-        d.gap = gap;
-        if (!gap.ok) {
-          d.decision = 'skip';
-          d.reason = 'GAP_TOO_SHORT';
-          topic = null;
+      if (casual) {
+        const gap = gapFor(casual);
+        if (gap.ok) {
+          candidates.push(casual);
+          topic ||= casual;
+        } else {
+          rejectedTopics.push({ slot: casual.slot, reason: 'GAP_TOO_SHORT' });
+          d.gap ??= gap;
         }
       }
+      if (topic && topic.slot !== 'chitchat' && cfg.rules?.chitchat?.enabled === true) {
+        d.chitchat = chitchatYield(topic.slot);
+      }
+      if (topic?.slot === 'chitchat') d.chitchat = casualMeta;
       // —— 防重复（第一道）：reply/forward 的前提是「她那条还没人应」。
       //    但那是这一拍**开头**读到的快照；插件可能在这几秒里已经回过了
       //    （driver 是「生成 → sendQQ → 写 qq-history」，history 那步失败还只是静默 catch）。
@@ -530,58 +542,86 @@ export async function tick({
           topic = withForwardContent(topic, viewed);
         } else {
           topic = pickTopic(ctx, cfg, now, { ...st, skipSlots: [...(st.skipSlots || []), 'forward'] });
+          candidates = topic ? [topic] : [];
+          if (topic) {
+            const gap = gapFor(topic);
+            if (!gap.ok) {
+              d.decision = 'skip';
+              d.reason = 'GAP_TOO_SHORT';
+              d.gap = gap;
+            }
+          }
         }
       }
-      const moodEligible = d.track === 'proactive' && !['projectCheckIn', 'noReply', 'examSoon', 'examReview', 'agenda'].includes(topic?.slot);
-      const { explored, portrait } = moodEligible ? resolveMoodState({ cfg, persona, now }) : { explored: null, portrait: '' };
-      // 注：探索临时感受 explored 不进 judge（见 judge-engine.test），只在批准后润色语气；情绪插件持久化画像可作底色参考
-      const judgeMoodBits = portrait ? `画像状态：${portrait}` : '';
-      // —— 阶段 2：规则允许开口之后，先让模型看一眼整份处境，自己决定说不说。
-      //    开关默认关；关着这一整段不执行，行为与加它之前完全一样。
-      //    模型说「不说」→ 记 NO_TOPIC（这是它的决定，不是没由头）；判断失败 → 退回规则链。
-      // 随口说话已开启但被额度/睡眠窗口/冷却拦下时，不能让 topic=null 再绕进 judge 发一条 slot=null 漏网。
-      if (!topic && d.decision === 'send' && d.chitchat?.reason) {
+
+      if (!topic && d.decision === 'send') {
         d.decision = 'skip';
-        d.reason = 'NO_TOPIC';
+        d.reason = d.gap?.ok === false ? 'GAP_TOO_SHORT' : 'NO_TOPIC';
       }
-      const mediaShare = topic?.slot === 'share' ? topic.evidence?.source : null;
+      const moodFor = (item) => d.track === 'proactive' &&
+        !['projectCheckIn', 'noReply', 'examSoon', 'examReview', 'agenda'].includes(item?.slot);
+      const mood = candidates.some(moodFor) ? resolveMoodState({ cfg, persona, now }) : {};
+      const comparing = compare && topic?.slot !== 'projectCheckIn';
       if (cfg.rules?.judge?.enabled === true && d.decision === 'send' && topic?.slot !== 'projectCheckIn') {
-        const snapshot = buildSnapshot({ ctx, topic, cfg, st, now, tz, coarseDesktop: d.track === 'proactive' });
-        const baseJudgeInput = topic?.evidence?.actionRetry
-          ? snapshot + '\n这是一次真实的换源请示。若适合开口，draft 只用人设口吻问用户是否同意我换来源找这份正文，不要改成别的话题。'
-          : mediaShare
-          ? snapshot + '\n这条附有固定来源。如果想聊别的事就选择不发。批准时只写这条内容为什么值得分享，严格按来源类型表述，正文不写网址。'
+        const cards = comparing ? candidates.map((item) => ({
+          id: item.slot,
+          label: item.label,
+          facts: item.brief,
+          ...(item.slot === 'chitchat' ? {
+            seed: item.evidence.seed,
+            seedKind: item.evidence.seedKind,
+            conversation: item.evidence.conversation,
+            allowBare: item.evidence.allowBare,
+          } : {}),
+        })) : [];
+        const snapshot = buildSnapshot({ ctx, topic: cards.length > 1 ? null : topic, cfg, st, now, tz,
+          coarseDesktop: d.track === 'proactive', showTopic: !comparing });
+        const judgeInput = mood.portrait
+          ? `${snapshot}\n当前心情底色（仅作语气参考，不得当作单独开口由头或直接念出）：${mood.portrait}`
           : snapshot;
-        const judgeInput = judgeMoodBits
-          ? `${baseJudgeInput}\n当前心情底色（仅作语气参考，不得当作单独开口由头或直接念出）：${judgeMoodBits}`
-          : baseJudgeInput;
-        verdict = await judgeDecision({ snapshot: judgeInput, persona, cfg, generate: gen || llmGenerate, llmReady });
+        verdict = await judgeDecision({ snapshot: judgeInput, persona, candidates: cards, cfg, generate: gen || llmGenerate, llmReady });
+        if (verdict.ok && verdict.say && comparing) {
+          topic = candidates.find((item) => item.slot === verdict.candidateId);
+          if (topic.slot === 'chitchat') d.chitchat = casualMeta;
+          else if (cfg.rules?.chitchat?.enabled === true) d.chitchat = chitchatYield(topic.slot);
+        }
         // state 只存结论，不存快照（快照几百字，state 每拍落盘）
         st.judge = {
           at: now,
           say: verdict.ok ? verdict.say : null,
           angle: verdict.angle || '',
           why: verdict.why || '',
-          fallback: !verdict.ok,
+          fallback: !verdict.ok && verdict.reason !== 'JUDGE_INVALID_CANDIDATE' && topic?.slot !== 'chitchat',
           reason: verdict.ok ? '' : verdict.reason || '',
           note: verdict.ok ? '' : String(verdict.note || ''),
           slot: topic?.slot || null,
           ms: verdict.ms ?? null,
         };
-        if (verdict.ok && verdict.say === false) {
+        if (verdict.reason === 'JUDGE_INVALID_CANDIDATE' || (!verdict.ok && topic?.slot === 'chitchat')) {
+          d.decision = 'skip';
+          d.reason = verdict.reason === 'JUDGE_INVALID_CANDIDATE' ? verdict.reason : 'CHITCHAT_NO_MODEL';
+        } else if (verdict.ok && verdict.say === false) {
           d.decision = 'skip';
           // 随口话被模型否掉，单独记一个码：它的被拦分布要跟「真没由头」分开算。
           if (topic?.slot === 'chitchat') {
             d.reason = 'CHITCHAT_JUDGE_NO';
             d.chitchat = chitchatJudgeNo(verdict.why);
           } else {
-            d.reason = 'NO_TOPIC';
+            d.reason = 'JUDGE_NO_SEND';
           }
           topic = null;
         }
       }
       // 被防重复拦下时 topic 已经置空、判定改成 skip，这里就不要再叫模型了。
       if (d.decision === 'send') {
+        const gap = gapFor(topic);
+        if (gap.enabled) {
+          d.tier = gap.tier;
+          d.gap = gap;
+        }
+        const moodEligible = moodFor(topic);
+        const { explored, portrait } = moodEligible ? mood : {};
+        const mediaShare = topic?.slot === 'share' ? topic.evidence?.source : null;
         // 画像心情（已由情绪插件脱敏）与探索原话（需过 toneOf 去术语）分开传，避免 Lv1 等被误删
         const toneCtx = (explored?.text || portrait)
           ? {
@@ -657,6 +697,12 @@ export async function tick({
       const ob = outboundFor(ctx?.her?.lastChannel, { cfg });
       if (answeredAlready({ herTs: ctx?.her?.lastTs, out: ob })) guardHit = ob;
     }
+  }
+
+  if (d.decision === 'send' && topic?.slot === 'noReply' &&
+      (Number(lastHerMessage(cfg)?.ts) || 0) > Number(topic.evidence.at)) {
+    d.decision = 'skip';
+    d.reason = 'FOLLOWUP_CONTEXT_CHANGED';
   }
 
   let delivery = null;
@@ -776,6 +822,8 @@ export async function tick({
     last_send_ago_min: lastSendTs ? Math.round((now - lastSendTs) / 60000) : null,
     gap_tier: d.tier || null,
     gap: d.gap || null,
+    ...(candidates.length ? { candidateSlots: candidates.map((item) => item.slot) } : {}),
+    ...(d.rejectedTopics?.length ? { rejectedTopics: d.rejectedTopics } : {}),
     presence_signal: Boolean(d.presenceSignal),
     today_sent_real: Number(st.real.todaySent) || 0,
     today_sent_sim: Number(st.sim.todaySent) || 0,
@@ -824,7 +872,7 @@ export async function tick({
     judge: verdict
       ? {
           say: verdict.ok ? verdict.say : null,
-          fallback: !verdict.ok,
+          fallback: st.judge?.fallback ?? false,
           reason: verdict.ok ? '' : verdict.reason || '',
           note: verdict.ok ? '' : String(verdict.note || ''),
           why: verdict.why || '',

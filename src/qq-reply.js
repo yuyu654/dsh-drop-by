@@ -19,11 +19,17 @@ const ACTION_PROMPT_RULE = '换源确认由陪伴插件发出和处理；普通�
 export function qqReplyContext({ peer, kind, cfg = loadConfig(), now = Date.now(),
   state = loadExploration(), persona = loadPersona({ cfg }) } = {}) {
   if (kind !== 'private' || !peer || String(peer) !== chatPeer(cfg) || cfg.enabled === false || !canReadChat(cfg)) return '';
-  const { thread, leisure, candidate } = explorationStatus(state, persona);
+  const { thread, leisure, light, candidate } = explorationStatus(state, persona);
   const recent = (entry) => recentExploration(entry, now, cfg.exploration);
-  const describe = ({ topic, progress, next, checkpoint, discovery, waitingFor, sources }) => ({
-    topic, progress, next, checkpoint, discovery, waitingFor, sources: sources?.map(({ title, evidence }) => ({ title, evidence })),
+  const describe = ({ topic, progress, summary, next, checkpoint, discovery, waitingFor, sources }) => ({
+    topic, progress: summary || progress,
+    ...(next ? { next } : {}),
+    ...(checkpoint ? { checkpoint } : {}),
+    ...(discovery ? { discovery } : {}),
+    ...(waitingFor ? { waitingFor } : {}),
+    sources: sources?.map(({ title, evidence }) => ({ title, evidence })),
   });
+  const isLightMode = cfg.exploration?.mode === 'light';
   const mood = cfg.exploration?.mood === true ? explorationMood(state, persona, now, cfg.exploration) : null;
   const portrait = portraitMood(cfg, persona, now);
   const portraitFull = cfg.exploration?.portrait === true ? readPortraitMoodMap({ peer: emotionPeer(cfg), now }) : '';
@@ -31,8 +37,9 @@ export function qqReplyContext({ peer, kind, cfg = loadConfig(), now = Date.now(
     ? (portrait && !portraitFull.includes(portrait) ? `${portraitFull}；即时心情：${portrait}` : portraitFull)
     : portrait;
   const context = {
-    ...(recent(thread) ? { 研究进展: describe(thread) } : {}),
-    ...(recent(leisure) ? { 休闲发现: describe(leisure) } : {}),
+    ...(!isLightMode && recent(thread) ? { 研究进展: describe(thread) } : {}),
+    ...(!isLightMode && recent(leisure) ? { 休闲发现: describe(leisure) } : {}),
+    ...(recent(light) ? { 随手看过: { topic: light.topic, summary: light.summary || light.progress, sources: light.sources?.map(({ title, evidence }) => ({ title, evidence })) } } : {}),
     ...(recent(candidate) && !candidate.loginSite ? { 分享线索: { topic: candidate.section, line: candidate.line, evidence: candidate.source?.evidence } } : {}),
     // 只放情绪，不把探索里的业务词（术语、参数、标题）带进私聊：语气层不外泄事实
     ...(mood && toneOf(mood.text) ? { 当前感受: toneOf(mood.text) } : {}),

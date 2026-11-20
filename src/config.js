@@ -27,7 +27,7 @@ const DEFAULTS = {
   tickMinutes: 10,
 
   timezone: 'Asia/Shanghai',
-  exploration: { auto: false, offerShare: false, mood: false, portrait: false, web: false, video: false, leisureEvery: 3, interest: '', nextTopic: '', offPeakOnly: false, intervalMinutes: 180, recentDays: 3, moodHours: 2, portraitHours: 2, planTimeoutMs: 30000, roundTimeoutMs: 45000, toolTimeoutMs: 18000, storyboardTimeoutMs: 65000, storyboardSeconds: 60, moodReplyAgeMin: 30, moodDraftTimeoutMs: 15000, portraitTimeoutMs: 12000 },
+  exploration: { auto: false, mode: 'deep', offerShare: false, mood: false, portrait: false, web: false, video: false, leisureEvery: 3, interest: '', nextTopic: '', offPeakOnly: false, intervalMinutes: 180, recentDays: 3, moodHours: 2, portraitHours: 2, planTimeoutMs: 30000, roundTimeoutMs: 45000, toolTimeoutMs: 18000, storyboardTimeoutMs: 65000, storyboardSeconds: 60, moodReplyAgeMin: 30, moodDraftTimeoutMs: 15000, portraitTimeoutMs: 12000 },
   // 全局静默：这一段里所有功能都不读不发（含邮箱不联网）。多段、可跨零点。
   quietHours: [['22:30', '07:30']],
   quietHoursNote: '全局静默，多段，空数组=不静默',
@@ -266,7 +266,7 @@ const DEFAULTS = {
       followCasualSilence: false,
       noReplyDouyin: true, // 仅在允许追问闲聊或分享时参与。
       noReplyJudge: true,
-      noReplyJudgeTimeoutMs: 90000, // 先让模型判一句「是去忙了」还是「在回避」
+      noReplyJudgeTimeoutMs: 90000, // 核对用户是否约好提醒及当前是否在忙
     },
     // 课表正文：一行一节，比如「周一 08:00-09:40 电机学 @教三201」
     // termStart = 开学第一周的周一（YYYY-MM-DD）；填了才按「第几周」过滤带周次的课

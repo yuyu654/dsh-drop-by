@@ -13,6 +13,7 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const PKG = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 
 function fakeReact() {
   const React = {
@@ -98,7 +99,7 @@ function load() {
 test('client：自注册一个 id = 包名的模块', () => {
   const { loaded } = load();
   assert.equal(loaded.length, 1, '文件应该调一次 __ModuleLoader__.load');
-  assert.equal(loaded[0].id, 'dsh-drop-by');
+  assert.equal(loaded[0].id, PKG.name);
   assert.equal(typeof loaded[0].factory, 'function');
 });
 

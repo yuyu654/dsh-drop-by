@@ -8,6 +8,7 @@
 //
 // guard() 是最后一道闸：过了 guard 才算「可以发」。它同时是人格红线的落地
 // （不承认 AI、不写括号动作、不列清单、不泄露内部路径）。
+import { PERSONA_FACT_RULE } from './judge.js';
 import { generate, llmAvailable } from './llm.js';
 import { SLOTS } from './topics.js';
 import { signalFacts } from './signals.js';
@@ -166,16 +167,6 @@ export function guard(text, cfg, ctx = null, opts = {}) {
       why: '带了公式、字母符号或偏专业的表达式；改用外行朋友一听就懂的大白话讲那件具体的事',
     });
   }
-  if (
-    opts.shareNeedHook &&
-    !/[？?]/.test(t) &&
-    !/(?:你觉得|你怎么看|你想|你那|你有|你会|你用过|你遇|试过|聊聊|说说|猜猜|好奇|算不算|像不像|是不是|对不对|行不行|怎么样|咋样|咋看|怎么说)/.test(t)
-  ) {
-    violations.push({
-      code: 'SHARE_NO_HOOK',
-      why: '只顾着自己下结论，没留给她接话的口子；加上一句问她看法、经历或顺手把话题抛给她',
-    });
-  }
 
   // 照抄我自己上一句或近期发过的句子（去标点后连续 8 个字一模一样）：看着像接话，其实是把旧句子或几小时前的提醒搬回来再说一遍。
   const normEcho = (s) => String(s || '').replace(/[\p{P}\p{S}\s]+/gu, '');
@@ -262,7 +253,7 @@ export function renderTemplate(topic, ctx) {
     case 'longSit':
       return `从 ${e.since} 坐到现在了。起来走两步。`;
     case 'backHome':
-      return `刚回来？水喝了没。`;
+      return `有空的话，来聊两句？`;
     case 'agenda':
       // 早课：重点是「今晚得早睡」，不是复述课表；快上课：只提醒时间，别念课程意义
       return e.kind === 'early'
@@ -273,6 +264,7 @@ export function renderTemplate(topic, ctx) {
     case 'examReview':
       return e.days <= 1 ? `明天就考${e.subject ? `「${e.subject}」` : ''}了。今晚早点收。` : `${e.days} 天后考${e.subject ? `「${e.subject}」` : ''}。今晚先翻一章？`;
     case 'noReply': {
+      if (e.verdict?.followUp === true) return null;
       // 追问：只问一句，不查岗、不数落。
       // 2026-11-07 修（她：QQ 收到「刚给你发的那个，看了没」，可那条是 19 小时前发在抖音的）：
       //   模板必须说清「哪个通道、多久以前」。写成「刚」会让她去找一个根本不在本通道的内容。
@@ -516,11 +508,13 @@ export function buildPrompt({ ctx, topic, persona, cfg, feedback, st = {} }) {
         ? []
         : [
             '- 说给外行朋友听：严禁公式、字母代号和冷门专业黑话，一定要翻译成生活里听得懂的大白话。',
-            '- 必须留出她能接话的口子（顺口问她看法、问她遇到过没有或把话头抛给她），别只下完自己的结论就结束。',
+            '- 有一个具体发现就能分享，不必用问题结尾。',
           ]),
     ],
     reply: ['- 先接住她那句话：她说了什么就应什么，别自顾自换话题。'],
-    noReply: [
+    noReply: topic.evidence?.verdict?.followUp === true ? [
+      '- 只按用户原话提醒约定的事情；不提她没回，不问她在忙什么。',
+    ] : [
       '- 这条是追问「我发过去的那条怎么没回」：只问一句，不查岗、不数落、不说「你是不是不想理我」。',
       '- 只问这一件事，别捎带别的话题：你昨晚研究过什么、今天想说什么，都等她把这条回了再说。',
       topic.evidence?.verdict?.away
@@ -574,7 +568,7 @@ export function buildPrompt({ ctx, topic, persona, cfg, feedback, st = {} }) {
       '- 她要是说过什么（尤其他通道里的），别在这条里接、别评价、别用「另说」推开——这一条只说坐太久。',
     ],
     backHome: [
-      '- 她刚回来：接一句就好，别问去哪了、别查岗、别算她出去了多久。',
+      '- 只知道设备恢复活动，不知道她有没有离开或外出。合适就打个招呼，别查岗。',
       '- 可以顺手使唤一件小事（拿水、开窗），或者留半句没说完的软话。',
       '- 一个「电脑」「屏幕」「坐着」「硬撑」都不许提——她 2026-11-10 说这个话题太集中了，回来就说点别的。',
     ],
@@ -606,6 +600,7 @@ export function buildPrompt({ ctx, topic, persona, cfg, feedback, st = {} }) {
     '',
     '以上是背景人格。下面是这一次真正要写的东西，只按下面的要求写。',
     ATTRIBUTION_RULE,
+    PERSONA_FACT_RULE,
     '',
     `现在是 ${ctx.clock || ''}。在 QQ 上给「她」发一条消息，纯文字：没有表情、没有语音、不带解释。`,
     `这一条的由头：${topic.brief}`,
@@ -678,7 +673,7 @@ export function buildChitchatPrompt({ ctx, topic, persona, cfg, feedback, st = {
     ? [
         `这一句的起点（是素材，不是任务）：${seed}`,
         isPersonaSeed
-          ? '这是「我」自己人设里的身体、习惯或偏好：站回「我」此刻的第一人称生活开口（例如胃有点犯了嘴硬带过、嘴馋想喝冰的让对方顺手带一杯、或聊起自己喜欢的爱好），不要写成关心或盘问她，也不要编造「饮料已经给你放桌上了」。'
+          ? PERSONA_FACT_RULE
           : '',
       ].filter(Boolean).join('\n')
     : '';
@@ -705,10 +700,11 @@ export function buildChitchatPrompt({ ctx, topic, persona, cfg, feedback, st = {
     '',
     '以上是背景人格。下面是这一次真正要写的东西，只按下面的要求写。',
     ATTRIBUTION_RULE,
+    PERSONA_FACT_RULE,
     '',
     `现在是 ${ctx.clock || ''}。在 QQ 上给「她」发一条消息，纯文字：没有表情、没有语音、不带解释。`,
     '这一条**没有任何由头**：没有新闻、没有数据、没有她刚说的话。就是忽然想跟她说一句。',
-    '不必每条都围着她转或问她在干嘛——可以从「我」自己的身体状态、嘴馋念想、顺手使唤或当下兴趣开口。',
+    '不必每条都围着她转或问她在干嘛——可以从「我」自己的偏好、念头、兴趣或最近真实做过的事开口。',
     seedBlock,
     nameBlock,
     convBlock,
@@ -755,7 +751,6 @@ function shareGuardOpts(topic) {
   return {
     topicLabel: topic?.label,
     shareTechnical: isRealShare,
-    shareNeedHook: isRealShare && !ev.source,
   };
 }
 

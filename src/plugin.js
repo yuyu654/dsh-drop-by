@@ -629,7 +629,7 @@ export function apply(ctx, config = {}) {
         const state = loadExploration();
         const persona = loadPersona({ cfg });
         const peakStatus = deepseekPeakStatus(Date.now(), cfg);
-        return { ...explorationStatus(state, persona), auto: cfg.exploration.auto, running: exploring,
+        return { ...explorationStatus(state, persona), auto: cfg.exploration.auto, mode: cfg.exploration?.mode === 'light' ? 'light' : 'deep', running: exploring,
           offPeakOnly: cfg.exploration.offPeakOnly === true,
           nextTopic: String(cfg.exploration?.nextTopic || ''),
           peakStatus,
