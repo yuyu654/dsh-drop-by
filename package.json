@@ -35,6 +35,7 @@
     "headless-overlay.yml",
     "icon.svg",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "config.example.json",
     "local-style.example.json"
