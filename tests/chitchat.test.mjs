@@ -1,12 +1,12 @@
 // chitchat.test.mjs —— 随口说话（阶段 1）：没有由头时那一条候选的产出条件与生成纪律。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chitchatGate, chitchatTopic, noteChitchatSent, chitchatToday, chitchatYield, chitchatJudgeNo, allowBareToday, bareRemainingToday, bareLimit } from '../src/chitchat.js';
+import { densityTarget, chitchatGate, chitchatTopic, noteChitchatSent, chitchatToday, chitchatYield, chitchatJudgeNo, allowBareToday, bareRemainingToday, bareLimit } from '../src/chitchat.js';
 import { REASONS } from '../src/decide.js';
 import { compose, composeDraft, guard, buildChitchatPrompt } from '../src/compose.js';
 import { buildSnapshot } from '../src/snapshot.js';
 import { noteSent, settle, sweep, slotStats } from '../src/feedback.js';
-import { SCHEMA, applyChange } from '../src/settings.js';
+import { SCHEMA, applyChange, listForUi } from '../src/settings.js';
 
 const TZ = 'Asia/Shanghai';
 const HOUR = 3_600_000;
@@ -307,4 +307,29 @@ test('persona 类型随口话种子可聊偏好，但已发生的事需要依据
   assert.match(prompt, /已发生的动作.*要有本轮候选或对话事实支撑/);
   const jp = judgePrompt({ snapshot: '现在：12:00', persona: { text: '短句' } });
   assert.match(jp, /人设只提供口吻、偏好和表达习惯/);
+});
+
+test('密度阶梯尊重配置上限，包括 30% 和 70% 边界', () => {
+  for (const [sent, replied, cap, expected] of [
+    [4, 4, 5, 1], [10, 2, 5, 1], [10, 3, 5, 2], [10, 7, 5, 2],
+    [10, 8, 5, 5], [10, 8, 3, 3], [10, 7, 1, 1], [10, 8, 1, 1],
+    [10, 8, 0, 0], [10, 8, 20, 10],
+  ]) {
+    const cfg = cfgOf();
+    cfg.rules.chitchat.perDay = cap;
+    const st = { chitchat: { days: { '2026-11-06': { sent, replied } } } };
+    const result = densityTarget(st, NOON, TZ, cfg);
+    assert.equal(result.perDay, expected, JSON.stringify({ sent, replied, cap, result }));
+    assert.match(result.why, new RegExp(expected + ' 条'));
+  }
+});
+
+test('随口话上限从设置保存回显，接住率高时修改上限会改变额度判断', () => {
+  const cfg = cfgOf();
+  const saved = applyChange(cfg, 'rules.chitchat.perDay', 5);
+  assert.equal(saved.ok, true);
+  assert.equal(listForUi(saved.cfg).flatMap(g => g.items).find(i => i.path === saved.path).value, 5);
+  const st = { chitchat: { day: '2026-11-06', count: 3, days: { '2026-11-06': { sent: 10, replied: 8 } } } };
+  assert.equal(chitchatGate({ cfg, now: NOON, st }).reason, 'NO_CHITCHAT_BUDGET');
+  assert.equal(chitchatGate({ cfg: saved.cfg, now: NOON, st }).ok, true);
 });

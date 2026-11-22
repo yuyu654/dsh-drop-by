@@ -183,3 +183,76 @@ test('lightweight exploration runs a single shallow study without mutating threa
   assert.equal(light2.ok, true);
   assert.deepEqual(light2.state.lightHistory.map((x) => x.topic), ['浅烘豆水温', '雨天书店闲逛']);
 });
+
+test('three exploration biases shape each four-round cycle in deep and light modes', async () => {
+  const interest = '最近想了解独立游戏的设计';
+  const expected = {
+    leisure: ['leisure', 'leisure', 'research', 'leisure'],
+    balanced: ['research', 'leisure', 'research', 'leisure'],
+    research: ['research', 'research', 'leisure', 'research'],
+  };
+  for (const mode of ['deep', 'light']) {
+    for (const [bias, directions] of Object.entries(expected)) {
+      let previous;
+      for (const [round, direction] of directions.entries()) {
+        const output = await exploreRound({
+          persona, previous, interest, bias, leisureEvery: 0, exploreMode: mode, now: 100 + round,
+          generate: async ({ prompt }) => {
+            assert.match(prompt, /最近想了解独立游戏的设计/);
+            if (mode === 'light') {
+              assert.match(prompt, direction === 'leisure' ? /本轮方向是休闲/ : /本轮方向是研究/);
+              return result({ action: 'light', topic: '一个新点', summary: '想明白了一个细节' });
+            }
+            return result({ action: 'start', topic: '一个新点', progress: '想明白了一个细节', next: '再做对比' });
+          },
+        });
+        assert.equal(output.ok, true, mode + ': ' + bias);
+        assert.equal(mode === 'light' ? output.state.lastRun.direction : output.state.lastRun.mode, direction,
+          mode + ': ' + bias + ' round ' + round);
+        if (mode === 'light') {
+          assert.equal(output.state.light.next, undefined);
+          assert.equal(output.state.thread, null);
+        }
+        previous = output.state;
+      }
+    }
+  }
+});
+
+test('light selection and writing both receive the direction while pinned subjects still win', async () => {
+  const prompts = [];
+  const media = { web: true, collect: async (kind, query, options) => {
+    assert.equal(kind, 'web');
+    assert.equal(query, '用户指定的题');
+    assert.equal(options.light, true);
+    return [];
+  } };
+  const round = await exploreRound({
+    persona, focusTopic: '用户指定的题', interest: '平时的兴趣', bias: 'leisure', exploreMode: 'light', media,
+    generate: async ({ prompt }) => {
+      prompts.push(prompt);
+      assert.match(prompt, /本轮方向是研究/);
+      assert.match(prompt, /用户指定的题/);
+      return prompts.length === 1
+        ? result({ kind: 'web', query: '平时的兴趣' })
+        : result({ action: 'light', topic: '模型另选的题', summary: '一个发现' });
+    },
+  });
+  assert.equal(prompts.length, 2);
+  assert.equal(round.state.light.topic, '用户指定的题');
+  assert.equal(round.state.lastRun.mode, 'light');
+});
+
+test('legacy cadence is unchanged in deep mode and remains unused in light mode', async () => {
+  let previous;
+  for (const direction of ['research', 'research', 'leisure', 'research']) {
+    const round = await exploreRound({ persona, previous, leisureEvery: 3, generate: async () => result({ action: 'skip' }) });
+    assert.equal(round.state.lastRun.mode, direction);
+    previous = round.state;
+  }
+  const light = await exploreRound({ persona, previous, exploreMode: 'light', leisureEvery: 1, generate: async ({ prompt }) => {
+    assert.doesNotMatch(prompt, /本轮方向是/);
+    return result({ action: 'skip' });
+  } });
+  assert.equal(light.state.lastRun.mode, 'light');
+});

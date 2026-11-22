@@ -9,10 +9,12 @@ import { dshHome } from './detect.js';
 import { bridgeLastIn, bridgeLastOut, recentTurns } from './outbound.js';
 import { chatPeer } from './channels/external.js';
 import { douyinPrimary, douyinPeer, readDouyinState } from './channels/douyin-im.js';
+import { internalPrimary, internalSessionId, readInternalState } from './channels/internal.js';
 import { agoSec } from './time.js';
 import { loadPersona } from './persona.js';
 import { actionProposalCandidate } from './action-proposal.js';
-import { explorationProgress, explorationShare, loadExploration } from './explore.js';
+import { explorationProgress, explorationShare, explorationStatus, loadExploration } from './explore.js';
+import { explorationFeedbackHints, topicInExplorationFeedback } from './exploration-feedback.js';
 // 解析逻辑搬到 fishparse.js：fishmail.js 归档时也要用它，放这里会和 LATEST_PATH 形成循环依赖
 export { minsOf, parseFishSummary } from './fishparse.js';
 import { parseFishSummary } from './fishparse.js';
@@ -101,6 +103,11 @@ function readQqDialogue(limit = 6) {
  * settle 在 buildContext 之前跑，所以要一个不建整份上下文的轻量入口。
  */
 function primaryDialogue(cfg) {
+  if (internalPrimary(cfg)) {
+    const state = readInternalState(internalSessionId());
+    const rows = cfg.channels?.internal?.read === false ? [] : (state.dialogue || []);
+    return rows.map(item => ({ ...item, from: item.who, channel: 'internal' }));
+  }
   if (douyinPrimary(cfg)) {
     const state = readDouyinState(douyinPeer(cfg));
     const rows = cfg.channels.douyin.read === false ? [] : [
@@ -270,7 +277,9 @@ export function buildContext({ cfg, now, st, ch, sys, tz }) {
         : null;
       const loginSent = candidate?.loginSite && st?.content?.explorationLoginNotices?.includes(candidate.loginSite);
       const discoverySent = candidate?.discoveryId && st?.content?.sharedExplorationIds?.includes(candidate.discoveryId);
-      const usable = candidate && !loginSent && !discoverySent && (candidate.actionRetry
+      const avoided = candidate && !candidate.actionRetry && !candidate.loginSite && topicInExplorationFeedback(candidate.section,
+        explorationFeedbackHints(cfg, explorationStatus(exploration, persona), now).avoid);
+      const usable = candidate && !avoided && !loginSent && !discoverySent && (candidate.actionRetry
         ? candidate.at !== st?.content?.lastRetryProposalAt
         : candidate.line.slice(0, 80) !== st?.content?.lastShareLine)
         ? { ...candidate, exploration: true }

@@ -9,7 +9,7 @@
 import { agendaSource, coursesOn, nextCourse, currentWeek, weekdayOf, courseEnabled } from './agenda.js';
 import { examsSource, parseExams, dayDiff } from './exams.js';
 import { signalFacts } from './signals.js';
-import { slotStats, recentPairs } from './feedback.js';
+import { activeTopicPreferences, slotStats, recentPairs } from './feedback.js';
 import { dayKey, hhmm, minutesOfDayOf, minToHm } from './time.js';
 import { SLOTS, classifySleep, fishStale } from './topics.js';
 
@@ -310,6 +310,15 @@ export function buildSnapshot({ ctx = {}, topic = null, cfg = {}, st = {}, now =
       '我记得的事（只当背景，不要背出来）：',
       ...mem.slice(0, 5).map((m) => `· ${String(m.text || '').slice(0, 120)}${m.day ? `（${m.day}）` : ''}`),
     ]);
+  }
+
+  const preferences = activeTopicPreferences(st, now);
+  if (preferences.length) {
+    const rows = preferences.map(({ target, mode }) => ({
+      话题: target.keyword || SLOTS[target.slot]?.label || target.slot,
+      偏好: mode === 'mute_less' ? '暂停主动提起' : '可以照常分享，即使没回复也不追问',
+    }));
+    blocks.push(['用户明确的话题偏好（仅约束主动开口，普通回复照常）：', JSON.stringify(rows)]);
   }
 
   // —— 规则建议（降级成 hint）

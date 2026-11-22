@@ -1,7 +1,7 @@
 // topics.test.mjs —— 「有没有由头」的纯函数。这是「要不要发」最关键的一层。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { pickTopic, explainNoTopic, looksForwarded, classifySleep, fishStale } from '../src/topics.js';
+import { topicCandidates, pickTopic, explainNoTopic, looksForwarded, classifySleep, fishStale } from '../src/topics.js';
 
 const TZ = 'Asia/Shanghai';
 const at = (h, m = 0) => Date.UTC(2026, 10, 4, h - 8, m);
@@ -760,4 +760,37 @@ test('同一类由头连着两拍 → 第三拍不再来', () => {
 
   const once = { content: { recentSlots: ['share', 'longSit'] }, pc };
   assert.equal(pickTopic(ctx, cfgOf(), now, once)?.slot, 'longSit');
+});
+
+test('选题遍历记录分由头原因，与实际的开关、时段和数据门槛一致', () => {
+  const now = Date.UTC(2026, 10, 21, 3);
+  const cfg = { ...cfgOf(), sources: { phone: { staleHours: 36 } },
+    content: { topics: { sleep: false, stepsFromHour: 18 } } };
+  const ctx = { tz: 'Asia/Shanghai', fish: { ok: true, steps: 120, ageMin: 10, dateTs: now - 74 * 3_600_000 } };
+  const misses = new Map();
+  [...topicCandidates(ctx, cfg, now, {}, undefined, misses)];
+  assert.equal(misses.get('sleep'), 'disabled');
+  assert.equal(misses.get('steps'), 'fish_stale');
+  assert.equal(misses.get('share'), 'no_data');
+
+  ctx.fish.dateTs = now - 10 * 60_000;
+  misses.clear();
+  [...topicCandidates(ctx, cfg, now, {}, undefined, misses)];
+  assert.equal(misses.get('steps'), 'out_of_window');
+});
+
+test('课表已经产出候选，迭代到下一个由头时也没有误记未命中', () => {
+  const cfg = { ...cfgOf(), content: { agenda: { text: '周三 01:15-02:00 电机学' }, topics: {} } };
+  const ctx = {
+    tz: 'Asia/Shanghai', presence: { idleSec: 0 },
+    self: { discoveryId: 'new', exploration: true, line: '我发现了一个新进展。' },
+  };
+  const st = { content: { lastAgendaSoon: '2026-11-04:75' } };
+  const misses = new Map();
+  const candidates = topicCandidates(ctx, cfg, at(1), st, undefined, misses);
+  const first = candidates.next().value;
+  assert.equal(first.slot, 'agenda');
+  assert.equal(first.evidence.kind, 'early');
+  assert.equal(candidates.next().value.slot, 'share');
+  assert.equal(misses.has('agenda'), false);
 });

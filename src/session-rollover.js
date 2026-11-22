@@ -22,11 +22,18 @@ function textContent(content) {
 
 function stripUserEnvelope(text, stripSourceHeader) {
   let user = text.trim();
+  if (user.startsWith('<dsh_drop_by_proactive>') || user.startsWith('[dsh-drop-by 主动消息')) return '';
   while (true) {
     if (user.startsWith('<qq_reply_context>')) {
       const close = user.indexOf('</qq_reply_context>');
       if (close < 0) return '';
       user = user.slice(close + '</qq_reply_context>'.length).trimStart();
+      continue;
+    }
+    if (user.startsWith('<external_reply_context>')) {
+      const close = user.indexOf('</external_reply_context>');
+      if (close < 0) return '';
+      user = user.slice(close + '</external_reply_context>'.length).trimStart();
       continue;
     }
     if (INJECTED_HEADS.some((head) => user.startsWith(head))) {

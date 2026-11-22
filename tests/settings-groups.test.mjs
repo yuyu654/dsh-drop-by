@@ -27,7 +27,7 @@ test('首屏日常组保持精简清爽（其余组分类折叠）', () => {
   const daily = groups.find((g) => g.name === '日常');
   assert.ok(daily && !daily.foldable, '日常组常驻展开');
   assert.ok(daily.items.length <= 15, `日常首屏 ${daily.items.length} 行，保持清爽`);
-  for (const name of ['决定TA粘不粘人', '节奏', '说什么', '数据从哪来', '课表与考试', '高级']) {
+  for (const name of ['角色作息', '决定TA粘不粘人', '节奏', '说什么', '数据从哪来', '课表与考试', '高级']) {
     assert.ok(FOLDABLE_GROUPS.has(name), `${name} 组默认折叠`);
     const g = groups.find((x) => x.name === name);
     assert.ok(g.foldable, `${name} 应该是折叠卡片`);
@@ -41,13 +41,13 @@ test('首屏日常组保持精简清爽（其余组分类折叠）', () => {
   offExp.exploration = { ...offExp.exploration, auto: false };
   assert.deepEqual(
     explorationItemsForUi(offExp).map((i) => i.path),
-    ['exploration.auto', 'exploration.mode', 'exploration.nextTopic', 'exploration.interest', 'exploration.offerShare']
+    ['exploration.auto', 'exploration.mode', 'exploration.bias', 'exploration.nextTopic', 'exploration.interest', 'exploration.offerShare']
   );
   const autoExp = cfg();
   autoExp.exploration = { ...autoExp.exploration, auto: true };
   assert.deepEqual(
     explorationItemsForUi(autoExp).map((i) => i.path),
-    ['exploration.auto', 'exploration.mode', 'exploration.intervalMinutes', 'exploration.offPeakOnly', 'exploration.nextTopic', 'exploration.interest', 'exploration.offerShare']
+    ['exploration.auto', 'exploration.mode', 'exploration.bias', 'exploration.intervalMinutes', 'exploration.offPeakOnly', 'exploration.nextTopic', 'exploration.interest', 'exploration.offerShare']
   );
   for (const p of explorationItemsForUi(autoExp).map((i) => i.path)) {
     assert.ok(!daily.items.some((i) => i.path === p), `日常里不再重复出现 ${p}`);
@@ -178,11 +178,14 @@ test('所有从属子项跟随对应主功能开关显隐（日常、内容、�
   noMailOrPhone.mail.enabled = true;
   assert.equal(has(noMailOrPhone, 'mail.user'), true);
 
-  // 轻量化探索隐藏只属于深度推进的休闲轮次参数，切回深度推进时恢复
-  const lightCfg = cfg();
-  lightCfg.exploration = { ...lightCfg.exploration, mode: 'light' };
-  assert.equal(has(lightCfg, 'exploration.leisureEvery'), false);
-  const deepCfg = cfg();
-  deepCfg.exploration = { ...deepCfg.exploration, mode: 'deep' };
-  assert.equal(has(deepCfg, 'exploration.leisureEvery'), true);
+  const restCfg = cfg();
+  assert.equal(has(restCfg, 'characterRest.adaptDays'), false);
+  restCfg.characterRest = { ...restCfg.characterRest, adapt: true };
+  assert.equal(has(restCfg, 'characterRest.adaptDays'), true);
+  for (const mode of ['light', 'deep']) {
+    const config = cfg();
+    config.exploration = { ...config.exploration, mode };
+    assert.equal(has(config, 'exploration.leisureEvery'), false);
+    assert.ok(explorationItemsForUi(config).some(item => item.path === 'exploration.bias'));
+  }
 });

@@ -27,9 +27,9 @@ test('密度：样本不足按基线 1 条，不拿两三条猜她脾气', () =>
   assert.equal(d.rate, null);
 });
 
-test('密度：近 7 天接住率 >70% 放到 2 条，<30% 压回 1 条，7 天前的账不算', () => {
+test('密度：近 7 天接住率 >70% 放到配置上限，<30% 压回 1 条，7 天前的账不算', () => {
   const good = { chitchat: { days: { [dayKeyAgo(2)]: { sent: 10, replied: 8 } } } };
-  assert.equal(densityTarget(good, NOW, TZ).perDay, 2);
+  assert.equal(densityTarget(good, NOW, TZ, cfgOf()).perDay, 3);
 
   const cold = { chitchat: { days: { [dayKeyAgo(2)]: { sent: 10, replied: 2 } } } };
   assert.equal(densityTarget(cold, NOW, TZ).perDay, 1);
@@ -43,7 +43,7 @@ test('闸门按密度算钱：基线 1 条，发过一条今天就没了', () =>
   const st = { chitchat: { day: dayKeyAgo(0), count: 1 } };
   const g = chitchatGate({ cfg, now: NOW, st, ctx: ctxOf(), tz: TZ });
   assert.equal(g.reason, 'NO_CHITCHAT_BUDGET');
-  assert.match(g.why, /基线 1 条/);
+  assert.match(g.why, /只有 0 条样本，每天生效上限 1 条/);
 });
 
 test('熔断：连着 3 条被晾满 12 小时 → 停 48 小时', () => {

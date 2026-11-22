@@ -1,5 +1,6 @@
 // config.js —— 配置读写。所有阈值都从这里出，代码里不出现魔法数字。
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -20,6 +21,29 @@ export const CONFIG_PATH = pathFromEnv('PG_CONFIG_PATH', path.join(ROOT, 'config
 export const STATE_PATH = pathFromEnv('PG_STATE_PATH', path.join(ROOT, 'state.json'));
 export const LOG_DIR = pathFromEnv('PG_LOG_DIR', path.join(ROOT, 'logs'));
 
+export const CHARACTER_REST_DEFAULTS = Object.freeze({
+  bed: '22:00', wake: '06:30', jitterMin: 30, windDownMin: 30, adapt: false, adaptDays: 7, adaptMaxMin: 30,
+});
+
+export const AGREEMENT_DEFAULTS = Object.freeze({
+  enabled: false, maxItems: 8, aheadMin: 10, followUpMin: 60, expireHours: 24,
+  shortWithinMin: 180, slowIntervalMin: 15, extractTimeoutMs: 5000, soonMin: 10, fewHoursMin: 120, dateTime: '18:00', model: '',
+});
+export const CURIOSITY_DEFAULTS = Object.freeze({ enabled: true, maxCandidates: 6, keepDays: 7, warmMin: 30 });
+
+const EXPLORATION_BIASES = new Set(['leisure', 'balanced', 'research']);
+
+export function usesLegacyExplorationCadence(exploration) {
+  return exploration?.leisureEvery != null && !EXPLORATION_BIASES.has(exploration.bias);
+}
+
+export function explorationBiasForUi(exploration) {
+  if (EXPLORATION_BIASES.has(exploration?.bias)) return exploration.bias;
+  if (!usesLegacyExplorationCadence(exploration)) return DEFAULTS.exploration.bias;
+  const cadence = Number(exploration.leisureEvery);
+  return cadence === 1 ? 'leisure' : cadence === 2 || cadence === 3 ? 'balanced' : 'research';
+}
+
 /** 缺字段时的兜底，避免旧配置升级后崩。 */
 const DEFAULTS = {
   enabled: true,
@@ -27,7 +51,9 @@ const DEFAULTS = {
   tickMinutes: 10,
 
   timezone: 'Asia/Shanghai',
-  exploration: { auto: false, mode: 'deep', offerShare: false, mood: false, portrait: false, web: false, video: false, leisureEvery: 3, interest: '', nextTopic: '', offPeakOnly: false, intervalMinutes: 180, recentDays: 3, moodHours: 2, portraitHours: 2, planTimeoutMs: 30000, roundTimeoutMs: 45000, toolTimeoutMs: 18000, storyboardTimeoutMs: 65000, storyboardSeconds: 60, moodReplyAgeMin: 30, moodDraftTimeoutMs: 15000, portraitTimeoutMs: 12000 },
+  characterRest: { ...CHARACTER_REST_DEFAULTS },
+  agreements: { ...AGREEMENT_DEFAULTS },
+  exploration: { feedback: { ...CURIOSITY_DEFAULTS }, auto: false, mode: 'deep', offerShare: false, mood: false, portrait: false, web: false, video: false, bias: 'balanced', interest: '', nextTopic: '', offPeakOnly: false, intervalMinutes: 180, recentDays: 3, moodHours: 2, portraitHours: 2, planTimeoutMs: 30000, roundTimeoutMs: 45000, toolTimeoutMs: 18000, storyboardTimeoutMs: 65000, storyboardSeconds: 60, moodReplyAgeMin: 30, moodDraftTimeoutMs: 15000, portraitTimeoutMs: 12000 },
   // 全局静默：这一段里所有功能都不读不发（含邮箱不联网）。多段、可跨零点。
   quietHours: [['22:30', '07:30']],
   quietHoursNote: '全局静默，多段，空数组=不静默',
@@ -39,6 +65,7 @@ const DEFAULTS = {
   // replyGuard：开口前再翻一遍最新的出站记录（QQ history / qq-reply.out.txt / 抖音 dm 记忆），
   // 只要发现「我最后一次说话已经晚于她那条消息」，这一拍就不回——插件可能已经替我们回过了。
   rules: { gapMaxX: 3, replyCooldownMin: 5, minGapMin: 240, dailyCap: 3, backfillWindowMin: 30, douyinStaleMin: 10, replyGuard: true, autoReply: true, proactive: true, backfill: true, feedback: { enabled: true, coldAfter: 6, coldRate: 0.25, coldDays: 3, testMode: false, replyMatchSec: 60, hitMin: 45, windowMin: 240, keepHours: 24, dayStartMin: 510, dayEndMin: 1410 }, adaptiveGap: true,
+    stateWriteWaitMs: 120,
     // judge：护栏放行之后，再让模型看一眼整份处境，自己决定这一拍说不说、说什么。
     // 默认关 = 完全按规则链走（pickTopic 挑到由头就写）；开着也只是「多问一次」——
     // 静默/间隔/上限/guard 全在外面，模型说不说都越不过它们；判断失败一律退回规则链。
@@ -51,7 +78,8 @@ const DEFAULTS = {
     actionGate: { enabled: true, expiresMinutes: 15, ackWaitSec: 30 },
     qqCommands: { enabled: true, intentTimeoutSec: 5, timeoutSec: 90, freshSec: 120 },
     qqRollover: { enabled: true, thresholdPercent: 80, carryMessages: 10, prepareBindingFile: true },
-    qqTiming: { debounceMs: 3500, pollSec: 2, windowSec: 180, pauseSec: 15, expireSec: 55, inFlightSec: 180, generationTimeoutMs: 20000 },
+    qqTiming: { debounceMs: 3500, pollSec: 2, windowSec: 180, pauseSec: 15, expireSec: 55, inFlightSec: 180, generationTimeoutMs: 20000, hotMinChars: 6 },
+    closingCooldownMin: 120,
     projectTiming: { memoryDays: 14, updateMin: 30, generationTimeoutMs: 20000 },
     // 随口说话：没有由头时，也可以说一句。**默认关**——要 judge 也开着才生效，
     // 因为它靠 judge 判「这一拍要不要说」。生成只走模型：模板写不出自然的无由头话，
@@ -95,8 +123,9 @@ const DEFAULTS = {
     // 只在 judge 也开着时生效——没有软决策层就不许放开硬闸（防止规则裸奔）。
     presenceSignal: { enabled: false, recentChatMin: 30, recentReturnMin: 30, justActiveSec: 120 } },
   channels: {
-    primary: 'qq',
+    primary: 'internal',
     // activeHours 空数组 = 全天；多段、可跨零点。与 quietHours 冲突会在 --windows 里报。
+    internal: { enabled: true, read: true, send: true, activeHours: [] },
     qq: { enabled: true, read: true, send: true, peerId: '', activeHours: [] },
     main: { enabled: false, read: true, send: false, activeHours: [] },
     douyin: { enabled: false, read: true, send: true, activeHours: [], peerSecUid: '', peerName: '', pollSec: 30, readTimeoutSec: 30, sendTimeoutSec: 240 },
@@ -135,7 +164,7 @@ const DEFAULTS = {
   send: { enabled: false, requireConfirm: true, timeoutMs: 8000, split: { enabled: true, maxParts: 4,
     minFirstMs: 6000, minGapMs: 1200, maxRoundMs: 90000, maxFirstMs: 60000, maxGapMs: 5000,
     firstJitterMs: 12000, gapJitterMs: 2200, firstPerCharMs: 60, gapPerCharMs: 90 } },
-  logging: { keepDays: 2, dayStartHour: 7, mailUpdateMode: 'merge' },
+  logging: { keepDays: 2, reportDays: 7, dayStartHour: 7, mailUpdateMode: 'merge' },
   // 本机私有规则：禁用词、只有这台机器成立的事实。文件不在就是空的（= 通用插件）。
   // 格式见 src/local.js 顶部注释；也可以用 content.local 直接塞。
   local: { file: 'local-style.json' },
@@ -258,6 +287,11 @@ const DEFAULTS = {
       examSoonMin: 60, // 考前多少分钟提「快考了」（按分钟算）
       examReview: true,
       examReviewDays: 7, // 考前多少天提「该复习了」（按天算）
+      // 角色作息招呼：角色实际入睡前和刚醒来后的短窗口内顺口打声招呼
+      characterRest: true,
+      characterRestBeforeBedMin: 10,
+      characterRestAfterWakeMin: 10,
+      characterRestGreetSkipMin: 120,
       // 追问：我主动发过、她一直没回的那条，隔多久可以问一句「怎么没回」
       noReply: true,
       noReplyMin: 120, // 距我那条至少这么多分钟没动静
@@ -308,13 +342,27 @@ function merge(base, over) {
 
 export function loadConfig() {
   let raw = {};
+  let hasFile = false;
   try {
     raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+    hasFile = Boolean(raw && typeof raw === 'object' && Object.keys(raw).length > 0);
   } catch {
     raw = {};
   }
   const cfg = merge(DEFAULTS, raw);
-  if (cfg.channels.primary !== 'douyin') cfg.channels.primary = 'qq';
+  const rawPrimary = raw?.channels?.primary;
+  if (rawPrimary === 'internal' || rawPrimary === 'qq' || rawPrimary === 'douyin') {
+    cfg.channels.primary = rawPrimary;
+  } else if (hasFile) {
+    // 升级旧配置时未写 channels.primary 的文件保持原 QQ 主通道行为，避免静默切换。
+    cfg.channels.primary = 'qq';
+  } else {
+    cfg.channels.primary = 'internal';
+  }
+  if (usesLegacyExplorationCadence(raw?.exploration)) delete cfg.exploration.bias;
+  else if (!EXPLORATION_BIASES.has(cfg.exploration?.bias)) {
+    cfg.exploration = { ...DEFAULTS.exploration, ...cfg.exploration, bias: DEFAULTS.exploration.bias };
+  }
   // 老版本会钳制这两个门槛。第一次加载显示过去实际生效的数值。
   if (cfg.timingVersion !== 1) {
     cfg.content = { ...cfg.content, topics: { ...cfg.content.topics } };
@@ -370,6 +418,128 @@ export function loadState() {
   }
 }
 
+function readStateForWrite() {
+  try {
+    return JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
+  } catch (error) {
+    if (error.code === 'ENOENT') return {};
+    throw error;
+  }
+}
+
+function writeStateAtomic(st) {
+  const tmp = STATE_PATH + '.' + randomUUID() + '.tmp';
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(st, null, 2) + '\n', { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    fs.renameSync(tmp, STATE_PATH);
+  } finally {
+    fs.rmSync(tmp, { force: true });
+  }
+}
+
+export const STATE_WRITE_WAIT_MAX_MS = 500;
+const STATE_LOCK_RETRIES = 4;
+const stateLockWait = new Int32Array(new SharedArrayBuffer(4));
+
+function linkStateLock(lock, owner) {
+  try {
+    fs.linkSync(owner, lock);
+    return true;
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    return false;
+  }
+}
+
+function tryAcquireStateLock(lock, owner) {
+  if (linkStateLock(lock, owner)) return true;
+  try {
+    const before = fs.statSync(lock);
+    const pid = Number(fs.readFileSync(lock, 'utf8'));
+    if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+    try {
+      process.kill(pid, 0);
+      return false;
+    } catch (check) {
+      if (check.code !== 'ESRCH') return false;
+    }
+    const current = fs.statSync(lock);
+    if (current.ino !== before.ino || current.mtimeMs !== before.mtimeMs) return false;
+    // Orphaned lock from a process that did not survive to release it.
+    fs.unlinkSync(lock);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    // The other writer may have released the lock since linkSync.
+  }
+  return linkStateLock(lock, owner);
+}
+
+function acquireStateLock(lock, owner) {
+  if (tryAcquireStateLock(lock, owner)) return;
+  const fallback = DEFAULTS.rules.stateWriteWaitMs;
+  const configured = Number(loadConfig().rules?.stateWriteWaitMs ?? fallback);
+  const waitMs = Number.isFinite(configured) ? Math.max(0, Math.min(STATE_WRITE_WAIT_MAX_MS, configured)) : fallback;
+  const deadline = performance.now() + waitMs;
+  for (let i = 0; i < STATE_LOCK_RETRIES; i++) {
+    const delay = Math.min(waitMs / STATE_LOCK_RETRIES, deadline - performance.now());
+    if (delay <= 0) break;
+    // Keep the state transaction synchronous while letting the other process finish.
+    Atomics.wait(stateLockWait, 0, 0, delay);
+    if (tryAcquireStateLock(lock, owner)) return;
+  }
+  throw new Error('STATE_WRITE_BUSY: 另一进程正在保存状态');
+}
+
+function withStateWrite(update) {
+  const lock = STATE_PATH + '.lock.tmp';
+  const owner = lock + '.' + randomUUID() + '.tmp';
+  try {
+    fs.writeFileSync(owner, String(process.pid), { flag: 'wx', mode: 0o600 });
+    acquireStateLock(lock, owner);
+    try {
+      return update(readStateForWrite());
+    } finally {
+      fs.unlinkSync(lock);
+    }
+  } finally {
+    fs.rmSync(owner, { force: true });
+  }
+}
+
+const separatelyWrittenFeedback = ['preferences', 'receiptOverrides'];
+
 export function saveState(st) {
-  fs.writeFileSync(STATE_PATH, JSON.stringify(st, null, 2) + '\n', 'utf8');
+  return withStateWrite(current => {
+    const next = { ...st };
+    const disk = current?.feedback;
+    if (st.feedback || disk?.lastProactive || separatelyWrittenFeedback.some(key => Object.hasOwn(disk || {}, key))) {
+      next.feedback = { ...st.feedback };
+      for (const key of separatelyWrittenFeedback) {
+        if (Object.hasOwn(disk || {}, key)) next.feedback[key] = disk[key];
+        else delete next.feedback[key];
+      }
+      if (Number(disk?.lastProactive?.ts) > (Number(next.feedback.lastProactive?.ts) || 0)) {
+        next.feedback.lastProactive = disk.lastProactive;
+      }
+    }
+    writeStateAtomic(next);
+  });
+}
+
+function updateFeedbackField(key, update) {
+  return withStateWrite(st => {
+    const change = update(st);
+    if (!change) return null;
+    st.feedback = { ...st.feedback, [key]: change[key] };
+    writeStateAtomic(st);
+    return change.result;
+  });
+}
+
+export function updateStatePreferences(update) {
+  return updateFeedbackField('preferences', update);
+}
+
+export function updateStateReceiptOverrides(update) {
+  return updateFeedbackField('receiptOverrides', update);
 }

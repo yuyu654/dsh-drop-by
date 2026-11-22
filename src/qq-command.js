@@ -5,6 +5,38 @@ import { explorationStatus } from './explore.js';
 import { publicExplorationUrl } from './explore-media.js';
 import { shiftDay } from './retention.js';
 import { dayKey } from './time.js';
+import { incomingMatches } from './action-proposal.js';
+import { activeChatChannel, canReadChat, chatDialogue, chatPeer } from './channels/external.js';
+import { saveTopicPreference } from './feedback.js';
+import { looksLikeTopicPreference } from './command-matcher.js';
+import { topicLabel } from './explain.js';
+
+export function verifiedPreferenceMessage({ peer, kind, text, bridgeText = text, at, cfg, now = Date.now() }) {
+  const message = String(bridgeText || '').trim();
+  if (kind !== 'private' || !peer || chatPeer(cfg) !== String(peer) ||
+      cfg.enabled === false || cfg.rules?.qqCommands?.enabled !== true || !canReadChat(cfg) ||
+      message.length > 80 || !looksLikeTopicPreference(message)) return '';
+  const age = now - Number(at);
+  if (!(age >= 0 && age <= Number(cfg.rules.qqCommands.freshSec ?? 120) * 1000)) return '';
+  const { incoming } = chatDialogue(cfg);
+  return incomingMatches({ peer, kind, bridgeText, at, incoming, cfg }) ? message : '';
+}
+
+export function applyTopicPreference(preference, input) {
+  if (preference.quote !== verifiedPreferenceMessage(input)) return '';
+  const { peer, at, cfg } = input;
+  let result;
+  try {
+    result = saveTopicPreference(preference, { channel: activeChatChannel(cfg), peer, at }, cfg);
+  } catch {
+    return '【陪伴话题偏好】这次保存失败。请如实说明，建议用户稍后重试。';
+  }
+  if (!result) return '【陪伴话题偏好待确认】没有可核对的上一条主动话题。请在普通回复里请用户说出具体话题。';
+  const label = result.target.slot ? topicLabel(result.target.slot) : result.target.keyword;
+  const effect = { reset: '恢复默认', allow_silent: '照常考虑发送，用户没回复也不会因此追问或降频',
+    mute_less: '有效期内暂停主动提起' }[result.mode];
+  return '【陪伴话题偏好已保存】根据已生效的结果自然确认一句，无需调用工具。' + JSON.stringify({ 话题: label, 效果: effect });
+}
 
 const exec = promisify(execFile);
 const smokeFile = fileURLToPath(new URL('../tools/qq-task-smoke.test.mjs', import.meta.url));

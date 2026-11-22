@@ -164,6 +164,7 @@ test('use a full recent inbound message for drafting without changing its bridge
 });
 
 test('engine preview uses the shared quota and never calls the QQ transport', async (t) => {
+  t.mock.method(Date, 'now', () => Date.parse('2026-11-22T12:00:00+08:00'));
   const { tickQqContinuation } = await import('../src/engine.js');
   fs.writeFileSync(process.env.PG_CONFIG_PATH, JSON.stringify({
     dryRun: true, quietHours: [], busyHours: [], persona: { enabled: false },
@@ -192,6 +193,7 @@ test('engine preview uses the shared quota and never calls the QQ transport', as
 });
 
 test('tickQqContinuation passes portrait mood-map tone into generation prompt when enabled', async (t) => {
+  t.mock.method(Date, 'now', () => Date.parse('2026-11-22T12:00:00+08:00'));
   const { tickQqContinuation } = await import('../src/engine.js');
   fs.writeFileSync(process.env.PG_STATE_PATH, '{}');
   const emDir = path.join(dir, 'profiles', 'desktop', 'node_modules', 'emotion-state-portrait', 'emotion');

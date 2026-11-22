@@ -86,4 +86,13 @@ test('nextTopic pins one round and auto-clears; explicit body.topic overrides; o
   t.mock.timers.setTime(Date.parse('2026-11-16T10:00:00+08:00')); // 普通周一 10:00 高峰 -> 自动跳过
   const peakRes = await api.runExploration();
   assert.deepEqual(peakRes, { ok: false, reason: 'PEAK_HOURS' });
+
+  t.mock.timers.setTime(Date.parse('2026-11-16T23:00:00+08:00'));
+  assert.deepEqual(await api.runExploration(), { ok: false, reason: 'CHARACTER_ASLEEP' });
+  assert.equal(api.snapshot().exploration.pausedForRest, true);
+  let manualAtNight;
+  await route.handler({ url: '/api/dsh-drop-by/explore', method: 'POST' }, {
+    setHeader() {}, end(body) { manualAtNight = JSON.parse(body); },
+  });
+  assert.equal(manualAtNight.ok, true);
 });

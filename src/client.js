@@ -345,6 +345,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
             return h(Row, { key: item.path, item: item, busy: props.busy, onSave: props.onSave });
           })
         );
+        var innerNote = g.innerNote ? h('div', { className: 'pg-note pg-card-inner-note' }, g.innerNote) : null;
         if (!g.foldable) {
           return wrap(
             h(
@@ -356,6 +357,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
                 h('div', { className: 'pg-card-title' }, g.name),
                 h('span', { className: 'pg-card-count' }, g.items.length + ' 项')
               ),
+              innerNote,
               rows
             )
           );
@@ -371,6 +373,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
               g.summary ? h('span', { className: 'pg-card-sub' }, g.summary) : null,
               h('span', { className: 'pg-card-count' }, g.items.length + ' 项')
             ),
+            innerNote,
             timing ? h('input', {
               className: 'pg-input pg-timing-search',
               type: 'search',
@@ -426,6 +429,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
               { className: 'pg-btn', type: 'button', disabled: props.busy, onClick: props.onRefresh },
               '刷新'
             ),
+            h('button', { className: 'pg-btn', type: 'button', onClick: props.onGuide }, '使用引导 / 自检'),
             h(
               'button',
               {
@@ -452,7 +456,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           {
             k: '上一拍',
             v: last ? clockOf(last.at) + ' · ' + (DECISION_TEXT[last.decision] || last.decision || '—') : '还没跑过',
-            note: last && last.why ? last.why : '',
+            note: last && last.explanation ? last.explanation.summary : last && last.why || '',
           },
           { k: '今天', v: sent + ' 条', note: dry ? '演练计数（没真发）' : '真实发送' },
           {
@@ -490,9 +494,178 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           h(
             'div',
             { className: 'pg-quote-note' },
-            last.delivery && last.delivery.reason ? '没发出去：' + last.delivery.reason : '演练模式，只记下来没发'
+            last.explanation ? last.explanation.summary : '这句没有发出去'
           )
         );
+      }
+
+      var GUIDE_CLOSED_KEY = 'dsh-drop-by:guide-closed';
+
+      function storedGuideClosed() {
+        try { return window.localStorage.getItem(GUIDE_CLOSED_KEY) === '1'; }
+        catch (_) { return false; }
+      }
+
+      function CheckRows(props) {
+        var tones = { ok: 'live', warn: 'dry', bad: 'bad' };
+        var labels = { ok: '就绪', warn: '留意', bad: '需处理' };
+        return h('ul', { className: 'pg-check-rows' }, props.items.map(function (item) {
+          return h('li', { key: item.key },
+            h(Badge, { tone: tones[item.level] }, labels[item.level]),
+            h('div', null,
+              h('strong', null, item.label),
+              h('div', null, item.detail),
+              item.actionHint ? h('div', { className: 'pg-row-hint' }, item.actionHint) : null));
+        }));
+      }
+
+      function RunExplanation(props) {
+        var run = props.run || {};
+        var info = run.explanation || {};
+        return h('div', { className: 'pg-guide-copy', role: props.preview ? 'status' : undefined },
+          props.preview ? h('strong', null, info.summary) : null,
+          run.text && props.preview ? h('blockquote', { className: 'pg-quote' }, run.text) : null,
+          info.detail ? h('div', null, info.detail) : null,
+          props.preview && run.text
+            ? h('div', { className: 'pg-row-hint' }, run.llm
+                ? '模型 · ' + [run.llm.provider, run.llm.model].filter(Boolean).join(' / ')
+                : '这句草稿未使用模型')
+            : null,
+          info.actionHint ? h('div', { className: 'pg-row-hint' }, info.actionHint) : null);
+      }
+
+      function QuickGuide(props) {
+        var check = props.check;
+        var deps = (props.items || []).filter(function (item) {
+          return ['channel', 'llm', 'persona', 'memory', 'emotion'].indexOf(item.key) >= 0;
+        });
+        return h('section', { className: 'pg-card', ref: props.anchor },
+          h('div', { className: 'pg-card-head' },
+            h('button', { className: 'pg-btn pg-guide-toggle', type: 'button',
+              'aria-expanded': props.open, 'aria-controls': 'pg-quick-guide', onClick: props.onToggle },
+              h('span', { 'aria-hidden': true }, props.open ? '▾ ' : '▸ '), '快速引导与自检')),
+          props.open ? h('div', { id: 'pg-quick-guide', className: 'pg-guide-copy' },
+            h('div', { className: 'pg-guide-step' },
+              h('h3', null, '1. 依赖检测'),
+              check ? h('div', { className: 'pg-row-hint' }, '最新检查结果见下方。')
+                : deps.length ? h(CheckRows, { items: deps })
+                : h('div', { className: 'pg-row-hint' }, props.error || '读取依赖状态中…')),
+            h('div', { className: 'pg-guide-step' },
+              h('div', { className: 'pg-guide-step-head' },
+                h('h3', null, '2. 连通测试'),
+                h('button', { type: 'button', className: 'pg-btn', onClick: props.onCheck, disabled: props.pending !== '' || props.saving },
+                  props.pending === 'check' ? '检查中…' : '检查连通状态')),
+              check ? h(CheckRows, { items: check.items }) : null),
+            h('div', { className: 'pg-guide-step' },
+              h('div', { className: 'pg-guide-step-head' },
+                h('h3', null, '3. 安全试跑'),
+                h('button', { type: 'button', className: 'pg-btn pg-btn-primary', onClick: props.onPreview,
+                  disabled: props.pending !== '' || props.saving || props.running },
+                  props.pending === 'preview' ? '试跑中…' : '试跑一次')),
+              h('div', { className: 'pg-row-hint' }, '按当前设置判断，可能调用模型写草稿。草稿只显示在这里，不会发给联系人。'),
+              props.preview ? h(RunExplanation, { run: props.preview, preview: true }) : null)
+          ) : null);
+      }
+
+      function RecentReports(props) {
+        var data = props.data || {};
+        var reports = data.reports || [];
+        var slots = data.slots || [];
+        var chit = data.chitchat;
+        var [openSlot, setOpenSlot] = useState('');
+        var [saving, setSaving] = useState(false);
+        var [receiptError, setReceiptError] = useState('');
+
+        function updateReceipt(item, row, received, event) {
+          if (saving) return;
+          var control = event && event.currentTarget;
+          if (control) control.closest('li').focus();
+          setSaving(true);
+          setReceiptError('');
+          props.onReceiptChange(item.slot, row.id, received).catch(function (error) {
+            setReceiptError(error.message || '保存失败，请重试。');
+          }).finally(function () {
+            setSaving(false);
+          });
+        }
+
+        return h('details', { className: 'pg-card pg-card-fold' },
+          h('summary', { className: 'pg-card-title pg-card-sum' }, '近期日报与接住率'),
+          h('div', { className: 'pg-guide-copy' },
+            chit ? h('div', { className: 'pg-guide-step' },
+              h('strong', null, '随口话今日已发 ' + (Number(chit.todayCount) || 0) + ' / ' + chit.effectivePerDay + ' 条' +
+                (chit.effectivePerDay < chit.configuredPerDay ? '（设置上限 ' + chit.configuredPerDay + ' 条）' : '')),
+              h('div', { className: 'pg-row-hint' }, chit.why)) : null,
+            h('div', { className: 'pg-guide-step' },
+              h('h3', null, '分由头接住率'),
+              slots.length ? h('ul', { className: 'pg-check-rows pg-feedback-slots' }, slots.map(function (item) {
+                var open = openSlot === item.slot;
+                var detailsId = 'pg-receipts-' + item.slot;
+                var summary = item.replied + ' / ' + item.sent + ' 条' + (item.rate == null ? '' : ' · ' + Math.round(item.rate * 100) + '%');
+                var receipts = item.receipts || [];
+                return h('li', { key: item.slot },
+                  h('div', { className: 'pg-receipt-summary' },
+                    h('span', null, item.label),
+                    h('button', { type: 'button', className: 'pg-badge pg-receipt-toggle', 'aria-expanded': open,
+                      'aria-controls': detailsId, 'aria-label': item.label + '接住率明细，' + summary,
+                      onClick: function () { setOpenSlot(open ? '' : item.slot); setReceiptError(''); } }, summary)),
+                  h('div', { id: detailsId, hidden: !open }, open ? (receipts.length
+                    ? h('ul', { className: 'pg-receipt-list', 'aria-label': item.label + '接住率明细' }, receipts.map(function (row) {
+                      return h('li', { key: row.id, tabIndex: -1 },
+                        h('span', { className: 'pg-receipt-time' }, row.at),
+                        h('span', { className: row.received ? 'pg-receipt-caught' : 'pg-receipt-missed', 'aria-live': 'polite' },
+                          row.received === null ? (row.status === 'pending' ? '待判定' : '结果未记录')
+                            : row.received ? (row.manual ? '接住（手动）' : '接住') : '未回'),
+                        row.manual ? h('button', { type: 'button', className: 'pg-btn', disabled: saving,
+                          'aria-label': '撤销 ' + row.at + ' 的手动标记',
+                          onClick: function (event) { updateReceipt(item, row, false, event); } }, '撤销')
+                        : row.received === false ? h('label', { className: 'pg-receipt-mark' },
+                          h('input', { type: 'checkbox', checked: false, disabled: saving, 'aria-label': row.at + ' 标记接住',
+                            onChange: function (event) { if (event.target.checked) updateReceipt(item, row, true, event); } }),
+                          '标记接住') : null);
+                    })) : h('div', { className: 'pg-row-hint pg-receipt-empty' }, '暂无可定位的逐条记录。')) : null,
+                    open && item.unlistedMisses > 0 ? h('div', { className: 'pg-row-hint pg-receipt-empty' },
+                      '另有 ' + item.unlistedMisses + ' 条未回仅有汇总（旧版未记录具体时间，新消息起会完整列出）。') : null));
+              })) : h('div', { className: 'pg-row-hint' }, props.data ? '还没有接住率样本。' : (props.error || '正在读取…')),
+              receiptError ? h('div', { role: 'alert', className: 'pg-receipt-error' }, receiptError) : null),
+            h('div', { className: 'pg-guide-step' },
+              h('h3', null, '每日摘要'),
+              reports.length ? reports.map(function (report) {
+                return h('div', { className: 'pg-report', key: report.day },
+                  h('strong', null, report.day),
+                  h('div', null, report.text.replace(/^# .*\n/, '').trim()));
+              }) : h('div', { className: 'pg-row-hint' }, props.data ? '还没有日报记录。' : (props.error || '正在读取…')))));
+      }
+
+      function AgreementsCard(props) {
+        var data = props.data;
+        if (!data) return null;
+        var items = data.items || [];
+        var date = new Intl.DateTimeFormat('zh-CN', { timeZone: data.timezone || 'Asia/Shanghai',
+          month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+        return h('details', { className: 'pg-card pg-card-fold' },
+          h('summary', { className: 'pg-card-title pg-card-sum' }, '约定小本本',
+            h('span', { className: 'pg-card-count' }, data.enabled ? items.length + ' 条' : '未开启')),
+          h('div', { className: 'pg-guide-copy' },
+            !data.enabled ? h('div', { className: 'pg-row-hint' }, '在「高级」打开约定小本本。') : null,
+            items.length ? h('ul', { className: 'pg-check-rows pg-notebook-list' }, items.map(function (item) {
+              return h('li', { key: item.id },
+                h('div', null, h('strong', null, item.title),
+                  h('div', { className: 'pg-row-hint' }, date.format(new Date(item.dueAt)) + (item.explicit ? ' · 已约提醒' : ' · 待跟进'))),
+                h('button', { type: 'button', className: 'pg-btn', disabled: props.busy,
+                  'aria-label': '划掉 ' + item.title, onClick: function () { props.onDismiss(item.id); } }, '划掉'));
+            })) : data.enabled ? h('div', { className: 'pg-row-hint' }, '暂无待跟进事项。') : null));
+      }
+
+      function AlertBar(props) {
+        if (!props.items.length) return null;
+        return h('aside', { className: 'pg-card pg-alert', 'aria-label': '当前异常' },
+          props.items.map(function (item) {
+            return h('div', { key: item.key },
+              h(Badge, { tone: item.level === 'bad' ? 'bad' : 'dry' }, item.label),
+              h('span', null, item.detail),
+              item.actionHint ? h('div', { className: 'pg-row-hint' }, item.actionHint) : null);
+          }));
       }
 
       // ------------------------------------------------------------ 页面
@@ -506,16 +679,30 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         var [toast, setToast] = useState(null);
         var [busy, setBusy] = useState(false);
         var [explorePending, setExplorePending] = useState(false);
+        var [smallActionPending, setSmallActionPending] = useState(false);
         var [exploreResult, setExploreResult] = useState(null);
         var [showExplorationDetails, setShowExplorationDetails] = useState(false);
         var [liveBridge, setLiveBridge] = useState({});
         var [rebindId, setRebindId] = useState('');
+        var [hostSessions, setHostSessions] = useState([]);
+        var [sessionsLoading, setSessionsLoading] = useState(false);
+        var [selectedSessionId, setSelectedSessionId] = useState('');
+        var [bindingBusy, setBindingBusy] = useState(false);
         var [mergeOpen, setMergeOpen] = useState(false);
         var [mergeTargetFile, setMergeTargetFile] = useState('');
         var [mergePicked, setMergePicked] = useState({});
         var [mergePreviewInfo, setMergePreviewInfo] = useState(null);
         var [mergePreviewBusy, setMergePreviewBusy] = useState(false);
         var [loading, setLoading] = useState(true);
+        var [diagnostic, setDiagnostic] = useState(null);
+        var [diagnosticError, setDiagnosticError] = useState('');
+        var [guideChoice, setGuideChoice] = useState(function () { return storedGuideClosed() ? false : null; });
+        var [guidePending, setGuidePending] = useState('');
+        var [connectivity, setConnectivity] = useState(null);
+        var [preview, setPreview] = useState(null);
+        var guideAnchor = useRef(null);
+        var diagnosticRequest = useRef(0);
+        var stateRequest = useRef(0);
         var mounted = useRef(true);
         var toastTimer = useRef(null);
 
@@ -529,10 +716,11 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
 
         var load = useCallback(
           function (silent) {
+            var request = ++stateRequest.current;
             if (!silent) setBusy(true);
             return Promise.all([apiGet('/state'), apiGet('/config')])
               .then(function (r) {
-                if (!mounted.current) return;
+                if (!mounted.current || request !== stateRequest.current) return;
                 setState(r[0]);
                 setGroups(r[1].groups || []);
                 setExplorationItems(r[1].explorationItems || []);
@@ -540,11 +728,11 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
                 setError('');
               })
               .catch(function (e) {
-                if (!mounted.current) return;
+                if (!mounted.current || request !== stateRequest.current) return;
                 setError(e && e.message ? e.message : String(e));
               })
               .then(function () {
-                if (!mounted.current) return;
+                if (!mounted.current || request !== stateRequest.current) return;
                 setBusy(false);
                 setLoading(false);
               });
@@ -566,6 +754,67 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           };
         }, [load]);
 
+        var loadDiagnostics = useCallback(function () {
+          var request = ++diagnosticRequest.current;
+          return apiGet('/diagnostics').then(function (data) {
+            if (!mounted.current || request !== diagnosticRequest.current) return;
+            setDiagnostic(data);
+            setDiagnosticError('');
+          }).catch(function () {
+            if (mounted.current && request === diagnosticRequest.current) setDiagnosticError('暂时读不到诊断，点「刷新」再试。');
+          });
+        }, []);
+
+        function changeReceipt(slot, id, received) {
+          return apiPost('/feedback/receipt', { slot: slot, id: id, received: received }).then(function (result) {
+            if (!mounted.current) return;
+            diagnosticRequest.current++;
+            setDiagnostic(function (current) {
+              return Object.assign({}, current, { slots: result.slots });
+            });
+          });
+        }
+
+        var diagnosticAt = state ? (state.lastAt || 'ready') : null;
+        useEffect(function () {
+          if (diagnosticAt) loadDiagnostics();
+        }, [diagnosticAt, loadDiagnostics]);
+
+        var guideOpen = guideChoice === null ? Boolean(diagnostic && diagnostic.guideRecommended) : guideChoice;
+        function setGuide(open) {
+          setGuideChoice(open);
+          try {
+            if (open) window.localStorage.removeItem(GUIDE_CLOSED_KEY);
+            else window.localStorage.setItem(GUIDE_CLOSED_KEY, '1');
+          } catch (_) {}
+        }
+
+        function openGuide() {
+          setGuide(true);
+          if (guideAnchor.current) guideAnchor.current.scrollIntoView({ block: 'nearest' });
+        }
+
+        function testGuide(action) {
+          setGuidePending(action);
+          var check = action === 'check';
+          if (!check) setPreview(null);
+          apiPost(check ? '/connectivity' : '/tick', check ? {} : { preview: true }).then(function (r) {
+            if (!mounted.current) return;
+            if (!r || r.ok === false) throw new Error(r && r.error || '自检未能完成');
+            if (check) {
+              setConnectivity(r);
+              loadDiagnostics();
+            } else {
+              setPreview(r.run);
+            }
+          }).catch(function (e) {
+            if (!mounted.current) return;
+            flash(e && e.status === 409 ? '上一拍还在跑，等它跑完再试。' : e.message, 'err');
+          }).finally(function () {
+            if (mounted.current) setGuidePending('');
+          });
+        }
+
         var onSave = useCallback(
           function (path, value) {
             setBusy(true);
@@ -578,6 +827,9 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
                   return;
                 }
                 setState(r.state);
+                setConnectivity(null);
+                setPreview(null);
+                loadDiagnostics();
                 setGroups(r.groups || []);
                 if (Array.isArray(r.explorationItems)) setExplorationItems(r.explorationItems);
                 if (Array.isArray(r.channelItems)) setChannelItems(r.channelItems);
@@ -595,7 +847,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
                 if (mounted.current) setBusy(false);
               });
           },
-          [flash, load]
+          [flash, load, loadDiagnostics]
         );
 
         var onTick = useCallback(
@@ -607,7 +859,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
                 setState(r.state);
                 var run = r.run;
                 var dl = run && run.delivery;
-                var msg = !run
+                var msg = run && run.explanation ? run.explanation.summary : !run
                   ? '跑完了'
                   : dl && dl.attempted && dl.ok
                     ? '这一拍真的发出去了'
@@ -628,6 +880,20 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           [flash, load]
         );
 
+        function applySmallAction(endpoint, body) {
+          if (smallActionPending) return;
+          setSmallActionPending(true);
+          apiPost(endpoint, body).then(function (result) {
+            if (!mounted.current) return;
+            setState(result.state);
+            load(true);
+          }).catch(function (error) {
+            if (mounted.current) flash(error.message || '暂时无法保存，请重试。', 'err');
+          }).finally(function () {
+            if (mounted.current) setSmallActionPending(false);
+          });
+        }
+
         function onExplore() {
           setExplorePending(true);
           setExploreResult(null);
@@ -638,6 +904,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
             var labels = {
               NO_PERSONA: '请先配置角色人设',
               QUIET_OR_BUSY: '当前是静默或忙碌时段，本轮未运行',
+              CHARACTER_ASLEEP: '角色正在休息，暂停自动探索',
               PEAK_HOURS: '当前为 DeepSeek 高峰时段，已按谷时开关跳过',
               DISABLED: '插件已关闭',
               UNAVAILABLE: '探索暂不可用，可能已有一轮在运行',
@@ -664,9 +931,54 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           });
         }
 
+        var loadHostSessions = useCallback(function () {
+          setSessionsLoading(true);
+          return apiGet('/sessions').then(function (data) {
+            if (!mounted.current) return;
+            var list = Array.isArray(data && data.sessions) ? data.sessions : [];
+            setHostSessions(list);
+            setSelectedSessionId(function (prev) {
+              if (prev && list.some(function (s) { return s.id === prev; })) return prev;
+              if (data && data.boundSessionId && list.some(function (s) { return s.id === data.boundSessionId; })) {
+                return data.boundSessionId;
+              }
+              return list.length ? list[0].id : (data && data.boundSessionId) || '';
+            });
+          }).catch(function () {
+            /* 宿主会话列表读取失败时保留上次列表 */
+          }).finally(function () {
+            if (mounted.current) setSessionsLoading(false);
+          });
+        }, []);
+
+        var primaryChannel = state && state.externalChat ? state.externalChat.primary : '';
+        useEffect(function () {
+          if (primaryChannel === 'internal') loadHostSessions();
+        }, [primaryChannel, loadHostSessions]);
+
+        function onBindInternalSession(body) {
+          setBindingBusy(true);
+          apiPost('/internal/session', body).then(function (r) {
+            if (!mounted.current) return;
+            if (!r || r.ok === false) throw new Error((r && r.error) || '绑定失败');
+            if (r.state) setState(r.state);
+            if (r.sessionId) setSelectedSessionId(r.sessionId);
+            setConnectivity(null);
+            setPreview(null);
+            loadDiagnostics();
+            loadHostSessions();
+            flash((r.notes && r.notes[0]) || '内部会话已绑定', 'ok');
+          }).catch(function (e) {
+            if (mounted.current) flash((e && e.message) || '绑定失败', 'err');
+          }).finally(function () {
+            if (mounted.current) setBindingBusy(false);
+          });
+        }
+
         useEffect(function () {
           var list = state && Array.isArray(state.rollovers) ? state.rollovers : [];
-          if (!list.length || state.externalChat && state.externalChat.primary === 'douyin') return;
+          var p = state && state.externalChat ? state.externalChat.primary : '';
+          if (!list.length || p === 'douyin' || p === 'internal') return;
           var active = true;
           Promise.all(list.map(function (r) {
             return bridgeGet('/state?sessionId=' + encodeURIComponent(r.newSessionId))
@@ -688,10 +1000,11 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         function onRebind(r) {
           if (!r || !r.newSessionId) return;
           setRebindId(r.newSessionId);
-          if (state.externalChat && state.externalChat.primary === 'douyin') {
+          var p = state && state.externalChat ? state.externalChat.primary : '';
+          if (p === 'douyin' || p === 'internal') {
             apiPost('/rollover/switch', { sessionId: r.newSessionId }).then(function (result) {
               if (!result.ok) throw new Error(result.error);
-              flash('已切换抖音共用会话，下一条消息会带上前情', 'ok');
+              flash(p === 'internal' ? '已切换内部续聊会话，下一条消息会带上前情' : '已切换抖音续聊会话，下一条消息会带上前情', 'ok');
               load(true);
             }).catch(function (error) { flash(error.message, 'err'); })
               .finally(function () { if (mounted.current) setRebindId(''); });
@@ -849,6 +1162,19 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         var thread = exploration && exploration.thread;
         var leisure = exploration && exploration.leisure;
         var lightExp = exploration && exploration.light;
+        var exploreFeedback = exploration && exploration.feedback;
+        function feedbackButtons(kind) {
+          if (!exploreFeedback || !exploreFeedback.enabled) return null;
+          var entry = (exploreFeedback.entries || []).find(function (row) { return row.kind === kind; });
+          if (!entry) return null;
+          return h('div', { className: 'pg-exp-actions', 'aria-label': entry.topic + '的探索反馈' },
+            [['more', '想多听听'], ['change', '换个方向'], ['pause', '先放着']].map(function (option) {
+              return h('button', { key: option[0], type: 'button', className: 'pg-btn' + (entry.action === option[0] ? ' pg-btn-primary' : ''),
+                disabled: smallActionPending, 'aria-pressed': entry.action === option[0], onClick: function () {
+                  applySmallAction('/exploration/feedback', { id: entry.id, action: option[0] });
+                } }, option[1]);
+            }));
+        }
         function sourceLinks(entry) {
           return (entry && entry.sources || []).filter(function (s) { return /^https?:\/\//i.test(s.url); }).map(function (s) {
             return h('div', { className: 'pg-exp-item', key: s.url },
@@ -892,7 +1218,9 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         return h(
           'div',
           { className: 'pg-root' },
-          state ? h(Head, { state: state, busy: busy, onRefresh: function () { load(false); }, onTick: onTick }) : null,
+          state ? h(Head, { state: state, busy: busy || guidePending === 'preview', onGuide: openGuide,
+            onRefresh: function () { load(false); loadDiagnostics(); }, onTick: onTick }) : null,
+          h(AlertBar, { items: diagnostic && diagnostic.alerts || [] }),
           toast
             ? h('div', { className: 'pg-toast pg-toast-sticky' + (toast.kind === 'err' ? ' pg-toast-err' : ' pg-toast-ok'), role: 'status' },
                 h('span', { className: 'pg-toast-text' }, toast.text),
@@ -906,6 +1234,19 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           error ? h('div', { className: 'pg-error' }, '取不到状态：' + error) : null,
           state ? h(Facts, { state: state }) : null,
           state ? h(LastWords, { state: state }) : null,
+          state && state.last && state.last.decision === 'skip' && state.last.explanation &&
+            (state.last.explanation.detail || state.last.explanation.actionHint)
+            ? h('details', { className: 'pg-card pg-card-fold' },
+                h('summary', { className: 'pg-card-title pg-card-sum' }, '上一拍为什么跳过'),
+                h(RunExplanation, { run: state.last })) : null,
+          state ? h(QuickGuide, { anchor: guideAnchor, open: guideOpen, onToggle: function () { setGuide(!guideOpen); },
+            items: diagnostic && diagnostic.items, error: diagnosticError, check: connectivity, preview: preview,
+            pending: guidePending, running: state.running, saving: busy,
+            onCheck: function () { testGuide('check'); }, onPreview: function () { testGuide('preview'); } }) : null,
+          state ? h(AgreementsCard, { data: state.agreements, busy: smallActionPending, onDismiss: function (id) {
+            applySmallAction('/agreements/dismiss', { id: id });
+          } }) : null,
+          state ? h(RecentReports, { data: diagnostic, error: diagnosticError, onReceiptChange: changeReceipt }) : null,
           hasModules ? h('div', { className: 'pg-sec-label' }, '联动模块与状态') : null,
           emotion && emotion.installed ? h('div', { className: 'pg-card' },
             h('div', { className: 'pg-card-head' },
@@ -1129,8 +1470,8 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
               h('span', { className: 'pg-badge pg-badge-dry' }, '待切换 ' + rollovers.length)
             ),
             h('div', { className: 'pg-rows' }, rollovers.map(function (r) {
-              var dy = state.externalChat && state.externalChat.primary === 'douyin';
-              var switched = dy ? state.externalChat.sessionId === r.newSessionId : liveBridge[r.newSessionId] === true;
+              var p = state.externalChat ? state.externalChat.primary : '';
+              var switched = (p === 'douyin' || p === 'internal') ? state.externalChat.sessionId === r.newSessionId : liveBridge[r.newSessionId] === true;
               var working = rebindId === r.newSessionId || rebindId === r.oldSessionId;
               var meta = [
                 '目标 ' + r.newSessionId.slice(0, 8),
@@ -1176,6 +1517,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
                   className: 'pg-badge ' + (exploration.peakStatus.offPeak ? 'pg-badge-live' : 'pg-badge-dry'),
                   title: '按 DeepSeek 官方峰谷说明（北京时间）与日历判定'
                 }, (exploration.peakStatus.offPeak ? '谷时 · ' : '高峰 · ') + exploration.peakStatus.label) : null,
+                exploration.pausedForRest ? h(Badge, { tone: 'off' }, '角色休息中 · 自动探索暂停') : null,
                 exploration.offPeakOnly ? h('span', { className: 'pg-badge pg-badge-off' }, '仅谷时自动') : null,
                 exploring
                   ? h('span', { className: 'pg-badge pg-badge-dry' }, '探索中')
@@ -1207,14 +1549,26 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
                   thread ? h('div', { className: 'pg-exp-highlight' }, thread.topic + '：' + thread.progress) : null,
                   thread && thread.next ? h('div', { className: 'pg-exp-item' }, '下一步：' + thread.next) : null,
                   ...sourceLinks(thread),
+                  feedbackButtons('thread'),
                   leisure ? h('div', { className: 'pg-exp-highlight' }, '随便逛逛 · ' + leisure.topic + '：' + leisure.progress) : null,
                   ...sourceLinks(leisure),
+                  feedbackButtons('leisure'),
                   lightExp ? h('div', { className: 'pg-exp-highlight' }, '随手看看 · ' + lightExp.topic + '：' + (lightExp.summary || lightExp.progress)) : null,
                   ...sourceLinks(lightExp),
+                  feedbackButtons('light'),
                   exploration.candidate ? h('div', { className: 'pg-exp-item' }, '可分享：' + exploration.candidate.line) : null,
                   exploration.mood ? h('div', { className: 'pg-exp-item' }, '探索感受：' + exploration.mood.text) : null
                 )
               ) : null,
+              exploreFeedback && exploreFeedback.candidates && exploreFeedback.candidates.length ?
+                h('div', { className: 'pg-exp-list' },
+                  h('strong', null, '近期好奇候选'),
+                  h('ul', { className: 'pg-check-rows pg-notebook-list' }, exploreFeedback.candidates.map(function (item) {
+                    return h('li', { key: item.id },
+                      h('div', null, item.topic, h('div', { className: 'pg-row-hint' }, item.source === 'forward' ? '来自私聊转发' : '来自探索分享')),
+                      h('button', { className: 'pg-btn', type: 'button', disabled: smallActionPending, 'aria-label': '删除 ' + item.topic,
+                        onClick: function () { applySmallAction('/exploration/feedback', { id: item.id, action: 'delete' }); } }, '删除'));
+                  }))) : null,
               h('div', { className: 'pg-exp-actions' },
                 h('button', { className: 'pg-btn', type: 'button', disabled: busy || exploring || !state.enabled, onClick: onExplore },
                   exploring ? '探索进行中…' : '试跑一轮（不发送）')
@@ -1229,31 +1583,95 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
               })
             ) : null
           ) : null,
-          channelItems.length || (state && state.externalChat) ? h('div', { className: 'pg-card' },
-            h('div', { className: 'pg-card-head' },
-              h('div', { className: 'pg-card-title' }, '主聊天接口与通道开关'),
-              h('div', { className: 'pg-card-badges' },
-                h('span', {
-                  className: 'pg-badge ' + (state && state.externalChat && state.externalChat.primary === 'douyin' ? 'pg-badge-dry' : 'pg-badge-live')
-                }, state && state.externalChat && state.externalChat.primary === 'douyin' ? '当前：抖音私信' : '当前：QQ')
-              )
-            ),
-            state && state.externalChat && state.externalChat.primary === 'douyin' ? h('div', { className: 'pg-row-hint', style: { marginBottom: '8px' } }, state.externalChat.restartRequired
-              ? '旧收发已暂停，请重启 DSH 完成抖音接管。'
-              : '共用会话 ' + (state.externalChat.sessionId || '待绑定').slice(0, 8) +
-                (state.externalChat.polledAt ? ' · 上次读取 ' + clockOf(new Date(state.externalChat.polledAt).toISOString()) : ' · 等待轮询') +
-                (state.externalChat.status ? ' · ' + state.externalChat.status : '') +
-                (state.externalChat.retryAt && state.externalChat.status ? ' · 下次重试 ' + clockOf(new Date(state.externalChat.retryAt).toISOString()) : '') +
-                (state.externalChat.gap ? ' · 抖音历史窗口可能有缺口' : '')
-            ) : null,
-            channelItems.length ? h(
-              'div',
-              { className: 'pg-rows' },
-              channelItems.map(function (item) {
-                return h(Row, { key: item.path, item: item, busy: busy, onSave: onSave });
-              })
-            ) : null
-          ) : null,
+          channelItems.length || (state && state.externalChat) ? (function () {
+            var ec = (state && state.externalChat) || {};
+            var p = ec.primary || 'internal';
+            var badgeText = p === 'internal'
+              ? (ec.sessionId ? '当前：内部会话' : '当前：内部会话（未绑定）')
+              : p === 'douyin' ? '当前：抖音私信' : '当前：QQ';
+            var badgeCls = p === 'internal'
+              ? (ec.sessionId ? 'pg-badge-live' : 'pg-badge-dry')
+              : p === 'douyin' ? 'pg-badge-dry' : 'pg-badge-live';
+            var boundLabel = ec.sessionId
+              ? (ec.sessionTitle ? '「' + ec.sessionTitle + '」' : '') + ec.sessionId.slice(0, 8)
+              : '';
+            return h('div', { className: 'pg-card' },
+              h('div', { className: 'pg-card-head' },
+                h('div', { className: 'pg-card-title' }, '主聊天接口与通道开关'),
+                h('div', { className: 'pg-card-badges' },
+                  h('span', { className: 'pg-badge ' + badgeCls }, badgeText)
+                )
+              ),
+              p === 'internal' ? h('div', { className: 'pg-row-hint', style: { marginBottom: '8px' } },
+                ec.sessionId
+                  ? '已绑定共用会话 ' + boundLabel +
+                    (ec.lastUserAt ? ' · 最近对话 ' + clockOf(new Date(ec.lastUserAt).toISOString()) : '') +
+                    '。切换到 QQ 或抖音时也会沿用此会话。'
+                  : '尚未绑定内部会话：请从下方选择一个已有 DSH 会话，或点击「新建陪伴会话」。'
+              ) : null,
+              p === 'qq' && ec.sessionId ? h('div', { className: 'pg-row-hint', style: { marginBottom: '8px' } },
+                '当前共用会话 ' + boundLabel + '（切换通道时会沿用）。'
+              ) : null,
+              p === 'douyin' ? h('div', { className: 'pg-row-hint', style: { marginBottom: '8px' } }, ec.restartRequired
+                ? '旧收发已暂停，请重启 DSH 完成抖音接管。'
+                : (ec.sharedWithQq ? 'QQ 共用会话 ' : '共用会话 ') +
+                  (ec.sessionId ? ec.sessionId.slice(0, 8) : '待建立') +
+                  (ec.polledAt ? ' · 上次读取 ' + clockOf(new Date(ec.polledAt).toISOString()) : ' · 等待轮询') +
+                  (ec.status ? ' · ' + ec.status : '') +
+                  (ec.retryAt && ec.status ? ' · 下次重试 ' + clockOf(new Date(ec.retryAt).toISOString()) : '') +
+                  (ec.gap ? ' · 抖音历史窗口可能有缺口' : '')
+              ) : null,
+              channelItems.length ? h(
+                'div',
+                { className: 'pg-rows' },
+                channelItems.map(function (item) {
+                  return h(Row, { key: item.path, item: item, busy: busy, onSave: onSave });
+                }),
+                p === 'internal' ? h('div', { className: 'pg-row' },
+                  h('div', { className: 'pg-row-text' },
+                    h('div', { className: 'pg-row-label' }, '绑定内部会话'),
+                    h('div', { className: 'pg-row-hint' },
+                      hostSessions.length
+                        ? '从当前 DSH 的 ' + hostSessions.length + ' 个会话中选择绑定，或新建一条陪伴会话。'
+                        : (sessionsLoading ? '正在读取 DSH 会话列表…' : '未找到可绑定的已有会话，可直接新建陪伴会话。')
+                    )
+                  ),
+                  h('div', { className: 'pg-row-ctl pg-row-ctl-wrap' },
+                    h('select', {
+                      className: 'pg-input pg-select',
+                      value: selectedSessionId,
+                      disabled: busy || bindingBusy || sessionsLoading || !hostSessions.length,
+                      onChange: function (e) { setSelectedSessionId(e.target.value); },
+                    },
+                      !hostSessions.length ? h('option', { value: '' }, '暂无已有会话') : null,
+                      hostSessions.map(function (s) {
+                        var label = (s.title || '未命名会话') + ' [' + s.id.slice(0, 8) + ']' + (s.id === ec.sessionId ? '（当前）' : '');
+                        return h('option', { key: s.id, value: s.id }, label);
+                      })
+                    ),
+                    h('button', {
+                      type: 'button',
+                      className: 'pg-btn pg-btn-primary',
+                      disabled: busy || bindingBusy || !selectedSessionId || selectedSessionId === ec.sessionId,
+                      onClick: function () { onBindInternalSession({ sessionId: selectedSessionId }); },
+                    }, bindingBusy ? '绑定中…' : '绑定所选'),
+                    h('button', {
+                      type: 'button',
+                      className: 'pg-btn',
+                      disabled: busy || bindingBusy,
+                      onClick: function () { onBindInternalSession({ create: true }); },
+                    }, '新建陪伴会话'),
+                    h('button', {
+                      type: 'button',
+                      className: 'pg-btn',
+                      disabled: busy || bindingBusy || sessionsLoading,
+                      onClick: loadHostSessions,
+                    }, sessionsLoading ? '刷新中…' : '刷新列表')
+                  )
+                ) : null
+              ) : null
+            );
+          })() : null,
           groups.length ? h('div', { className: 'pg-sec-label' }, '参数设置') : null,
           groups.map(function (g) {
             return h(Group, { key: g.name, group: g, busy: busy, onSave: onSave });
@@ -1327,6 +1745,39 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         '.pg-badge-live{color:var(--pg-ok);border-color:color-mix(in srgb,var(--pg-ok) 38%,transparent);background:color-mix(in srgb,var(--pg-ok) 11%,transparent);}',
         '.pg-badge-dry{color:var(--pg-warn);border-color:color-mix(in srgb,var(--pg-warn) 38%,transparent);background:color-mix(in srgb,var(--pg-warn) 11%,transparent);}',
         '.pg-badge-off{color:var(--pg-faint);}',
+        '.pg-badge-bad{color:var(--pg-err);border-color:color-mix(in srgb,var(--pg-err) 35%,transparent);background:color-mix(in srgb,var(--pg-err) 9%,transparent);}',
+        '.pg-alert{padding:9px 14px;border-color:color-mix(in srgb,var(--pg-warn) 45%,var(--pg-line));font-size:12px;line-height:1.5;}',
+        '.pg-alert>div+div{margin-top:5px;}',
+        '.pg-alert .pg-badge{margin-right:7px;}',
+        '.pg-guide-toggle{background:transparent;border-color:transparent;font-weight:650;}',
+        '.pg-guide-copy{padding:7px 0;font-size:12px;line-height:1.55;overflow-wrap:anywhere;}',
+        '.pg-guide-copy .pg-quote{margin:7px 0;}',
+        '.pg-guide-step{padding:7px 0;}',
+        '.pg-guide-step+.pg-guide-step{border-top:1px solid var(--pg-line-soft);}',
+        '.pg-guide-step h3{margin:0 0 4px;font-size:12px;font-weight:650;}',
+        '.pg-guide-step-head{display:flex;align-items:center;justify-content:space-between;gap:7px;flex-wrap:wrap;margin-bottom:5px;}',
+        '.pg-check-rows{list-style:none;padding:0;margin:5px 0 0;display:grid;gap:6px;}',
+        '.pg-check-rows li{display:flex;align-items:baseline;gap:8px;}',
+        '.pg-notebook-list>li{justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--pg-line-soft);}',
+        '.pg-notebook-list>li>div{min-width:0;overflow-wrap:anywhere;}',
+        '.pg-feedback-slots>li{display:block;}',
+        '.pg-receipt-summary,.pg-receipt-list li{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}',
+        '.pg-receipt-toggle{font-family:inherit;cursor:pointer;}',
+        '.pg-receipt-toggle:hover,.pg-receipt-toggle[aria-expanded=true]{border-color:var(--pg-muted);color:var(--pg-fg);}',
+        '.pg-receipt-toggle::after{content:"▸";margin-left:6px;}',
+        '.pg-receipt-toggle[aria-expanded=true]::after{content:"▾";}',
+        '.pg-receipt-list{list-style:none;padding:2px 10px;margin:6px 0 8px;border-left:2px solid var(--pg-line-soft);}',
+        '.pg-receipt-list li{min-height:34px;}',
+        '.pg-receipt-list li+li{border-top:1px solid var(--pg-line-soft);}',
+        '.pg-receipt-time{font-variant-numeric:tabular-nums;}',
+        '.pg-receipt-caught{color:var(--pg-ok);}',
+        '.pg-receipt-missed{color:var(--pg-muted);}',
+        '.pg-receipt-mark{display:inline-flex;align-items:center;gap:4px;cursor:pointer;color:var(--pg-muted);}',
+        '.pg-receipt-mark input{margin:0;accent-color:var(--pg-brand);}',
+        '.pg-receipt-empty,.pg-receipt-error{padding:6px 0;}',
+        '.pg-receipt-error{color:var(--pg-err);}',
+        '.pg-report{padding-top:7px;}',
+        '.pg-report>div{white-space:pre-line;color:var(--pg-muted);}',
         '.pg-sec-label{font-size:11px;font-weight:650;letter-spacing:.6px;color:var(--pg-faint);display:flex;align-items:center;gap:10px;padding:4px 2px 0;}',
         '.pg-sec-label::after{content:"";flex:1 1 auto;height:1px;background:var(--pg-line-soft);}',
         '.pg-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(136px,1fr));gap:9px;}',
@@ -1354,6 +1805,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         '.pg-card-sum-name{flex:0 0 auto;}',
         '.pg-card-sub{font-size:11px;font-weight:400;letter-spacing:0;color:var(--pg-faint);flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
         '.pg-note{font-size:11.5px;line-height:1.65;color:var(--pg-muted);background:var(--pg-field);border:1px solid var(--pg-line-soft);border-left:3px solid var(--pg-warn);border-radius:9px;padding:9px 11px;margin:0 0 8px;}',
+        '.pg-card-inner-note{margin:9px 0 4px;}',
         '.pg-rows{display:flex;flex-direction:column;}',
         '.pg-timing-search{width:100%;margin:9px 0 4px;text-align:left;padding:6px 10px;}',
         '.pg-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:10px 0;border-bottom:1px solid var(--pg-line-soft);}',

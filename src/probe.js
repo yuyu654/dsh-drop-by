@@ -12,13 +12,15 @@ export function probeCached(maxAgeMs = 5000) {
   return null;
 }
 
-export function probe(force = false, cfg) {
+export function probe(force = false, cfg, { readOnly = false } = {}) {
   const cached = !force && probeCached(cfg?.perception?.probeCacheMs ?? 5000);
   if (cached) return Promise.resolve(cached);
+  const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', SCRIPT];
+  if (readOnly) args.push('-ReadOnly');
   return new Promise((resolve) => {
     execFile(
       'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', SCRIPT],
+      args,
       { timeout: cfg?.perception?.probeTimeoutMs ?? 4000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 },
       (err, stdout) => {
         if (err) {
@@ -38,7 +40,7 @@ export function probe(force = false, cfg) {
           const data = JSON.parse(String(stdout).trim().split('\n').pop());
           data.procs = Array.isArray(data.procs) ? data.procs : [];
           data.locked = Boolean(data.locked || data.procs.some((p) => String(p).toLowerCase() === 'logonui'));
-          cache = { at: Date.now(), data };
+          if (!readOnly) cache = { at: Date.now(), data };
           resolve(data);
         } catch (e) {
           resolve({

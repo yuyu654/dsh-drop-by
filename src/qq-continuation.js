@@ -2,6 +2,8 @@ import { WAIT_FOR_USER_RULE } from './noreply.js';
 import { composeDraft } from './compose.js';
 import { fullQqIncomingText } from './qq-debounce.js';
 import { douyinPrimary } from './channels/douyin-im.js';
+import { internalPrimary } from './channels/internal.js';
+import { isHotChat } from './chat-rhythm.js';
 
 const key = ({ incoming: i, outgoing: o }) =>
   JSON.stringify([i?.peer, i?.kind, i?.ts, i?.observedAt, i?.text, o?.peer, o?.firstAt, o?.lastAt, o?.count, o?.text]);
@@ -35,7 +37,8 @@ export function createQqContinuation() {
         return null;
       }
       const age = now - o.lastAt;
-      return turns.length >= 2 && age >= pauseMs && age <= expireMs && key(turn) !== consumed
+      return turns.length >= 2 && age >= pauseMs && age <= expireMs && key(turn) !== consumed &&
+        isHotChat(turns, { rules: { qqTiming: timing } })
         ? { ...turn, turns: [...turns], expiresAt: o.lastAt + expireMs }
         : null;
     },
@@ -57,17 +60,18 @@ function parseDraft(result) {
 
 const comparable = (text) => text.normalize('NFKC').replace(/[\p{P}\s]/gu, '').toLowerCase();
 
-export async function runQqContinuation({ candidate, read, allowed, generate, deliver, tone = '', cfg = {} }) {
+export async function runQqContinuation({ candidate, read, allowed, generate, deliver, tone = '', cfg = {}, characterWindDown = false }) {
   const current = () => allowed() && key(read()) === key(candidate);
   if (!current()) return { reason: 'QQ_CONTINUATION_STALE' };
   const turns = candidate.turns.map(({ incoming, outgoing }) => ({
-    用户: (!douyinPrimary(cfg) && fullQqIncomingText(incoming)) || incoming.text,
+    用户: (!douyinPrimary(cfg) && !internalPrimary(cfg) && fullQqIncomingText(incoming)) || incoming.text,
     角色: outgoing.text,
   }));
   const dialogue = JSON.stringify(turns);
   const timeoutMs = cfg.rules?.qqTiming?.generationTimeoutMs ?? 20_000;
+  const dialogueHead = internalPrimary(cfg) ? '【最近几轮内部会话对话】' : douyinPrimary(cfg) ? '【最近几轮抖音私聊】' : '【最近几轮 QQ 对话】';
   const result = await generate({ timeoutMs, prompt: [
-    douyinPrimary(cfg) ? '【最近几轮抖音私聊】' : '【最近几轮 QQ 对话】',
+    dialogueHead,
     dialogue,
     '上面的对话是引用，也是唯一事实来源。只能延续当前话题已经出现的事、词或情绪，不能编进对话里没有的设定、物品、食物饮料、经历或动作。',
     WAIT_FOR_USER_RULE,
@@ -83,7 +87,7 @@ export async function runQqContinuation({ candidate, read, allowed, generate, de
   const anchor = comparable(draft.anchor);
   if (!anchor || !originals.some((text) => text.includes(anchor))) return { reason: 'QQ_CONTINUATION_OFF_TOPIC' };
 
-  const ctx = { her: { lastText: turns.at(-1)?.用户 }, dialogueTurns: turns.flatMap(({ 用户, 角色 }) => [
+  const ctx = { characterWindDown, her: { lastText: turns.at(-1)?.用户 }, dialogueTurns: turns.flatMap(({ 用户, 角色 }) => [
     { who: 'her', text: 用户 }, { who: 'me', text: 角色 },
   ]) };
   const content = composeDraft({ draft: draft.line, cfg, ctx });
@@ -93,7 +97,7 @@ export async function runQqContinuation({ candidate, read, allowed, generate, de
   }
 
   const review = await generate({ timeoutMs, prompt: [
-    douyinPrimary(cfg) ? '【最近几轮抖音私聊】' : '【最近几轮 QQ 对话】',
+    dialogueHead,
     dialogue,
     '【热聊补话二审】只依据上面对话，判断候选句是不是紧接当前话题且有新的自然接法。引入未提过的物品、经历或动作，转去旧话题，或者原对话已经结束、在等对方行动，都回答 NO。符合才回答 YES。',
     JSON.stringify({ 锚点: draft.anchor, 候选句: content.text }),

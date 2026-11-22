@@ -101,15 +101,22 @@ test('设置口：读、写、拒绝、以及不碰真配置', async (t) => {
   assert.equal(got.status, 200);
   assert.equal(got.json.ok, true);
   const groups = got.json.groups;
-  assert.equal(groups.length, 8);
+  assert.equal(groups.length, 9);
   assert.deepEqual(
     got.json.explorationItems.map((i) => i.path),
-    ['exploration.auto', 'exploration.mode', 'exploration.nextTopic', 'exploration.interest', 'exploration.offerShare']
+    ['exploration.auto', 'exploration.mode', 'exploration.bias', 'exploration.nextTopic', 'exploration.interest', 'exploration.offerShare']
   );
   assert.deepEqual(
     got.json.channelItems.map((i) => i.path),
-    ['channels.primary', 'channels.qq.send', 'channels.qq.read']
+    ['channels.primary', 'channels.douyin.peerSecUid', 'channels.qq.peerId', 'channels.qq.send', 'channels.qq.read']
   );
+  for (const [path, value] of [['characterRest.jitterMin', 12], ['exploration.bias', 'leisure']]) {
+    const response = await call(route, { method: 'POST', url: '/api/dsh-drop-by/config', body: { path, value } });
+    assert.equal(response.json.ok, true);
+    const reread = (await call(route, { url: '/api/dsh-drop-by/config' })).json;
+    const items = [...reread.groups.flatMap(group => group.items), ...reread.explorationItems];
+    assert.equal(items.find(item => item.path === path).value, value);
+  }
   // 感知那三层的开关和间隔要能看能改
   const flat0 = groups.flatMap((g) => g.items);
   for (const p of ['idle.onlineSec', 'idle.awaySec', 'perception.l2.enabled', 'perception.l3.enabled']) {

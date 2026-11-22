@@ -9,6 +9,7 @@
 // 只读文件，不联网，不发任何东西。
 import fs from 'node:fs';
 import { douyinPeer, douyinPrimary, readDouyinState } from './channels/douyin-im.js';
+import { internalPrimary, internalSessionId, readInternalState } from './channels/internal.js';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -149,12 +150,19 @@ export function qqLastOutbound({ env = process.env, dsh = null } = {}) {
  * 抖音侧最后一次出站：dm 记忆里 from === 'me' 的最新一条。
  * 抖音通道关着的时候这些文件是陈的（没人盯梢更新），不能拿来当证据。
  */
+export function internalLastOutbound({ cfg = {} } = {}) {
+  const sid = internalSessionId();
+  if (!sid || cfg?.channels?.internal?.enabled === false) return { ts: 0, channel: 'internal', src: '' };
+  const o = readInternalState(sid).outgoing;
+  return { ts: Number(o?.lastAt) || 0, text: o?.text || '', src: o?.lastAt ? 'internal-session' : '', channel: 'internal' };
+}
+
 export function douyinLastOutbound({ env = process.env, dsh = null, cfg = {} } = {}) {
   if (douyinPrimary(cfg)) {
     const o = readDouyinState(douyinPeer(cfg)).outgoing;
     return { ts: o?.lastAt || 0, text: o?.text || '', src: 'douyin-im', channel: 'douyin' };
   }
-  if (cfg.channels?.primary === 'qq') return { ts: 0, channel: 'douyin', src: '' };
+  if (cfg.channels?.primary === 'qq' || internalPrimary(cfg)) return { ts: 0, channel: 'douyin', src: '' };
   if (cfg?.channels?.douyin?.enabled === false) return { ts: 0, channel: 'douyin', src: '' };
   const home = dsh || dshHome(env);
   const dir = path.join(home, 'douyin-duty', 'memory');
@@ -180,7 +188,7 @@ export function douyinLastInbound({ env = process.env, dsh = null, cfg = {} } = 
     const i = readDouyinState(douyinPeer(cfg)).incoming;
     return { ...i, ts: i?.ts || 0, src: 'douyin-im', channel: 'douyin' };
   }
-  if (cfg.channels?.primary === 'qq') return { ts: 0, channel: 'douyin', src: '' };
+  if (cfg.channels?.primary === 'qq' || internalPrimary(cfg)) return { ts: 0, channel: 'douyin', src: '' };
   if (cfg?.channels?.douyin?.enabled === false) return { ts: 0, channel: 'douyin', src: '' };
   const home = dsh || dshHome(env);
   const dir = path.join(home, 'douyin-duty', 'memory');
@@ -222,6 +230,7 @@ function dmMemoryLastTs(dir, files, from) {
 
 /** 所有通道里最晚的一次出站（哪个通道无所谓：她已经听见了）。 */
 export function lastOutbound({ env = process.env, dsh = null, cfg = {} } = {}) {
+  if (internalPrimary(cfg)) return internalLastOutbound({ cfg });
   if (douyinPrimary(cfg)) return douyinLastOutbound({ env, dsh, cfg });
   const a = qqLastOutbound({ env, dsh });
   const b = douyinLastOutbound({ env, dsh, cfg });
@@ -235,6 +244,7 @@ export function lastOutbound({ env = process.env, dsh = null, cfg = {} } = {}) {
  * 不知道渠道时才退回「所有通道取最晚」。
  */
 export function outboundFor(channel, opts = {}) {
+  if (internalPrimary(opts.cfg || {}) || channel === 'internal') return internalLastOutbound(opts);
   if (douyinPrimary(opts.cfg || {})) return douyinLastOutbound(opts);
   if (channel === 'qq') return qqLastOutbound(opts);
   if (channel === 'douyin') return douyinLastOutbound(opts);
@@ -257,6 +267,7 @@ export function answeredAlready({ herTs, out } = {}) {
  * 读不到就返回空数组，快照整段省略。
  */
 export function recentTurns({ limit = 6, env = process.env, dsh = null, cfg = {} } = {}) {
+  if (internalPrimary(cfg)) return (readInternalState(internalSessionId()).dialogue || []).slice(-limit * 2);
   if (douyinPrimary(cfg)) return (readDouyinState(douyinPeer(cfg)).dialogue || []).slice(-limit * 2);
   const home = dsh || dshHome(env);
   const hist = readJson(path.join(home, 'autonomy', 'qq-history.json'));
@@ -289,6 +300,8 @@ export function recentTurns({ limit = 6, env = process.env, dsh = null, cfg = {}
  * 只读文件；两个来源都读不到就返回空数组（compose 那边整段省略，不留空标题）。
  */
 export function recentOutbound({ limit = 5, env = process.env, dsh = null, cfg = {} } = {}) {
+  if (internalPrimary(cfg)) return (readInternalState(internalSessionId()).dialogue || [])
+    .filter(r => r.who === 'me').slice(-limit).reverse().map(r => ({ ...r, channel: 'internal' }));
   if (douyinPrimary(cfg)) return (readDouyinState(douyinPeer(cfg)).dialogue || [])
     .filter(r => r.who === 'me').slice(-limit).reverse().map(r => ({ ...r, channel: 'douyin' }));
   const home = dsh || dshHome(env);

@@ -21,7 +21,9 @@ export function bindActionExecutor(handler) {
 }
 
 function callbackTransportReady(cfg) {
-  if (activeChatChannel(cfg) === 'douyin') return canReadChat(cfg) && cfg.channels.douyin.send !== false;
+  const ch = activeChatChannel(cfg);
+  if (ch === 'internal') return canReadChat(cfg) && cfg.channels?.internal?.send !== false;
+  if (ch === 'douyin') return canReadChat(cfg) && cfg.channels.douyin.send !== false;
   try {
     const conn = JSON.parse(fs.readFileSync(path.join(dshHome(), 'qq-bridge', 'connection.json'), 'utf8'));
     return Boolean(conn.httpApiUrl && conn.httpToken);
@@ -137,7 +139,7 @@ async function waitForOrdinaryReply({ peer, consumedAt, cfg, handler }) {
   }
 }
 
-function incomingMatches({ peer, kind, text, bridgeText = text, at, incoming, cfg }) {
+export function incomingMatches({ peer, kind, text, bridgeText = text, at, incoming, cfg }) {
   const value = (activeChatChannel(cfg) === 'qq' ? String(bridgeText || '').slice(0, 80) : String(bridgeText || '')).trim();
   return incoming.peer === String(peer) && incoming.kind === kind &&
     incoming.ts === at && Boolean(incoming.observedAt) && String(incoming.text || '').trim() === value;

@@ -10,6 +10,7 @@
 //   · 生成失败/被 guard 退回 → 这一拍不发，**绝不拿模板兜底**（废话比沉默差）。
 import { minutesOfDayOf, dayKey } from './time.js';
 import { inQuiet } from './schedule.js';
+import { topicPreferenceMode } from './feedback.js';
 import { SLOTS } from './topics.js';
 import { FALLBACK_REST, inRest, clockOf } from './bedtime.js';
 
@@ -46,9 +47,9 @@ export function chitchatToday(st, now, tz) {
 }
 
 /**
- * 阶段 4：密度。基线 1 条/天；近 7 天接住率 >70% 放到 2 条，<30% 压回 1 条。
+ * 按最近接住率分档，最多放到用户配置的上限。
  * 样本不足 5 条就按基线走，不拿两三条猜她的脾气。
- * 返回 { perDay, rate, sent, why }。
+ * 返回 { perDay, configuredPerDay, rate, sent, why }。
  */
 export function densityTarget(st, now = Date.now(), tz = 'Asia/Shanghai', cfg) {
   const days = st?.chitchat?.days && typeof st.chitchat.days === 'object' ? st.chitchat.days : {};
@@ -60,11 +61,14 @@ export function densityTarget(st, now = Date.now(), tz = 'Asia/Shanghai', cfg) {
     sent += Number(v.sent) || 0;
     replied += Number(v.replied) || 0;
   }
-  if (sent < 5) return { perDay: 1, rate: null, sent, why: `样本 ${sent} 条，按基线 1 条` };
-  const rate = replied / sent;
-  if (rate > 0.7) return { perDay: 2, rate, sent, why: '最近接得不错，放到 2 条' };
-  if (rate < 0.3) return { perDay: 1, rate, sent, why: '最近没怎么接，压回 1 条' };
-  return { perDay: 1, rate, sent, why: '照常 1 条' };
+  const value = Number(chitchatCfg(cfg).perDay ?? 3);
+  const configuredPerDay = Math.max(0, Math.min(10, Math.trunc(Number.isNaN(value) ? 3 : value)));
+  const rate = sent >= 5 ? replied / sent : null;
+  let perDay = configuredPerDay;
+  if (rate == null || rate < 0.3) perDay = Math.min(configuredPerDay, 1);
+  else if (rate <= 0.7) perDay = Math.min(configuredPerDay, 2);
+  const basis = rate == null ? `只有 ${sent} 条样本` : `最近 ${sent} 条接住了 ${replied} 条（${Math.round(rate * 100)}%）`;
+  return { perDay, configuredPerDay, rate, sent, why: `${basis}，每天生效上限 ${perDay} 条` };
 }
 
 /**
@@ -93,9 +97,8 @@ export function chitchatGate({ cfg, now = Date.now(), st = {}, ctx = {}, tz = 'A
   if (inQuiet(now, cfg?.quietHours, tz)) {
     return { ok: false, reason: 'NO_CHITCHAT_WINDOW', why: '全局静默时段，随口话也不说' };
   }
-  // 设置里的 perDay 是天花板，真正一天几条由密度定（基线 1，接得好才 2）。
   const dens = densityTarget(st, now, tz, cfg);
-  const perDay = Math.max(0, Math.min(10, Math.min(Number(c.perDay ?? 3), dens.perDay)));
+  const perDay = dens.perDay;
   if ((Number(sc.count) || 0) >= perDay) {
     return { ok: false, reason: 'NO_CHITCHAT_BUDGET', why: `今天随口说过 ${sc.count} 条，上限 ${perDay}（${dens.why}）` };
   }
@@ -122,7 +125,7 @@ export function chitchatGate({ cfg, now = Date.now(), st = {}, ctx = {}, tz = 'A
     return { ok: false, reason: 'CHITCHAT_REPLY_PENDING', why: '她刚说完，还在回复等待窗口里' };
   }
   const until = Number(sc.cooldownUntil) || 0;
-  if (until > now) {
+  if (until > now && topicPreferenceMode(st, { slot: 'chitchat' }, now) !== 'allow_silent') {
     return { ok: false, reason: 'NO_CHITCHAT_COOLDOWN', why: '连着几条都被晾，先停一阵' };
   }
   return { ok: true, state: sc };
@@ -191,7 +194,7 @@ export function noteChitchatSent(st, now, tz, text = '', seedId = '', opts = {})
   const id = String(seedId || '').trim();
   if (id) st.chitchat.recentSeeds = [...(Array.isArray(sc.recentSeeds) ? sc.recentSeeds : []), id].slice(-3);
   // 测试期（feedback.testMode）的发送不进密度样本：她没回不算没接住，也就不能算「接不住」。
-  if (opts.test === true) return st.chitchat;
+  if (opts.test === true || opts.expect === false) return st.chitchat;
   const days = { ...(sc.days && typeof sc.days === 'object' ? sc.days : {}) };
   const row = days[day] && typeof days[day] === 'object' ? days[day] : { sent: 0, replied: 0 };
   days[day] = { sent: (Number(row.sent) || 0) + 1, replied: Number(row.replied) || 0 };

@@ -9,7 +9,7 @@ import { buildSnapshot } from './snapshot.js';
 import { judgeDecision } from './judge.js';
 import { dayKey } from './time.js';
 
-const SKIP_BURN = new Set(['GLOBAL_QUIET', 'PLUGIN_DISABLED', 'DATA_UNAVAILABLE', 'BUSY_HOURS', 'CONTENT_DISABLED']);
+const SKIP_BURN = new Set(['GLOBAL_QUIET', 'PLUGIN_DISABLED', 'DATA_UNAVAILABLE', 'BUSY_HOURS', 'CHARACTER_ASLEEP', 'USER_WINDING_DOWN', 'CONTENT_DISABLED']);
 
 /** 这一拍该不该拿去预演（纯判定，方便单测）。 */
 export function shadowEligible(cfg, reason) {

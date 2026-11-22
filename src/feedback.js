@@ -13,18 +13,106 @@
 //       超过窗口、没回应   → miss（只有整段窗口都落在白天才算；否则这次不算数）
 //   - 同一类由头发够 coldAfter 次、接住率低于 coldRate → 压 coldDays 天。
 //   - 连着几条都没回 → 两条之间自动拉长（最多 gapMaxX 倍），别在没人应的时候一直敲。
-import { minutesOfDayOf } from './time.js';
-import { dayKey } from './time.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { LOG_DIR, updateStatePreferences, updateStateReceiptOverrides } from './config.js';
+import { dayKey, minutesOfDayOf } from './time.js';
 
 const DAY = 86_400_000;
 const MIN = 60_000;
 const feedbackTiming = (cfg) => cfg?.rules?.feedback || {};
 const chitTiming = (cfg) => cfg?.rules?.chitchat || {};
 
-// 「回她」和「接转发」不是找她说话：我回完一句，她看着看着就去干别的了，
-// 这是常态，不是「没接住」。所以这两类**不进接住率、不进 streak、不变成追问的由头**，
+// 「回她」「接转发」和「角色睡前/刚醒」不是期待必回的搭话：
+// 发完一句对方没接是常态，不算「没接住」。所以这几类**不进接住率、不进 streak、不变成追问的由头**，
 // 只留一条 pending 用来配「我说了什么 → 她回了什么」的对照。
-const NO_EXPECT = new Set(['reply', 'forward']);
+const NO_EXPECT = new Set(['reply', 'forward', 'characterRest']);
+
+const PREFERENCE_MODES = new Set(['allow_silent', 'mute_less']);
+const NON_PROACTIVE_SLOTS = new Set(['reply', 'forward', 'noReply', 'fixed']);
+
+export function normalizePreferenceKeyword(value) {
+  const text = String(value || '').normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase();
+  return /^[\p{L}\p{N}][\p{L}\p{N} _·-]{1,47}$/u.test(text) ? text : '';
+}
+
+export function activeTopicPreferences(st, now = Date.now()) {
+  const rows = st?.feedback?.preferences;
+  if (!Array.isArray(rows)) return [];
+  return rows.filter(row => PREFERENCE_MODES.has(row?.mode) &&
+    (row.target?.slot || normalizePreferenceKeyword(row.target?.keyword)) &&
+    (row.expiresAt == null || (Number.isFinite(row.expiresAt) && now < row.expiresAt)));
+}
+
+function topicThemes(topic) {
+  const e = topic?.evidence || {};
+  return [e.section, e.topic, e.subject, e.source?.title, e.title, e.name, e.seed, e.theme]
+    .filter(value => typeof value === 'string' && value.trim());
+}
+
+export function topicPreferenceMode(st, topic, now = Date.now()) {
+  if (!topic?.slot || NON_PROACTIVE_SLOTS.has(topic.slot)) return null;
+  let mode = null;
+  for (const pref of activeTopicPreferences(st, now)) {
+    const keyword = normalizePreferenceKeyword(pref.target.keyword);
+    const matches = pref.target.slot === topic.slot || (keyword && topicThemes(topic).some(value =>
+      value.normalize('NFKC').toLowerCase().replace(/\s+/gu, ' ').includes(keyword)));
+    if (!matches) continue;
+    if (pref.mode === 'mute_less') return pref.mode;
+    mode = pref.mode;
+  }
+  return mode;
+}
+
+export function noteProactive(st, topic, { channel, peer, at }) {
+  if (!topic?.slot || NON_PROACTIVE_SLOTS.has(topic.slot) || !peer || !Number.isFinite(at)) return;
+  const themes = topicThemes(topic);
+  const theme = themes.find(value => normalizePreferenceKeyword(value)) || themes[0] || '';
+  ensure(st).lastProactive = { slot: topic.slot, theme: theme.trim().slice(0, 120),
+    ts: at, channel, peer: String(peer) };
+}
+
+export function lastProactiveTarget(st, { channel, peer, at }, cfg) {
+  const last = st?.feedback?.lastProactive;
+  const age = at - last?.ts;
+  const hours = Math.min(24, Number(feedbackTiming(cfg).keepHours ?? 24));
+  if (!last?.slot || last.channel !== channel || last.peer !== String(peer) || !(age > 0 && age < hours * 3_600_000)) return null;
+  const keyword = normalizePreferenceKeyword(last.theme);
+  return keyword ? { keyword } : { slot: last.slot };
+}
+
+function preferenceExpiry(until, at, tz) {
+  if (!until) return null;
+  const today = Date.parse(dayKey(at, tz) + 'T00:00:00Z');
+  const days = until === '这周' ? 7 - ((new Date(today).getUTCDay() + 6) % 7) : 1;
+  const target = today + days * DAY;
+  const key = new Date(target).toISOString().slice(0, 10);
+  // Find the first instant with the target local date, including DST changes.
+  let low = target - DAY;
+  let high = target + DAY;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (dayKey(mid, tz) < key) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+
+const targetKey = (target) => target.slot ? 'slot:' + target.slot : 'keyword:' + normalizePreferenceKeyword(target.keyword);
+
+export function saveTopicPreference(preference, source, cfg) {
+  return updateStatePreferences(st => {
+    const { mode, quote, until } = preference;
+    const target = preference.target.recent ? lastProactiveTarget(st, source, cfg) : preference.target;
+    if (!target) return null;
+    const key = targetKey(target);
+    const keep = activeTopicPreferences(st, source.at).filter(row => targetKey(row.target) !== key);
+    if (mode !== 'reset') keep.push({ mode, target, quote, channel: source.channel, peer: String(source.peer),
+      expiresAt: preferenceExpiry(until, source.at, cfg?.timezone) });
+    return { preferences: keep, result: { mode, target } };
+  });
+}
 
 export function emptyFeedback() {
   return { pending: [], slots: {}, streak: 0 };
@@ -81,6 +169,7 @@ export function classify(p, herTs, tz = 'Asia/Shanghai', timing = {}) {
 
 /**
  * 真发出去一条：记待回、记这一类发过。dryRun 不要调这个。
+ * opts.expect=false：保留对照记录，但沉默不参与反馈。
  * opts.test：测试期（rules.feedback.testMode）——只留一条「发过」的痕迹用来配对回看，
  * **不进分母、不动 streak、不判没接住**。插件没完工时她的沉默不代表这类话不行。
  */
@@ -88,7 +177,7 @@ export function noteSent(st, slot, now, text, opts = {}) {
   if (!slot) return;
   const f = ensure(st);
   const test = opts.test === true;
-  const expect = !NO_EXPECT.has(slot);
+  const expect = opts.expect !== false && !NO_EXPECT.has(slot);
   if (!test && expect) {
     const s = slotRec(f, slot);
     s.sent += 1;
@@ -101,6 +190,7 @@ export function noteSent(st, slot, now, text, opts = {}) {
     ts: now,
     chars: String(text || '').length,
     draft: String(text || '').slice(0, DRAFT_MAX),
+    ...(!test && expect ? { receiptId: randomUUID(), sentAt: opts.sentAt ?? now } : {}),
     ...(expect ? {} : { expect: false }),
     ...(test ? { test: true } : {}),
   });
@@ -108,9 +198,132 @@ export function noteSent(st, slot, now, text, opts = {}) {
   if (!test && expect) f.streak = (Number(f.streak) || 0) + 1;
 }
 
+function settledReceipts(slot) {
+  if (Array.isArray(slot?.receipts)) return slot.receipts;
+  if (!slot?.replied || !Array.isArray(slot.pairs)) return [];
+  // 旧状态只有配对，回复时间减去当时记录的延迟就是发出时间。
+  return slot.pairs.flatMap((pair, index) => {
+    if (pair?.expect === false || !Number.isFinite(pair?.ts) || !Number.isFinite(pair.latencyMin)) return [];
+    const ts = pair.ts - pair.latencyMin * MIN;
+    return [{ id: 'legacy-' + index + '-' + ts, ts, received: true }];
+  });
+}
+
+function manualReceipts(st, slot) {
+  const rows = st.feedback?.receiptOverrides?.[slot];
+  return Array.isArray(rows) ? rows : [];
+}
+
+function receiptIdentity(p) {
+  const ts = p.sentAt ?? p.ts;
+  const id = p.receiptId ?? ('pending-' + (p.channel || 'qq') + '-' + ts);
+  return { id, ts };
+}
+
+function recentDecisionSends(slot, logDir = LOG_DIR) {
+  let files = [];
+  try {
+    files = fs.readdirSync(logDir).filter(name => /^decision-.*\.jsonl$/u.test(name)).sort().reverse();
+  } catch {
+    return [];
+  }
+  const seen = new Set();
+  const times = [];
+  for (const name of files) {
+    let text = '';
+    try { text = fs.readFileSync(path.join(logDir, name), 'utf8'); } catch { continue; }
+    const lines = text.split('\n');
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      let rec;
+      try { rec = JSON.parse(line); } catch { continue; }
+      if (rec?.delivery?.ok !== true || rec.dry_run === true || rec.dryRun === true ||
+          rec.track !== 'proactive' || rec.topic?.slot !== slot || !Number.isFinite(rec.ts)) continue;
+      if (seen.has(rec.ts)) continue;
+      seen.add(rec.ts);
+      times.push(rec.ts);
+    }
+  }
+  return times.sort((a, b) => b - a);
+}
+
+export function receiptDetails(st, slot, opts = {}) {
+  const tz = opts.tz || 'Asia/Shanghai';
+  const timing = feedbackTiming(opts.cfg);
+  const logDir = opts.logDir ?? LOG_DIR;
+  const stat = st.feedback?.slots?.[slot];
+  const settled = settledReceipts(stat);
+  const rows = new Map(settled.map(row => [row.id, { ...row, manual: false }]));
+  let hasPending = false;
+  for (const pending of st.feedback?.pending || []) {
+    if (pending.slot !== slot || pending.test === true || pending.expect === false || NO_EXPECT.has(slot)) continue;
+    hasPending = true;
+    const { id, ts } = receiptIdentity(pending);
+    if (Number.isFinite(ts) && !rows.has(id)) rows.set(id, { id, ts, received: null, manual: false, status: 'pending' });
+  }
+  const manual = manualReceipts(st, slot);
+  // 手动标记离开近期列表后仍可撤销，继续保留它的发送时间。
+  for (const { id, ts } of manual) rows.set(id, { id, ts, received: true, manual: true });
+
+  const accountedMisses = new Set([
+    ...settled.filter(row => row.received === false).map(row => row.id),
+    ...manual.map(row => row.id),
+  ]);
+  let remainingMisses = Math.max(0, (Number(stat?.missed) || 0) - accountedMisses.size);
+  const nearExisting = (ts) => {
+    for (const row of rows.values()) {
+      if (Math.abs(row.ts - ts) <= 120_000) return true;
+    }
+    return false;
+  };
+  const last = Number(stat?.lastSentAt);
+  const lastReplied = Number(stat?.lastRepliedAt) || 0;
+
+  if (remainingMisses > 0 && !NO_EXPECT.has(slot)) {
+    for (const ts of recentDecisionSends(slot, logDir)) {
+      if (remainingMisses <= 0) break;
+      if (last > 0 && Number.isFinite(last) && ts > last + 120_000) continue;
+      if (nearExisting(ts) || !fairWindow(ts, tz, timing)) continue;
+      const id = 'log-' + slot + '-' + ts;
+      rows.set(id, { id, ts, received: false, manual: false });
+      remainingMisses -= 1;
+    }
+  }
+
+  const details = [...rows.values()];
+  if (last > 0 && Number.isFinite(last) && !nearExisting(last) && !details.some(row => row.ts >= last)) {
+    const provablyMissed = !hasPending && remainingMisses > 0 && last > lastReplied &&
+      (fairWindow(last, tz, timing) || ((Number(stat?.replied) || 0) === 0 && (Number(stat?.missed) || 0) >= (Number(stat?.sent) || 0)));
+    details.push(provablyMissed
+      ? { id: 'last-' + last, ts: last, received: false, manual: false }
+      : { id: 'last-' + last, ts: last, received: null, manual: false, status: 'unknown' });
+  }
+  return details.sort((a, b) => b.ts - a.ts);
+}
+
+export function setFeedbackReceipt(slot, id, received, opts = {}) {
+  return updateStateReceiptOverrides(st => {
+    const slots = st.feedback?.slots;
+    if (!slots || !Object.hasOwn(slots, slot)) return null;
+    const edited = manualReceipts(st, slot);
+    const row = edited.find(item => item.id === id) ||
+      receiptDetails(st, slot, opts).find(item => item.id === id && item.received === false);
+    if (!row) return null;
+    const next = edited.filter(item => item.id !== id);
+    if (received) next.push({ id, ts: row.ts });
+    const receiptOverrides = { ...st.feedback.receiptOverrides };
+    if (next.length) receiptOverrides[slot] = next;
+    else delete receiptOverrides[slot];
+    return { receiptOverrides, result: st };
+  });
+}
+
 /** 把一次判定落到账上。miss 不进 replied；其余都算她回过（只是早晚不同）。 */
 function apply(f, p, r, herText, { pair = true } = {}) {
   const s = slotRec(f, p.slot);
+  s.receipts = [...settledReceipts(s), { ...receiptIdentity(p), received: r.kind !== 'miss' }]
+    .sort((a, b) => a.ts - b.ts).slice(-PAIRS_MAX);
   if (r.kind === 'miss') {
     s.missed = (Number(s.missed) || 0) + 1;
     return;
@@ -211,6 +424,7 @@ export function settle(st, herTs, now = Date.now(), herText = '', opts = {}) {
             herReply: String(herText || '').slice(0, DRAFT_MAX),
             latencyMin: lat,
             kind: r.kind,
+            expect: false,
             ts: p.ts + lat * MIN,
           },
         ].slice(-PAIRS_MAX);
@@ -317,13 +531,15 @@ export function slotStats(st) {
   const out = {};
   for (const [slot, s] of Object.entries(f.slots)) {
     const sent = Number(s.sent) || 0;
-    const replied = Number(s.replied) || 0;
+    const automatic = Number(s.replied) || 0;
+    const manual = manualReceipts(st, slot).length;
+    const replied = automatic + manual;
     out[slot] = {
       sent,
       replied,
-      missed: Number(s.missed) || 0,
+      missed: Math.max(0, (Number(s.missed) || 0) - manual),
       rate: sent > 0 ? replied / sent : null,
-      avgLatMin: replied > 0 ? Math.round(Number(s.latencySum) || 0) / replied / 60_000 : null,
+      avgLatMin: automatic > 0 ? Math.round(Number(s.latencySum) || 0) / automatic / MIN : null,
       lastSentAt: Number(s.lastSentAt) || 0,
       coldUntil: Number(s.coldUntil) || 0,
     };
@@ -344,8 +560,9 @@ export function coldSlots(st, cfg, now, tzDay = 0) {
   const coldDays = Math.max(1, Number(r.coldDays ?? 3));
   const f = ensure(st);
   for (const [slot, s] of Object.entries(f.slots)) {
+    if (topicPreferenceMode(st, { slot }, now) === 'allow_silent') continue;
     const sent = Number(s.sent) || 0;
-    const replied = Number(s.replied) || 0;
+    const replied = (Number(s.replied) || 0) + manualReceipts(st, slot).length;
     if (sent < coldAfter) continue;
     if (replied / sent >= coldRate) {
       if (Number(s.coldUntil)) s.coldUntil = 0; // 接住率回来了，立刻解冻
@@ -374,7 +591,7 @@ export function adaptiveExtraMin(st, cfg) {
 }
 
 /** 给 --why / 设置页看的一句话。 */
-export function feedbackSummary(st, cfg) {
+export function feedbackSummary(st, cfg, now = Date.now()) {
   const s = slotStats(st);
   const parts = Object.entries(s)
     .filter(([, v]) => v.sent > 0)
@@ -386,5 +603,6 @@ export function feedbackSummary(st, cfg) {
     parts,
     text: parts.length ? parts.join('，') : '还没发过',
     extraMin: adaptiveExtraMin(st, cfg),
+    preferences: activeTopicPreferences(st, now).map(({ target, mode, expiresAt }) => ({ target, mode, expiresAt })),
   };
 }

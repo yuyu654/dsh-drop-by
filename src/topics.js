@@ -6,11 +6,12 @@
 //
 // 纯函数：不读文件、不看时钟（now 由外面传），方便单测。
 import { minutesOfDayOf, healthDay, hmToMin, minToHm, dayKey, hhmm, coarseMin } from './time.js';
-import { coldSlots } from './feedback.js';
+import { coldSlots, topicPreferenceMode } from './feedback.js';
 import { parseAgenda, agendaSource, nextCourse, currentWeek } from './agenda.js';
 import { examsSource, parseExams, reviewDue, soonDue, dayDiff } from './exams.js';
 import { noReplyDue } from './noreply.js';
 import { wellnessCooldown } from './decide.js';
+import { characterRestCue, characterRestGreeted } from './character-rest.js';
 
 // tier：阶段 1 的间隔分档（显式常量，不在运行时猜）。
 //   reply = 回她/接转发/追问（默认 5 分钟）
@@ -27,11 +28,13 @@ export const SLOTS = {
   longSit: { label: '坐太久了', why: '连着几小时没离开电脑', tier: 'event' },
   backHome: { label: '她刚回来', why: '离开一阵子，刚回到电脑前', tier: 'event' },
   agenda: { label: '按课表说事', why: '明早有早八，或者下一节快开始了', tier: 'chat' },
+  characterRest: { label: '角色睡前或刚醒', why: '角色快到入睡时间，或刚醒来不久，顺口打声招呼', tier: 'event' },
   examSoon: { label: '考试快到了', why: '考前几十分钟，说一句比考前一周发十条复习计划有用', tier: 'chat' },
   examReview: { label: '该复习了', why: '考前一周提醒一次，别到前一晚才想起来', tier: 'chat' },
   noReply: { label: '那条还没回', why: '我主动找过她，隔了很久没动静——问一句，别在猜里待着', tier: 'reply' },
   share: { label: '抛个我自己的判断', why: '我有新想法，还没跟人说过', tier: 'event' },
   catchup: { label: '隔太久了', why: '好几天没说话，找个由头', tier: 'chat' },
+  agreement: { label: '约定小本本', why: '已记下的事项到了跟进时间', tier: 'event' },
   projectCheckIn: { label: '聊聊最近在忙的项目', why: '只主动问一次，不催回复', tier: 'chat' },
   // 随口说话：遵守独立的时段与额度，可与其他由头一起交给模型。
   chitchat: { label: '随口说一句', why: '没什么事，就是想跟她说一句', tier: 'chat' },
@@ -49,6 +52,11 @@ export function tierOfSlot(slot) {
  *
  * 通道未知（老记录没有 channel 字段）时放行，保持加这道闸之前的行为。
  */
+export function agreementTopic(item) {
+  return { slot: 'agreement', ...SLOTS.agreement, brief: '跟进已核验的时间约定',
+    evidence: { topic: item.title, dueAt: item.dueAt } };
+}
+
 export function answerableOn(slot, channel, sendChannel = 'qq') {
   if (slot !== 'reply' && slot !== 'forward') return true;
   const from = String(channel || '');
@@ -176,26 +184,29 @@ export function withForwardContent(topic, viewed) {
 /**
  * 鱼鱼数据过期了吗（数据断供防呆）。
  * App → SMTP → IMAP 任何一环断了，这边只会安静地 NO_TOPIC；但更糟的是拿两周前的睡眠数据问「昨晚睡得好吗」。
- * dateTs 缺失/为 0 时视为新鲜：宁可照旧，也别因为邮件头读不到就把四类由头全停。
+ * 优先按邮件日期算，旧缓存只有收取时间时用收取时间。全无时间戳时保留旧行为。
  * 返回 { stale, ageHours, limitHours }。
  */
 export function fishStale(fish, cfg, now) {
-  const limitHours = Math.max(6, Number(cfg?.sources?.phone?.staleHours ?? 36));
-  // 这个检查本身也有总闸：关掉就一律当新鲜（阈值还留着，想临时恢复不用重填）。
-  if (cfg?.sources?.phone?.staleGuard === false) return { stale: false, ageHours: null, limitHours };
-  const ts = Number(fish?.dateTs) || 0;
+  const limitHours = Math.max(6, Number(cfg?.sources?.phone?.staleHours ?? 36) || 36);
+  const fetchedAt = fish?.fetchedAt;
+  const ts = Number(fish?.dateTs) || Number(fetchedAt) || Date.parse(fetchedAt || '') || 0;
   if (!ts || !fish?.ok) return { stale: false, ageHours: null, limitHours };
   const ageHours = (now - ts) / 3_600_000;
-  return { stale: ageHours > limitHours, ageHours, limitHours };
+  return { stale: cfg?.sources?.phone?.staleGuard !== false && ageHours > limitHours, ageHours, limitHours };
 }
 
 /**
  * 挑由头。返回 { slot, label, why, evidence, brief } 或 null。
  * brief 是给模板/模型看的一句话素材，全是事实，不含形容词。
  */
-function* topicOptions(ctx, cfg, now, st = {}) {
+function* topicOptions(ctx, cfg, now, st = {}, misses) {
   const t = cfg?.content?.topics || {};
   const on = (k) => t[k] !== false;
+  const when = (slot, passes, reason) => {
+    if (!passes) misses?.set(slot, reason);
+    return passes;
+  };
   // 手机端总闸关闭后，睡眠、压力、步数和屏幕数据都不参与选题。
   const phoneOn = cfg?.sources?.phone?.enabled !== false;
   const used = st?.content || {};
@@ -205,7 +216,9 @@ function* topicOptions(ctx, cfg, now, st = {}) {
   const fish = ctx.fish || { ok: false };
   // 数据过期 = 和「手机端总闸关着」同等地位：睡眠/压力/步数/屏幕四类都不再当由头。
   const staleInfo = fishStale(fish, cfg, now);
-  const phoneData = phoneOn && !staleInfo.stale;
+  const phoneData = (slot) => when(slot, phoneOn, 'phone_disabled') &&
+    when(slot, fish.ok, cfg?.sources?.phone?.staleGuard === false ? 'no_data' : 'fish_missing') &&
+    when(slot, !staleInfo.stale, 'fish_stale');
   const her = ctx.her || {};
   const me = ctx.me || {};
   const tz = ctx.tz || cfg?.timezone;
@@ -220,13 +233,9 @@ function* topicOptions(ctx, cfg, now, st = {}) {
   const idleNow = ctx?.presence?.idleSec;
   const here = typeof idleNow === 'number' && idleNow >= 0 && idleNow <= awaySec;
 
-  // 之前发出去她老不接的由头，压几天（见 src/feedback.js）
-  const cold = coldSlots(st, cfg, now);
-  const ok = (k) => !cold.has(k);
-
   // 1) 她说了话，我还没回
   if (on('reply') && unanswered && her.lastText) {
-    if (t.replyMaxAgeMin == null || gapHerMin <= Number(t.replyMaxAgeMin)) {
+    if (when('reply', t.replyMaxAgeMin == null || gapHerMin <= Number(t.replyMaxAgeMin), 'out_of_window')) {
       const linkItem = /(?:^|[\s(（「【])https?:\/\/(?:www\.)?douyin\.com\/video\/(\d{6,30})(?![\w-])/i.exec(her.lastText)?.[1];
       const item = linkItem || her.lastItem ||
         (!her.lastChannel && her.lastItem === undefined ? her.forwardItem || ctx.forwardItem : null) || null;
@@ -270,9 +279,9 @@ function* topicOptions(ctx, cfg, now, st = {}) {
     const src = examsSource(cfg);
     if (src.text.trim()) {
       const list = parseExams(src.text, { tz, now });
-      if (on('examSoon') && ok('examSoon')) {
+      if (on('examSoon')) {
         const e = soonDue(list, now, Number(t.examSoonMin ?? 60));
-        if (e && used.lastExamSoon !== e.key) {
+        if (when('examSoon', e, 'out_of_window') && when('examSoon', used.lastExamSoon !== e.key, 'already_used')) {
           const left = Math.max(1, Math.round((e.at - now) / 60_000));
           yield {
             slot: 'examSoon',
@@ -283,9 +292,9 @@ function* topicOptions(ctx, cfg, now, st = {}) {
           };
         }
       }
-      if (on('examReview') && ok('examReview')) {
+      if (on('examReview')) {
         const e = reviewDue(list, now, tz, Number(t.examReviewDays ?? 7));
-        if (e && used.lastExamReview !== e.key) {
+        if (when('examReview', e, 'out_of_window') && when('examReview', used.lastExamReview !== e.key, 'already_used')) {
           const dd = dayDiff(e, now, tz);
           yield {
             slot: 'examReview',
@@ -301,7 +310,7 @@ function* topicOptions(ctx, cfg, now, st = {}) {
 
   // 1.7) 课表：唯一往前看的由头。明早有课 → 今晚催睡；下一节快开始了 → 提一句。
   //      它不吃手机邮件，只吃设置页那份课表（或 data/agenda.txt）。
-  if (on('agenda') && ok('agenda')) {
+  if (on('agenda')) {
     const src = agendaSource(cfg);
     const agendaOpts = {
       termStart: String(cfg.content?.agenda?.termStart || ''),
@@ -316,10 +325,14 @@ function* topicOptions(ctx, cfg, now, st = {}) {
       const earlyHour = Number(t.agendaEarlyBeforeHour ?? 9);
       const fromHour = Number(t.agendaTomorrowHour ?? 21);
       const inWindow = mins >= fromHour * 60 || mins < Number(t.agendaTomorrowUntilHour ?? 2) * 60;
+      let alreadyUsed = false;
+      let yielded = false;
       if (inWindow && nc && nc.inDays <= 1 && nc.fromMin < earlyHour * 60) {
         const night = nightKeyOf(now, tz);
-        if (used.lastAgendaNight !== night) {
+        alreadyUsed = used.lastAgendaNight === night;
+        if (!alreadyUsed) {
           const when = nc.inDays === 0 ? '今天' : '明天';
+          yielded = true;
           yield {
             slot: 'agenda',
             label: SLOTS.agenda.label,
@@ -332,7 +345,9 @@ function* topicOptions(ctx, cfg, now, st = {}) {
       // b) 下一节课在 soonMin 分钟内开始：这时提才有用，晚了就是马后炮
       if (nc && nc.inDays === 0 && nc.offsetMin - mins <= soonMin && nc.offsetMin - mins >= Number(t.agendaSoonMinLead ?? 5) && here) {
         const key = `${dayKey(now, tz)}:${nc.fromMin}`;
+        alreadyUsed ||= used.lastAgendaSoon === key;
         if (used.lastAgendaSoon !== key) {
+          yielded = true;
           yield {
             slot: 'agenda',
             label: SLOTS.agenda.label,
@@ -342,20 +357,21 @@ function* topicOptions(ctx, cfg, now, st = {}) {
           };
         }
       }
+      if (!yielded) when('agenda', false, alreadyUsed ? 'already_used' : 'out_of_window');
     }
   }
 
   // 有可核对的新发现时优先分享，先让她的话和紧急日程。
-  const share = !unanswered && shareTopic(ctx, t, used, now, on, ok);
+  const share = on('share') && when('share', !unanswered, 'reply_pending') && shareTopic(ctx, t, used, now, when);
   const earlyShare = share && (ctx.self.discoveryId || ctx.self.actionRetry);
   if (earlyShare) yield share;
 
   // 1.8) 追问：我主动发过去的那条，她一直没回。
   //      engine 先核对用户约定及忙碌状态，再将合格的待跟进事项放入 ctx.noReply。
   //      这里只按时间窗放行——模型判忙的要等她忙完（或忙碌时段结束）再加 noReplyAfterBusyMin。
-  if (on('noReply') && ok('noReply') && ctx.noReply && used.lastNoReplyFor !== ctx.noReply.key) {
+  if (on('noReply') && ctx.noReply && when('noReply', used.lastNoReplyFor !== ctx.noReply.key, 'already_used')) {
     const due = noReplyDue({ cand: ctx.noReply, cfg, now, herTs: her.lastTs, tz });
-    if (due.ok) {
+    if (when('noReply', due.ok, 'out_of_window')) {
       const c = ctx.noReply;
       const atTxt = hhmm(c.at, tz);
       const away = Boolean(c.verdict?.away);
@@ -396,7 +412,7 @@ function* topicOptions(ctx, cfg, now, st = {}) {
   const sleepMaxAgeH = Number(t.sleepMaxAgeH ?? 14);
   const dayStart = Number(t.sleepDayStartHour ?? 7);
   const sleepDay = healthDay(now, tz, dayStart);
-  if (phoneData && on('sleep') && ok('sleep') && fish.ok && mins >= morningFrom * H && mins <= morningTo * H) {
+  if (on('sleep') && phoneData('sleep') && when('sleep', mins >= morningFrom * H && mins <= morningTo * H, 'out_of_window')) {
     const c = classifySleep(fish, cfg);
     // 邮件必须属于「这一个健康日」——按**邮件自己的日期**算，不能按「什么时候抓到的」算。
     // 2026-11-10 踩过的坑：昨天 19:16 那封被今天早上抓回来，fetchedAt 刷新成今天，
@@ -416,7 +432,8 @@ function* topicOptions(ctx, cfg, now, st = {}) {
     // 只有总睡眠（含白天小睡）时不提「昨晚睡了多久」——总睡眠不是昨夜那一觉，
     // 拿它说「睡了十一个多钟头」就是编。宁可这一句不发。
     const nightKnown = c && c.sleepSrc !== 'total';
-    if (nightKnown && dayOk && ageOk && used.lastSleepFor !== sleepDay) {
+    if (when('sleep', nightKnown, fish.sleepMin == null ? 'no_data' : 'condition_not_met') &&
+        when('sleep', dayOk && ageOk, 'out_of_window') && when('sleep', used.lastSleepFor !== sleepDay, 'already_used')) {
       // 给她看的时长说粗的（「六个多小时」），别把「7 小时 12 分钟」喂进句子
       const dur = coarseMin(c.sleepMin);
       // 深睡是拓展项：应用不提供时字段是空的，这时只说时长，别写「深睡才 -」
@@ -477,14 +494,11 @@ function* topicOptions(ctx, cfg, now, st = {}) {
   const stressMax = Math.max(1, Math.min(6, Number(t.stressDailyMax ?? 1)));
   const stressVal = fish.stress == null ? null : Number(fish.stress);
   if (
-    phoneData &&
-    on('stress') && ok('stress') &&
-    fish.ok &&
+    on('stress') && phoneData('stress') &&
     Number.isFinite(stressVal) &&
-    stressVal > stressHigh &&
-    mins >= stressFrom * H &&
-    mins <= stressTo * H &&
-    (fish.ageMin == null || fish.ageMin <= Number(t.stressMaxAgeH ?? 12) * H)
+    when('stress', stressVal > stressHigh, 'condition_not_met') &&
+    when('stress', mins >= stressFrom * H && mins <= stressTo * H, 'out_of_window') &&
+    when('stress', fish.ageMin == null || fish.ageMin <= Number(t.stressMaxAgeH ?? 12) * H, 'out_of_window')
   ) {
     const stressDay = healthDay(now, tz, dayStart);
     const sentToday = used.stressDay === stressDay ? Number(used.stressCount) || 0 : 0;
@@ -493,7 +507,8 @@ function* topicOptions(ctx, cfg, now, st = {}) {
     const prevVal = Number.isFinite(Number(used.lastStressValue)) ? Number(used.lastStressValue) : null;
     const notDropping = prevVal == null || stressVal >= prevVal;
 
-    if (sentToday < stressMax && gapOk && notDropping) {
+    if (when('stress', sentToday < stressMax, 'already_used') && when('stress', gapOk, 'cooldown') &&
+        when('stress', notDropping, 'condition_not_met')) {
       const nth = sentToday + 1;
       yield {
         slot: 'stress',
@@ -516,13 +531,39 @@ function* topicOptions(ctx, cfg, now, st = {}) {
     }
   }
 
+  // 角色作息由头：实际入睡前 N 分钟、醒来后 N 分钟各最多一次。
+  if (on('characterRest') && when('characterRest', !unanswered, 'reply_pending')) {
+    const cue = characterRestCue(cfg, now);
+    if (when('characterRest', Boolean(cue), 'out_of_window')) {
+      const usedKey = cue.kind === 'bed' ? used.lastCharacterBedFor : used.lastCharacterWakeFor;
+      const alreadyGreeted = characterRestGreeted(ctx, cue.kind, cfg, now);
+      if (when('characterRest', usedKey !== cue.key && !alreadyGreeted, 'already_used')) {
+        yield {
+          slot: 'characterRest',
+          label: SLOTS.characterRest.label,
+          why: cue.kind === 'bed' ? '角色快到今晚的入睡时间了，顺口打声招呼准备去睡' : '角色刚醒来不久，顺口打声招呼',
+          evidence: {
+            kind: cue.kind,
+            key: cue.key,
+            day: cue.day,
+            ...(cue.kind === 'bed' ? { leftMin: cue.leftMin, at: cue.bedHm } : { sinceMin: cue.sinceMin, at: cue.wakeHm }),
+          },
+          brief: cue.kind === 'bed'
+            ? `角色还有约 ${cue.leftMin} 分钟就到今晚的入睡时间（${cue.bedHm}），准备去睡了，顺口简短说一句晚安或收尾的话。`
+            : `角色刚醒来${cue.sinceMin > 0 ? `约 ${cue.sinceMin} 分钟` : '没多久'}（今早 ${cue.wakeHm} 醒），顺口简短打个早安招呼。`,
+        };
+      }
+    }
+  }
+
   // 本机探针提供的由头不依赖手机邮件。
   // a) 深夜了还亮着：一个晚上只提一次（跨零点算同一晚）
   const lateFrom = Number(t.lateFromHour ?? 23);
   const lateTo = Number(t.lateToHour ?? 2);
-  if (on('lateUp') && ok('lateUp') && here && !unanswered && isLateNight(mins, lateFrom, lateTo)) {
+  if (on('lateUp') && here && when('lateUp', !unanswered, 'reply_pending') &&
+      when('lateUp', isLateNight(mins, lateFrom, lateTo), 'out_of_window')) {
     const night = nightKeyOf(now, tz);
-    if (used.lastLateUpFor !== night) {
+    if (when('lateUp', used.lastLateUpFor !== night, 'already_used')) {
       yield {
         slot: 'lateUp',
         label: SLOTS.lateUp.label,
@@ -538,12 +579,14 @@ function* topicOptions(ctx, cfg, now, st = {}) {
   //    brief 里也不再写「电脑前」——那是给模型递话头。
   const backMin = Number(t.backAfterMin ?? 30);
   const backCool = now - (Number(used.lastBackSendAt) || 0) >= Number(t.backCooldownMin ?? 120) * 60_000;
-  if (on('backHome') && ok('backHome') && backCool && pc.lastReturnAt && used.lastBackAt !== pc.lastReturnAt) {
+  if (on('backHome') && when('backHome', backCool, 'cooldown') && pc.lastReturnAt &&
+      when('backHome', used.lastBackAt !== pc.lastReturnAt, 'already_used')) {
     const justBack = now - pc.lastReturnAt <= Number(t.backRecentMin ?? 20) * 60_000;
     const awayLong = Number(pc.lastAwayMs) >= backMin * 60_000;
     // 她刚说过话就别用「刚回来」再开一次场，那是自说自话
     const herQuiet = gapHerMin == null || gapHerMin >= Number(t.backUserQuietMin ?? 120);
-    if (justBack && awayLong && herQuiet) {
+    if (when('backHome', justBack, 'out_of_window') && when('backHome', awayLong, 'condition_not_met') &&
+        when('backHome', herQuiet, 'cooldown')) {
       const awayMin = Math.round(Number(pc.lastAwayMs) / 60_000);
       yield {
         slot: 'backHome',
@@ -559,7 +602,8 @@ function* topicOptions(ctx, cfg, now, st = {}) {
 
   // 7) 好几天没说话：只在真断了的时候用
   const idleDays = Number(t.catchupDays ?? 2);
-  if (on('catchup') && ok('catchup') && gapHerMin != null && gapHerMin >= idleDays * DAY_MIN * 1 && !unanswered) {
+  if (on('catchup') && gapHerMin != null &&
+      when('catchup', gapHerMin >= idleDays * DAY_MIN, 'cooldown') && when('catchup', !unanswered, 'reply_pending')) {
     yield {
       slot: 'catchup',
       label: SLOTS.catchup.label,
@@ -570,24 +614,23 @@ function* topicOptions(ctx, cfg, now, st = {}) {
   }
 
   // 步数、屏幕和久坐放在最后，只在明显超出日常时考虑。
-  if (unanswered || wellnessCooldown(st, now, tz, cfg)) return;
+  const wellnessBlock = unanswered ? 'reply_pending' : wellnessCooldown(st, now, tz, cfg) ? 'cooldown' : '';
+  const wellnessOk = (slot) => when(slot, !wellnessBlock, wellnessBlock);
   const stepsFrom = Number(t.stepsFromHour ?? 18);
   const stepsLow = Math.min(600, Number(t.stepsLowMax ?? 600));
   const stepsHigh = Math.max(16000, Number(t.stepsHighMin ?? 16000));
   const stepsMaxAgeMin = Number(t.stepsMaxAgeMin ?? 120);
   const stepsVal = fish.steps == null ? null : Number(fish.steps);
   if (
-    phoneData &&
-    on('steps') && ok('steps') &&
-    fish.ok &&
+    on('steps') && phoneData('steps') && wellnessOk('steps') &&
     Number.isFinite(stepsVal) &&
-    stepsLow < stepsHigh &&
-    mins >= stepsFrom * H &&
-    fish.ageMin != null && fish.ageMin >= 0 && fish.ageMin <= stepsMaxAgeMin
+    when('steps', stepsLow < stepsHigh, 'condition_not_met') &&
+    when('steps', mins >= stepsFrom * H, 'out_of_window') &&
+    when('steps', fish.ageMin != null && fish.ageMin >= 0 && fish.ageMin <= stepsMaxAgeMin, 'out_of_window')
   ) {
     const stepsDay = healthDay(now, tz, dayStart);
     const kind = stepsVal < stepsLow ? 'low' : stepsVal > stepsHigh ? 'high' : null;
-    if (kind && used.lastStepsFor !== stepsDay) {
+    if (when('steps', kind, 'condition_not_met') && when('steps', used.lastStepsFor !== stepsDay, 'already_used')) {
       yield {
         slot: 'steps',
         label: SLOTS.steps.label,
@@ -609,15 +652,12 @@ function* topicOptions(ctx, cfg, now, st = {}) {
   // 屏幕时间只在晚上考虑。
   const screenFrom = Number(t.screenFromHour ?? 21);
   if (
-    phoneData &&
-    on('screen') && ok('screen') &&
-    fish.ok &&
+    on('screen') && phoneData('screen') && wellnessOk('screen') &&
     fish.screenMin != null &&
-    mins >= screenFrom * H &&
-    fish.ageMin != null &&
-    fish.ageMin >= 0 && fish.ageMin <= Number(t.screenMaxAgeH ?? sleepMaxAgeH) * H &&
-    fish.screenMin >= Number(t.screenHeavyMin ?? 720) &&
-    used.lastScreenFor !== `${fish.date}:${dayRank(now, ctx.tz)}`
+    when('screen', mins >= screenFrom * H, 'out_of_window') &&
+    when('screen', fish.ageMin != null && fish.ageMin >= 0 && fish.ageMin <= Number(t.screenMaxAgeH ?? sleepMaxAgeH) * H, 'out_of_window') &&
+    when('screen', fish.screenMin >= Number(t.screenHeavyMin ?? 720), 'condition_not_met') &&
+    when('screen', used.lastScreenFor !== `${fish.date}:${dayRank(now, ctx.tz)}`, 'already_used')
   ) {
     yield {
       slot: 'screen',
@@ -630,9 +670,10 @@ function* topicOptions(ctx, cfg, now, st = {}) {
 
   // 连续活跃只代表探针有信号，不能断定用户一直坐着。
   const longSitH = Number(t.longSitHours ?? 5);
-  if (on('longSit') && ok('longSit') && here && pc.activeSince && now - pc.activeSince >= longSitH * 3_600_000) {
+  if (on('longSit') && wellnessOk('longSit') && here && pc.activeSince &&
+      when('longSit', now - pc.activeSince >= longSitH * 3_600_000, 'condition_not_met')) {
     const day = dayKey(now, tz);
-    if (used.lastLongSitFor !== day) {
+    if (when('longSit', used.lastLongSitFor !== day, 'already_used')) {
       const since = hhmm(pc.activeSince, tz);
       yield {
         slot: 'longSit',
@@ -649,15 +690,14 @@ function* topicOptions(ctx, cfg, now, st = {}) {
 
 /** 她 2026-11-10："话题都太集中在我看电脑这件事上"。同一类由头别连着来，
  *  「屏幕/久坐/硬撑」这类一天也别连着占四条。 */
-function shareTopic(ctx, t, used, now, on, ok) {
+function shareTopic(ctx, t, used, now, when) {
   // 已分享的探索候选由上下文过滤，其他分享仍沿用冷却。
   const shareGapH = Number(t.shareGapH ?? 24);
   if (
-    on('share') && ok('share') &&
     ctx.self &&
     String(ctx.self.line || '').length >= (ctx.self.exploration ? 8 : Number(t.shareMinChars ?? 40)) &&
-    (!used.lastShareAt || now - used.lastShareAt >= shareGapH * 3_600_000) &&
-    (ctx.self.actionRetry ? used.lastRetryProposalAt !== ctx.self.at : (!used.lastShareLine || used.lastShareLine !== ctx.self.line.slice(0, 80)))
+    when('share', !used.lastShareAt || now - used.lastShareAt >= shareGapH * 3_600_000, 'cooldown') &&
+    when('share', ctx.self.actionRetry ? used.lastRetryProposalAt !== ctx.self.at : (!used.lastShareLine || used.lastShareLine !== ctx.self.line.slice(0, 80)), 'already_used')
   ) {
     return {
       slot: 'share',
@@ -688,21 +728,39 @@ function shareTopic(ctx, t, used, now, on, ok) {
 const SCREEN_WORDS = /电脑|屏幕|坐着|坐到|一直坐|久坐|硬撑/;
 
 // 候选逐条过重复检查。第一个被拦时，仍可检查后面的由头。
-export function* topicCandidates(ctx, cfg, now, st = {}, onRepeat = () => {}) {
+export function* topicCandidates(ctx, cfg, now, st = {}, onRepeat = () => {}, misses) {
+  if (misses) {
+    for (const slot of Object.keys(SLOTS)) {
+      if (slot === 'projectCheckIn' || slot === 'chitchat' || slot === 'agreement') continue;
+      misses.set(slot, cfg?.content?.topics?.[slot] === false ? 'disabled' : 'no_data');
+    }
+  }
   const used = st?.content || {};
   const recent = Array.isArray(used.recentSends) ? used.recentSends : [];
   const lastTwo = Array.isArray(used.recentSlots) ? used.recentSlots.slice(-2) : [];
   const screenHits = recent.slice(-4).filter((x) => SCREEN_WORDS.test(String(x))).length;
   const seen = new Set(Array.isArray(st.skipSlots) ? st.skipSlots : []);
-  for (const topic of topicOptions(ctx, cfg, now, st)) {
+  const cold = coldSlots(st, cfg, now);
+  for (const topic of topicOptions(ctx, cfg, now, st, misses)) {
     const { slot } = topic;
     if (seen.has(slot)) continue;
+    const mode = topicPreferenceMode(st, topic, now);
+    if (mode === 'mute_less') {
+      misses?.set(slot, 'preference_muted');
+      continue;
+    }
+    if (slot !== 'reply' && slot !== 'forward' && cold.has(slot) && mode !== 'allow_silent') {
+      misses?.set(slot, 'feedback_cooldown');
+      continue;
+    }
     seen.add(slot);
     if ((screenHits >= 2 && ['screen', 'longSit', 'lateUp', 'backHome'].includes(slot)) ||
         (lastTwo.length === 2 && lastTwo.every((name) => name === slot))) {
+      misses?.set(slot, 'repeated');
       onRepeat(slot);
       continue;
     }
+    misses?.delete(slot);
     yield topic;
   }
 }

@@ -40,7 +40,7 @@ export function createOwnedReplies() {
   };
 }
 
-export function createDouyinSession({ getConfig, controller, prepare, log, onSent,
+export function createDouyinSession({ getConfig, controller, prepare, log, onSent, onIncoming,
   read = readDouyinIm, send = sendDouyinText, watcherDisabled = originalWatcherDisabled }) {
   const capture = createOwnedReplies();
   let timer, running, controllerAbort, stopped = false, failures = 0;
@@ -85,13 +85,21 @@ export function createDouyinSession({ getConfig, controller, prepare, log, onSen
       const incoming = await read(cfg, controllerAbort.signal);
       if (stopped || !douyinPrimary(getConfig()) || douyinPeer(getConfig()) !== peer) return;
       const now = Date.now();
+      let newMessages = [];
       const state = updateDouyinState(peer, prior => {
         const next = collectIncoming(prior, incoming.conv_id, incoming.messages);
+        if (onIncoming) {
+          const known = new Set((prior.pending || []).map(message => message.id));
+          newMessages = next.pending.filter(message => !known.has(message.id));
+        }
         const last = next.pending.at(-1);
         return { ...next, polledAt: now, pollError: '', retryAt: null, incoming: last
           ? { peer, kind: 'private', ts: last.ts, observedAt: prior.incoming?.ts === last.ts ? prior.incoming.observedAt : now, text: last.text, item: last.item }
           : prior.incoming };
       });
+      if (onIncoming) {
+        for (const message of newMessages) onIncoming({ cfg, peer, ...message });
+      }
       failures = 0;
       const sessionId = state.flight?.sessionId || readyDouyinBinding()?.sessionId;
       if (!sessionId || !state.pending.length) return;

@@ -36,6 +36,8 @@ export const REASONS = {
   DATA_UNAVAILABLE: '所有通道都读不到数据',
   GLOBAL_QUIET: '全局静默时段，所有功能暂停',
   BUSY_HOURS: '她这个点通常在忙，不主动开口（她先说话照常回）',
+  CHARACTER_ASLEEP: '角色现在在休息，暂缓主动开口',
+  USER_WINDING_DOWN: '她刚才在收尾或要去忙，先不主动打扰（她先说话照常回）',
   PROACTIVE_OFF: '「我主动找你」关着，这一拍只回她的话',
   QUIET_HOURS: '安静时段（旧版叫法，等价于全局静默）',
   AWAY: '人不在',
@@ -65,7 +67,9 @@ export const REASONS = {
   NO_CONTENT: '没有可发的内容',
   TEMPLATE_CANT_WRITE: '模板模式写不出这类回复（需要 content.mode=llm）',
   GUARD_REJECTED: '写出来的话过不了红线',
+  TOPIC_PREFERENCE_MUTED: '用户偏好暂停主动提起这个话题',
   CONTENT_DISABLED: '内容生成关着（content.enabled=false）',
+  SEND_DISABLED: '发送期间已切到演练或关闭发送',
   SEND_FAILED: '发出去了但失败了（不占配额，下一拍会重试）',
 };
 
@@ -115,7 +119,7 @@ export function checkTierGap({ cfg, now, tier, lastByTier = {}, lastSendTs = 0, 
   };
 }
 
-export function decide({ cfg, now, idleSec, locked = false, quiet, busy, lastUserTs, lastUserChannel, lastSendTs, todaySent, allDown, triggered = false, extraGapMin = 0 }) {
+export function decide({ cfg, now, idleSec, locked = false, quiet, busy, characterAsleep = false, userWindingDown = false, lastUserTs, lastUserChannel, lastSendTs, todaySent, allDown, triggered = false, extraGapMin = 0 }) {
   const rules = cfg.rules || {};
   const idle = cfg.idle || {};
   const gt = rules.gapByTier || {};
@@ -186,6 +190,12 @@ export function decide({ cfg, now, idleSec, locked = false, quiet, busy, lastUse
   // 忙碌时段只压「我先开口」：她先说了话，reply 轨道照常走（上面已经分流走了）。
   if (busy) {
     return { ...base, track, reason: 'BUSY_HOURS' };
+  }
+  if (characterAsleep) {
+    return { ...base, track, reason: 'CHARACTER_ASLEEP' };
+  }
+  if (userWindingDown) {
+    return { ...base, track, reason: 'USER_WINDING_DOWN' };
   }
   // 仅当用户显式开启 requirePcOnline 时才在「人不在电脑前」硬拦（除非 presenceSignal + judge 接管）。
   if (requirePcOnline && away && !presenceSignalOn) {

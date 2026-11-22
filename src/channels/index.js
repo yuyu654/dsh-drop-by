@@ -9,6 +9,7 @@ import { readQq } from './qq.js';
 import { readMain } from './main.js';
 import { readDouyin } from './douyin.js';
 import { readDouyinState, douyinPeer, douyinInstallation } from './douyin-im.js';
+import { internalSessionId, readInternalState } from './internal.js';
 import { readyDouyinBinding } from './chat-switch.js';
 import { detectQq } from '../detect.js';
 import { inQuiet, inWindows, normalizeWindows } from '../schedule.js';
@@ -53,9 +54,39 @@ export function readChannels(cfg, now, opts = {}) {
   const det = opts.detect || {};
   const list = [];
 
+  // 内部会话（DSH 桌面端）：仅当设为主通道时参与读写
+  if (primary === 'internal') {
+    const g = gate(ch.internal || { enabled: true, read: true, activeHours: [] }, now, tz, quiet);
+    if (!g) {
+      if (ch.internal?.read !== false) {
+        const sid = internalSessionId();
+        if (!sid) {
+          list.push({ channel: 'internal', ok: false, reason: 'INTERNAL_UNBOUND', note: '尚未绑定内部会话，请在设置页选择或新建会话' });
+        } else {
+          try {
+            const state = readInternalState(sid);
+            list.push({
+              channel: 'internal',
+              ok: true,
+              note: '陪伴正在使用已绑定的内部会话',
+              lastUserTs: state.incoming?.ts || null,
+              lastSendTs: state.outgoing?.lastAt || null,
+            });
+          } catch (e) {
+            list.push({ channel: 'internal', ok: false, reason: 'INTERNAL_READ_ERROR', note: String(e.message).slice(0, 120) });
+          }
+        }
+      } else {
+        list.push({ channel: 'internal', ok: false, reason: 'CHANNEL_READ_OFF' });
+      }
+    } else {
+      list.push(skipEntry('internal', g));
+    }
+  }
+
   // QQ
   {
-    const g = primary === 'douyin' ? { skip: 'off' } : gate(ch.qq, now, tz, quiet, srcOn('qq'));
+    const g = primary === 'douyin' || primary === 'internal' ? { skip: 'off' } : gate(ch.qq, now, tz, quiet, srcOn('qq'));
     if (!g) {
       if (ch.qq?.read) {
         const qq = det.qq || detectQq();
@@ -91,7 +122,7 @@ export function readChannels(cfg, now, opts = {}) {
 
   // 抖音：没开就完全不执行这一项
   {
-    const g = primary === 'qq' ? { skip: 'off' } : primary === 'douyin'
+    const g = primary === 'qq' || primary === 'internal' ? { skip: 'off' } : primary === 'douyin'
       ? gate({ ...ch.douyin, enabled: true }, now, tz, quiet)
       : gate(ch.douyin, now, tz, quiet, srcOn('douyin'));
     if (!g) {
@@ -99,7 +130,7 @@ export function readChannels(cfg, now, opts = {}) {
         try {
           if (primary === 'douyin') {
             const state = readDouyinState(douyinPeer(cfg));
-            const ok = !!readyDouyinBinding() && douyinInstallation().ready && !!state.polledAt && !state.pollError;
+            const ok = !!readyDouyinBinding({ readOnly: opts.readOnly }) && douyinInstallation().ready && !!state.polledAt && !state.pollError;
             list.push({ channel: 'douyin', ok, note: state.pollError || (ok ? '陪伴正在读取抖音私信' : '等待首次私信轮询'),
               lastUserTs: ok ? state.incoming?.ts || null : null, lastSendTs: ok ? state.outgoing?.lastAt || null : null });
           } else {

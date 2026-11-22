@@ -15,6 +15,7 @@ const localFile = path.join(dir, 'persona.md');
 fs.writeFileSync(localFile, '喜欢研究反时限算法。');
 fs.writeFileSync(process.env.PG_CONFIG_PATH, JSON.stringify({
   quietHours: [], dryRun: false, send: { enabled: true }, channels: { qq: { peerId: '10001' } },
+  characterRest: { bed: '11:00', wake: '13:00', jitterMin: 0 },
   rules: { actionGate: { enabled: true, expiresMinutes: 1, ackWaitSec: 5 } },
   exploration: { web: true, offerShare: true, leisureEvery: 0 }, persona: { localFile, dshHome: dir },
 }));
@@ -257,6 +258,7 @@ try {
   const id = ++eventId;
   await event(politeCommand, { id });
   assert.match(latestPrompt(), /陪伴任务已接单/);
+  assert.match(latestPrompt(), /刚被这条消息吵醒/);
   assert.equal(sends.length, beforeCommand);
   now += 1000;
   await answer('好，我去翻翻');

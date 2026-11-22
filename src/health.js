@@ -8,6 +8,7 @@ import path from 'node:path';
 import { readLatest } from './fishmail.js';
 import { readMemory } from './memorysource.js';
 import { dshHome } from './outbound.js';
+import { fishStale } from './topics.js';
 
 const MIN = 60_000;
 
@@ -59,7 +60,7 @@ export function findWhisper({ env = process.env } = {}) {
  * 体检。deps 全可注入：测试里不碰真端口、真文件、真插件。
  * 返回 { at, items: [{key,label,level,detail}], bad, warn, ok }，level ∈ ok|warn|bad。
  */
-export async function checkHealth({ cfg = {}, now = Date.now(), env = process.env, deps = {} } = {}) {
+export async function checkHealth({ cfg = {}, now = Date.now(), env = process.env, deps = {}, only = null } = {}) {
   const doReadLatest = deps.readLatest || readLatest;
   const doReadQQ = deps.readQQ || (() => readQQHistory({ env }));
   const doProbePort = deps.probePort || probePort;
@@ -69,75 +70,85 @@ export async function checkHealth({ cfg = {}, now = Date.now(), env = process.en
   const items = [];
   const push = (key, label, level, detail) => items.push({ key, label, level, detail });
 
+  const wants = (key) => !only || only.includes(key);
+  let phone = null;
+
   // 1) 鱼鱼邮件：最近一封距今
-  try {
-    const latest = doReadLatest();
-    const ts = Number(latest?.dateTs) || Date.parse(latest?.fetchedAt || '') || 0;
-    const staleHours = Math.max(6, Number(cfg?.sources?.phone?.staleHours ?? 36) || 36);
-    if (!latest || !ts) {
-      push('fish', '鱼鱼邮件', 'bad', '没读到过（data/fish-latest.json 不存在或没有日期）');
-    } else {
-      const ageMs = Math.max(0, now - ts);
-      const stale = ageMs > staleHours * 3600_000;
-      push(
-        'fish',
-        '鱼鱼邮件',
-        stale ? 'warn' : 'ok',
-        `${agoText(ageMs)}的那封${latest.subject ? `（${String(latest.subject).slice(0, 24)}）` : ''}${stale ? `，超过 ${staleHours} 小时` : ''}`,
-      );
+  if (wants("fish")) {
+    try {
+      const latest = doReadLatest();
+      const info = fishStale({ ...latest, ok: Boolean(latest) }, cfg, now);
+      phone = { ...info, missing: !latest };
+      if (info.ageHours == null) {
+        push('fish', '鱼鱼邮件', 'bad', '没读到带有效日期的鱼鱼邮件缓存');
+      } else {
+        const ageMs = Math.max(0, info.ageHours * 3_600_000);
+        const old = info.ageHours > info.limitHours;
+        push('fish', '鱼鱼邮件', old ? 'warn' : 'ok',
+          `最近一封邮件在 ${agoText(ageMs)}收到${old ? `，超过 ${info.limitHours} 小时` : ''}`);
+      }
+    } catch {
+      phone = { missing: true, ageHours: null, limitHours: fishStale(null, cfg, now).limitHours };
+      push('fish', '鱼鱼邮件', 'bad', '读取邮件缓存失败');
     }
-  } catch (e) {
-    push('fish', '鱼鱼邮件', 'bad', `读取抛错：${String(e?.message || e).slice(0, 60)}`);
   }
 
   // 2) QQ 出站记录
-  try {
-    const q = doReadQQ();
-    if (q?.ok) push('qq', 'QQ 出站记录', 'ok', `${q.turns} 轮（${q.file}）`);
-    else push('qq', 'QQ 出站记录', 'bad', `${q?.error || '读不到'}（${q?.file || 'qq-history.json'}）`);
-  } catch (e) {
-    push('qq', 'QQ 出站记录', 'bad', `读取抛错：${String(e?.message || e).slice(0, 60)}`);
+  if (wants("qq")) {
+    try {
+      const q = doReadQQ();
+      if (q?.ok) push('qq', 'QQ 出站记录', 'ok', `${q.turns} 轮（${q.file}）`);
+      else push('qq', 'QQ 出站记录', 'bad', `${q?.error || '读不到'}（${q?.file || 'qq-history.json'}）`);
+    } catch (e) {
+      push('qq', 'QQ 出站记录', 'bad', `读取抛错：${String(e?.message || e).slice(0, 60)}`);
+    }
   }
 
   // 3) 抖音 Edge 调试口。没开不等于坏了：抖音没启用时只算黄（提醒一句），
-  //    channels.douyin.enabled=true 说明真的要用它，这时连不上才是红。
-  const port = Number(cfg?.perception?.signals?.port ?? 9223) || 9223;
-  const douyinOn = cfg?.channels?.douyin?.enabled === true;
-  try {
-    const p = await doProbePort(port);
-    if (p?.ok) push('douyin', '抖音 Edge 调试口', 'ok', `127.0.0.1:${port} 通`);
-    else if (douyinOn) push('douyin', '抖音 Edge 调试口', 'bad', `127.0.0.1:${port} 连不上（${p?.error || p?.status || '没开'}），抖音开着，用不了`);
-    else push('douyin', '抖音 Edge 调试口', 'warn', `127.0.0.1:${port} 没开（抖音没启用，暂时不用管）`);
-  } catch (e) {
-    if (douyinOn) push('douyin', '抖音 Edge 调试口', 'bad', `探测抛错：${String(e?.message || e).slice(0, 60)}`);
-    else push('douyin', '抖音 Edge 调试口', 'warn', `127.0.0.1:${port} 没开（抖音没启用，暂时不用管）`);
+  if (wants("douyin")) {
+    //    channels.douyin.enabled=true 说明真的要用它，这时连不上才是红。
+    const port = Number(cfg?.perception?.signals?.port ?? 9223) || 9223;
+    const douyinOn = cfg?.channels?.douyin?.enabled === true;
+    try {
+      const p = await doProbePort(port);
+      if (p?.ok) push('douyin', '抖音 Edge 调试口', 'ok', `127.0.0.1:${port} 通`);
+      else if (douyinOn) push('douyin', '抖音 Edge 调试口', 'bad', `127.0.0.1:${port} 连不上（${p?.error || p?.status || '没开'}），抖音开着，用不了`);
+      else push('douyin', '抖音 Edge 调试口', 'warn', `127.0.0.1:${port} 没开（抖音没启用，暂时不用管）`);
+    } catch (e) {
+      if (douyinOn) push('douyin', '抖音 Edge 调试口', 'bad', `探测抛错：${String(e?.message || e).slice(0, 60)}`);
+      else push('douyin', '抖音 Edge 调试口', 'warn', `127.0.0.1:${port} 没开（抖音没启用，暂时不用管）`);
+    }
   }
 
   // 4) whisper（查二进制在不在，不转写）
-  try {
-    const w = doFindWhisper();
-    if (w?.ok) push('whisper', 'whisper 转写', 'ok', `找到：${w.hit}`);
-    else push('whisper', 'whisper 转写', 'bad', `没找到 whisper 或启动脚本（查过 ${(w?.checked || []).join('、') || 'PATH'}）`);
-  } catch (e) {
-    push('whisper', 'whisper 转写', 'bad', `查找抛错：${String(e?.message || e).slice(0, 60)}`);
+  if (wants("whisper")) {
+    try {
+      const w = doFindWhisper();
+      if (w?.ok) push('whisper', 'whisper 转写', 'ok', `找到：${w.hit}`);
+      else push('whisper', 'whisper 转写', 'bad', `没找到 whisper 或启动脚本（查过 ${(w?.checked || []).join('、') || 'PATH'}）`);
+    } catch (e) {
+      push('whisper', 'whisper 转写', 'bad', `查找抛错：${String(e?.message || e).slice(0, 60)}`);
+    }
   }
 
   // 5) 记忆插件
-  try {
-    if (cfg?.sources?.memory?.enabled === false) {
-      push('memory', '记忆插件', 'warn', '关着（sources.memory.enabled=false）');
-    } else {
-      const m = doReadMemory({ cfg, now });
-      if (m?.ok) push('memory', '记忆插件', 'ok', `${m.items?.length ?? 0} 条（${m.plugin || '—'}）`);
-      else push('memory', '记忆插件', 'bad', `${m?.reason || '读不到'}${m?.dir ? `（${m.dir}）` : ''}`);
+  if (wants("memory")) {
+    try {
+      if (cfg?.sources?.memory?.enabled === false) {
+        push('memory', '记忆插件', 'warn', '关着（sources.memory.enabled=false）');
+      } else {
+        const m = doReadMemory({ cfg, now });
+        if (m?.ok) push('memory', '记忆插件', 'ok', `${m.items?.length ?? 0} 条（${m.plugin || '—'}）`);
+        else push('memory', '记忆插件', 'bad', `${m?.reason || '读不到'}${m?.dir ? `（${m.dir}）` : ''}`);
+      }
+    } catch (e) {
+      push('memory', '记忆插件', 'bad', `读取抛错：${String(e?.message || e).slice(0, 60)}`);
     }
-  } catch (e) {
-    push('memory', '记忆插件', 'bad', `读取抛错：${String(e?.message || e).slice(0, 60)}`);
   }
 
   const bad = items.filter((i) => i.level === 'bad').length;
   const warn = items.filter((i) => i.level === 'warn').length;
-  return { at: now, items, bad, warn, ok: bad === 0 };
+  return { at: now, items, bad, warn, ok: bad === 0, phone };
 }
 
 /** 画成几行文本：绿 ✔ / 黄 ! / 红 ✘。 */

@@ -27,7 +27,7 @@ import { inQuiet, inWindows, normalizeWindows, nextOpenIn } from './schedule.js'
 export const DATA_DIR = path.join(ROOT, 'data');
 // 测试可以顶掉（PG_SECRETS_PATH），否则就是插件目录下的 credentials.json
 export const SECRETS_PATH = process.env.PG_SECRETS_PATH || path.join(ROOT, 'credentials.json');
-export const LATEST_PATH = path.join(DATA_DIR, 'fish-latest.json');
+export const LATEST_PATH = process.env.PG_FISH_LATEST_PATH || path.join(DATA_DIR, 'fish-latest.json');
 
 /** 常见邮箱的 IMAP 地址；不在表里就按域名猜 imap.<domain>。 */
 const HOSTS = {

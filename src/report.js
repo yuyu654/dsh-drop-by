@@ -8,8 +8,16 @@ import path from 'node:path';
 import { LOG_DIR } from './config.js';
 import { recordDay, shiftDay } from './retention.js';
 import { shadowLine } from './shadow.js';
+import { isSpecificTopicMiss, phonePauseText, topicMissText } from './explain.js';
 
 const MAX_LINES = 15;
+const restraintLabels = { GLOBAL_QUIET: '全局静默', QUIET_HOURS: '全局静默', BUSY_HOURS: '你在忙',
+  CHARACTER_ASLEEP: '角色休息', USER_WINDING_DOWN: '对方在收尾', GAP_TOO_SHORT: '间隔保护' };
+
+function reviewStart(cfg, today) {
+  const count = Math.max(1, Math.min(7, Math.trunc(Number(cfg.logging?.reportDays) || 7)));
+  return shiftDay(today, 1 - count);
+}
 
 export function dayFile(day) {
   return path.join(LOG_DIR, `decision-${day}.jsonl`);
@@ -63,10 +71,23 @@ export function buildDailyReport({ day, records = [], cfg = {}, st = {} }) {
   }
 
   const reasonCount = new Map();
+  const restraint = new Map();
+  const topicMissCount = new Map();
   for (const r of records) {
     if (r?.decision !== 'skip') continue;
     const k = String(r?.reason || '—');
-    reasonCount.set(k, (reasonCount.get(k) || 0) + 1);
+    const label = Object.hasOwn(restraintLabels, k) ? restraintLabels[k] : '';
+    if (label) restraint.set(label, (restraint.get(label) || 0) + 1);
+    else reasonCount.set(k, (reasonCount.get(k) || 0) + 1);
+    if (k === 'NO_TOPIC') {
+      const codes = new Set((r.topicMisses || []).map(item => item.reason));
+      for (const code of codes) {
+        if (isSpecificTopicMiss(code)) {
+          const label = topicMissText(code);
+          topicMissCount.set(label, (topicMissCount.get(label) || 0) + 1);
+        }
+      }
+    }
   }
 
   const replied = records.filter((r) => r?.backfill?.hit === true).length;
@@ -85,6 +106,16 @@ export function buildDailyReport({ day, records = [], cfg = {}, st = {} }) {
   if (srcCount.size) lines.push(`  来源：${topCounts([...srcCount])}`);
   const skipped = records.filter((r) => r?.decision === 'skip').length;
   lines.push(`被拦 ${skipped} 拍${reasonCount.size ? `：${topCounts([...reasonCount])}` : ''}`);
+  if (restraint.size) {
+    const labels = [...new Set(Object.values(restraintLabels))];
+    const parts = labels.filter(label => restraint.has(label)).map(label => `${label} ${restraint.get(label)} 拍`);
+    const count = [...restraint.values()].reduce((total, n) => total + n, 0);
+    lines.push(`克制记录：这 ${count} 拍没有打扰（${parts.join('、')}）`);
+  }
+  if (topicMissCount.size) lines.push(`无合适由头：${topCounts([...topicMissCount], 3)}`);
+  const phone = records.findLast(r => r?.phone?.stale || r?.phone?.missing)?.phone ||
+    records.findLast(r => r?.kind === 'fish_stale');
+  if (phone) lines.push(phonePauseText({ stale: true, ...phone }));
   lines.push(`她接住 ${replied} 条（发出后半小时内回话）`);
   if (judged.length) lines.push(`judge：真判 ${judged.length}（说 ${sayTrue} / 不说 ${sayFalse} / 判坏 ${fail}）`);
   const sl = shadowLine(st, cfg);
@@ -114,7 +145,39 @@ export function maybeWriteYesterdayReport({ cfg = {}, now = Date.now(), tz, st =
   const today = recordDay(now, tz || cfg.timezone, cfg);
   if (st.report?.day === today) return { written: false, day: null, reason: 'ALREADY_TRIED' };
   const prev = shiftDay(today, -1);
+  // 保留至少昨天的归档，即使设置页只看今天。
+  const oldest = [prev, reviewStart(cfg, today)].sort()[0];
+  let latest = { written: false, day: prev, reason: 'NO_RECORDS' };
+  for (let day = prev; day >= oldest; day = shiftDay(day, -1)) {
+    if (!fs.existsSync(dayFile(day)) || fs.existsSync(reportFile(day)) || !readDayRecords(day).length) continue;
+    const result = writeDailyReport({ cfg, now, tz, day, st });
+    if (!latest.written) latest = result;
+  }
   st.report = { day: today, at: now };
-  if (!prev || !fs.existsSync(dayFile(prev))) return { written: false, day: prev, reason: 'NO_RECORDS' };
-  return writeDailyReport({ cfg, now, tz, day: prev, st });
+  return latest;
+}
+/** Recent summaries can be read without creating or updating report files. */
+export function recentReports({ cfg, st, now = Date.now() }) {
+  const today = recordDay(now, cfg.timezone, cfg);
+  const oldest = reviewStart(cfg, today);
+  let files;
+  try { files = fs.readdirSync(LOG_DIR); } catch { return []; }
+  const days = new Set();
+  for (const file of files) {
+    const match = /^(?:decision-(\d{4}-\d{2}-\d{2})\.jsonl|daily-(\d{4}-\d{2}-\d{2})\.md)$/.exec(file);
+    const day = match && (match[1] || match[2]);
+    if (day && day >= oldest && day <= today) days.add(day);
+  }
+  return [...days].sort().reverse().flatMap(day => {
+    const records = readDayRecords(day);
+    const sent = records.some(r => r.delivery?.attempted === true && r.delivery?.ok === true);
+    if (day !== today || !records.length) {
+      try {
+        const text = fs.readFileSync(reportFile(day), 'utf8').split('\n').slice(0, MAX_LINES).join('\n');
+        return [{ day, text, sent: sent || /真发 [1-9]\d* \/ 演练/u.test(text) }];
+      } catch { /* 没有现成的日报，按仍保留的决策日志生成。 */ }
+    }
+    if (!records.length) return [];
+    return [{ day, text: buildDailyReport({ day, records, cfg, st: day === today ? st : {} }), sent }];
+  });
 }

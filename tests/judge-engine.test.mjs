@@ -22,16 +22,13 @@ const { tick: engineTick } = await import('../src/engine.js');
 const tick = (options) => engineTick({ ...options, probeSystem: async () => ({ idle_ms: 0 }) });
 const { loadPersona } = await import('../src/persona.js');
 const { exploreRound, saveExploration } = await import('../src/explore.js');
+const { dayKey, hhmm } = await import('../src/time.js');
+const NOW = Date.parse('2026-11-22T12:00:00+08:00');
 
 /** 把「30 分钟后有一场考试」写进配置：这样 pickTopic 一定挑得出一个与当前时刻无关的由头。 */
 function examSoonText(minutes = 30) {
-  const at = new Date(Date.now() + minutes * 60_000);
-  const p2 = (n) => String(n).padStart(2, '0');
-  const mo = p2(at.getMonth() + 1);
-  const d = p2(at.getDate());
-  const h = p2(at.getHours());
-  const mi = p2(at.getMinutes());
-  return `${mo}-${d} ${h}:${mi} 电机学`;
+  const at = Date.now() + minutes * 60_000;
+  return dayKey(at, 'Asia/Shanghai').slice(5) + ' ' + hhmm(at, 'Asia/Shanghai') + ' 电机学';
 }
 
 function writeConfig(patch = {}) {
@@ -67,7 +64,8 @@ function writeConfig(patch = {}) {
   return merged;
 }
 
-beforeEach(() => {
+beforeEach(t => {
+  t.mock.method(Date, 'now', () => NOW);
   // 每个用例从干净 state 开始：上一拍发过一条会影响间隔/上限
   fs.writeFileSync(process.env.PG_STATE_PATH, JSON.stringify({}));
 });
@@ -245,7 +243,7 @@ test('judge 打开且命中常规由头 → 快照后附带当前心情底色参
     rules: { ...loadConfig().rules, autoReply: false, judge: { enabled: true } },
     exploration: { portrait: true, mood: false },
     content: { ...loadConfig().content, exams: { text: '' } },
-    channels: { ...loadConfig().channels, qq: { enabled: true, peerId: '42', read: true, send: false } },
+    channels: { ...loadConfig().channels, primary: 'qq', qq: { enabled: true, peerId: '42', read: true, send: false } },
   });
   let seenJudgePrompt = '';
   const gen = async ({ prompt }) => {
@@ -348,7 +346,7 @@ test('按约跟进生成期间收到取消就放弃旧提醒', async (t) => {
   fs.writeFileSync(path.join(qqDir, 'last-out.json'), JSON.stringify({ peer: '42', firstAt: sentAt, lastAt: sentAt, count: 1, text: '好，到时喊你。' }));
   writeConfig({
     rules: { ...loadConfig().rules, autoReply: false, judge: { enabled: true } },
-    channels: { ...loadConfig().channels, qq: { enabled: true, peerId: '42', read: true, send: false } },
+    channels: { ...loadConfig().channels, primary: 'qq', qq: { enabled: true, peerId: '42', read: true, send: false } },
     content: { ...loadConfig().content, exams: { text: '' } },
   });
   saveState({ feedback: { pending: [{ slot: 'agenda', ts: sentAt, draft: '好，到时喊你。' }] } });

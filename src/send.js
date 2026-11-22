@@ -146,6 +146,7 @@ export async function sendQQRound({
   split = {},
   timeoutMs,
   actionProposal,
+  canDispatch,
 } = {}) {
   const cfg = {
     enabled: split.enabled !== false,
@@ -173,6 +174,7 @@ export async function sendQQRound({
   const startedAt = Date.now();
   let sent = 0;
   let messageId = null;
+  const stopped = () => ({ ok: sent > 0, dryRun: false, parts: sent, messageId, reason: 'TOPIC_PREFERENCE_MUTED' });
   try {
     if (cfg.enabled) await sleep(Math.min(cfg.maxRoundMs, firstDelayMs({
       herAt, herChars, now: round.firstAt, minMs: cfg.minFirstMs, maxMs: split.maxFirstMs,
@@ -183,6 +185,7 @@ export async function sendQQRound({
         const gap = partGapMs(parts[i].length, { minGapMs: cfg.minGapMs, maxMs: split.maxGapMs, jitterMs: split.gapJitterMs, perCharMs: split.gapPerCharMs });
         if (Date.now() - startedAt + gap > cfg.maxRoundMs) {
           const rest = parts.slice(i).join(' ');
+          if (canDispatch && !canDispatch(sent)) return stopped();
           const r = await sendQQPrivate({ to, text: rest, dryRun: false, timeoutMs });
           if (!r.ok) throw new Error(r.error || '发送失败');
           messageId = messageId ?? r.messageId ?? null;
@@ -191,6 +194,7 @@ export async function sendQQRound({
         }
         await sleep(gap);
       }
+      if (canDispatch && !canDispatch(sent)) return stopped();
       const r = await sendQQPrivate({ to, text: parts[i], dryRun: false, timeoutMs });
       if (!r.ok) throw new Error(r.error || '发送失败');
       messageId = messageId ?? r.messageId ?? null;

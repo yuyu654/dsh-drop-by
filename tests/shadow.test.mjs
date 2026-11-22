@@ -20,7 +20,7 @@ const { tick: engineTick } = await import('../src/engine.js');
 const tick = (options) => engineTick({ ...options, probeSystem: async () => ({ idle_ms: 0 }) });
 const { shadowEligible, shadowRate, runShadow, shadowLine } = await import('../src/shadow.js');
 const { recordDay } = await import('../src/retention.js');
-const NOW = Date.now();
+const NOW = Date.parse('2026-11-22T12:00:00+08:00');
 const TODAY = recordDay(NOW, 'Asia/Shanghai', loadConfig());
 
 function writeConfig(patch = {}) {
@@ -55,7 +55,8 @@ function writeConfig(patch = {}) {
   return merged;
 }
 
-beforeEach(() => {
+beforeEach(t => {
+  t.mock.method(Date, 'now', () => NOW);
   // 刚发过一条 → 这一拍必被 GAP_TOO_SHORT 拦下，正好让 shadow 有活干。
   // 必须带上 day 和 TODAY 一致，否则 freshDayState 会把 lastSendAt 清零。
   fs.writeFileSync(

@@ -47,7 +47,8 @@ const tick = (options) => engineTick({ ...options, probeSystem: async () => ({ i
 
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-test('engine：一整拍能跑完，判到 send 就用固定内容走 dryRun 发送', async () => {
+test('engine：一整拍能跑完，判到 send 就用固定内容走 dryRun 发送', async (t) => {
+  t.mock.method(Date, 'now', () => Date.parse('2026-11-22T12:00:00+08:00'));
   const r = await tick({ persist: true });
   assert.equal(r.record.decision, 'send', `实际判定是 ${r.record.decision}/${r.record.reason}`);
   assert.equal(r.record.content.text, '测试句子');

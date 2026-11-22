@@ -8,6 +8,8 @@
 #
 # 输出：单行 JSON，Node 侧直接 JSON.parse。
 
+param([switch]$ReadOnly)
+
 $ErrorActionPreference = 'Stop'
 
 # Node 按 UTF-8 读 stdout；不显式设成 UTF-8，中文窗口标题会变成乱码
@@ -109,7 +111,7 @@ function Initialize-Probe {
     }
   }
 
-  if (-not $script:probeReady) {
+  if (-not $script:probeReady -and -not $ReadOnly) {
     try {
       Add-Type -TypeDefinition $src -OutputAssembly $dll -Language CSharp
       Add-Type -Path $dll

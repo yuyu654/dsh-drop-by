@@ -24,8 +24,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig, saveConfig, loadState, CONFIG_PATH, LOG_DIR } from './config.js';
-import { tick, tickQqContinuation, qqContinuationEnabled } from './engine.js';
+import { tick, tickDueAgreement, tickQqContinuation, qqContinuationEnabled } from './engine.js';
+import { listAgreements, dueAgreement, dismissAgreement, flushAgreementIntake, pruneAgreements } from './agreements.js';
+import { applyExplorationFeedback, explorationFeedbackForUi, explorationFeedbackHints, consumeExplorationFeedback } from './exploration-feedback.js';
 import { createQqContinuation } from './qq-continuation.js';
+import { characterRestAt } from './character-rest.js';
+import { minutesOfDayOf } from './time.js';
 import { inQuiet } from './schedule.js';
 import { busyNow, builtinYears, deepseekPeakStatus, offPeakNow } from './holidays.js';
 import { calendarStatus, refreshCalendar } from './calendar.js';
@@ -47,12 +51,20 @@ import { installQqPromptMerge, isBridgeManagedMessage } from './qq-debounce.js';
 import { executeQqCommand } from './qq-command.js';
 import { createExplorationMedia } from './explore-media.js';
 import { bridgeLastIn, bridgeLastOut } from './outbound.js';
-import { chatBinding, chatChanging, changePrimaryChannel, localApiOrigin, localChatApi, markChatBoot, readyDouyinBinding, switchState } from './channels/chat-switch.js';
+import { chatBinding, chatChanging, changePrimaryChannel, bindSharedSession, localApiOrigin, localChatApi, markChatBoot, readyDouyinBinding, switchState } from './channels/chat-switch.js';
 import { douyinPeer, douyinPeerName, douyinPrimary, pollDelayMs, readDouyinState, sendDouyinText, writeChatData } from './channels/douyin-im.js';
+import {
+  bindInternalDispatcher, dispatchToHostSession, internalPrimary, internalSessionId,
+  isProactiveInternalText, listHostSessions, observeInternalEvent, readInternalState,
+  sendInternalMessage, sharedSessionId, syncInternalHistory, textFromContent,
+} from './channels/internal.js';
 import { createDouyinSession } from './channels/douyin-session.js';
-import { activeChatChannel, chatDialogue, chatPeer, emotionPeer } from './channels/external.js';
-import { buildReplyContext } from './qq-reply.js';
+import { activeChatChannel, canReadChat, chatDialogue, chatPeer, emotionPeer } from './channels/external.js';
+import { buildReplyContext, observePrivateMessage } from './qq-reply.js';
 import { readChatData } from './channels/douyin-im.js';
+import { connectivity, diagnostics, feedbackSlotsForUi } from './diagnostics.js';
+import { setFeedbackReceipt } from './feedback.js';
+import { explainRun, topicLabel } from './explain.js';
 
 export const name = 'dsh-drop-by';
 
@@ -312,9 +324,15 @@ function summaryLine(r, ms) {
 export function apply(ctx, config = {}) {
   const opt = { ...DEFAULTS, ...(config && typeof config === 'object' ? config : {}) };
   const log = makeLog(ctx);
+  let controllerService, projectionsService, registryService, sessionsService, persistenceService;
+  const sessionController = () => controllerService || serviceOf(ctx, 'sessionController');
+  const workspaceRegistry = () => registryService || serviceOf(ctx, 'workspaceRegistry');
+  const sessionsHost = () => sessionsService || serviceOf(ctx, 'sessions');
+  const sessionPersistence = () => persistenceService || serviceOf(ctx, 'sessionPersistence');
 
   let disposed = false;
   let running = false;
+  let previewRunning = false;
   let timer = null;
   let continuationTimer = null;
   let exploring = false;
@@ -323,21 +341,42 @@ export function apply(ctx, config = {}) {
   const continuation = createQqContinuation();
   const rolloverFile = path.join(path.dirname(CONFIG_PATH), 'data', 'session-handoff.json');
   const qqAdapter = qqRolloverAdapter();
-  const douyinBindingFor = (id) => {
-    const b = readyDouyinBinding();
-    return b?.sessionId === id ? { peerId: b.qqBinding.peerId, peerKind: 'private' } : null;
-  };
+  const douyinBindingMeta = (b, cfg) => ({
+    ...b.qqBinding,
+    peerId: b.qqBinding?.peerId || douyinPeer(cfg),
+    peerKind: 'private',
+    peerName: b.qqBinding?.peerName || douyinPeerName(cfg),
+    enabled: true,
+  });
   const rolloverAdapter = {
     stripSourceHeader: qqAdapter.stripSourceHeader,
-    bindingFor: (id) => douyinPrimary(loadConfig()) ? douyinBindingFor(id) : qqAdapter.bindingFor(id),
+    bindingFor(id) {
+      const cfg = loadConfig();
+      if (internalPrimary(cfg)) {
+        const sid = internalSessionId();
+        return sid && sid === id ? { peerId: sid, peerKind: 'private' } : null;
+      }
+      if (!douyinPrimary(cfg)) return qqAdapter.bindingFor(id);
+      const b = readyDouyinBinding();
+      if (!b || b.sessionId !== id) return null;
+      const { peerId, peerKind } = douyinBindingMeta(b, cfg);
+      return peerId ? { peerId, peerKind } : null;
+    },
     bindingMeta(id) {
-      if (!douyinPrimary(loadConfig())) return qqAdapter.bindingMeta(id);
+      const cfg = loadConfig();
+      if (internalPrimary(cfg)) {
+        const b = chatBinding();
+        return b.sessionId === id || b.preparedSessionId === id
+          ? { ...b.qqBinding, peerId: id, peerKind: 'private', peerName: b.sessionTitle || '内部会话', enabled: true }
+          : null;
+      }
+      if (!douyinPrimary(cfg)) return qqAdapter.bindingMeta(id);
       const b = chatBinding();
-      return b.sessionId === id || b.preparedSessionId === id
-        ? { ...b.qqBinding, enabled: b.sessionId === id || b.preparedSessionId === id } : null;
+      return b.sessionId === id || b.preparedSessionId === id ? douyinBindingMeta(b, cfg) : null;
     },
     prepareBinding(handoff) {
-      if (!douyinPrimary(loadConfig())) return qqAdapter.prepareBinding(handoff);
+      const cfg = loadConfig();
+      if (!douyinPrimary(cfg) && !internalPrimary(cfg)) return qqAdapter.prepareBinding(handoff);
       const b = chatBinding();
       if (b.sessionId !== handoff.oldSessionId) return false;
       writeChatData('external-chat', { ...b, preparedSessionId: handoff.newSessionId });
@@ -345,9 +384,13 @@ export function apply(ctx, config = {}) {
     },
   };
   const douyin = createDouyinSession({
-    getConfig: loadConfig, controller: () => serviceOf(ctx, 'sessionController'), log,
+    getConfig: loadConfig, controller: sessionController, log,
+    onIncoming({ cfg, peer, text, ts, item, title }) {
+      if (!disposed && opt.enabled !== false) observePrivateMessage(ctx, { cfg, peer, text, at: ts, item, title });
+    },
     async prepare({ cfg, peer, text, at, items }) {
-      const context = await buildReplyContext(ctx, { cfg, peer, kind: 'private', text, at, bridgeText: items.at(-1)?.text });
+      const context = await buildReplyContext(ctx, { cfg, peer, kind: 'private', text, at, bridgeText: items.at(-1)?.text,
+        messageTimes: items.map(item => item.ts), observed: true });
       const clip = items.findLast(item => item.item);
       let video = '';
       if (clip && cfg.content?.forward?.enabled !== false) {
@@ -378,59 +421,81 @@ export function apply(ctx, config = {}) {
   };
 
   /** 现在的生成器：优先宿主模型，不可用就返回 null（让 compose 走 llm.js 那条老路）。 */
-  function llmNow(cfg) {
+  function llmNow(cfg, { quiet = false } = {}) {
     if (opt.hostLlm === false) return { ready: false, reason: 'HOST_LLM_OFF' };
-    const h = makeHostLlm(ctx, { cfg, log: log.warn });
+    const h = makeHostLlm(ctx, { cfg, log: quiet ? undefined : log.warn });
     if (!h.ready) return h;
     return h;
   }
 
   /** 跑一拍。绝不抛。 */
-  async function runOnce(reason = 'timer') {
+  async function runOnce(reason = 'timer', { preview = false } = {}) {
     if (disposed) return { ok: false, skipped: 'disposed' };
-    if (running) return { ok: false, skipped: 'busy' };
+    if (running || (preview && previewRunning)) return { ok: false, skipped: 'busy' };
 
-    running = true;
+    if (preview) previewRunning = true;
+    else running = true;
     const t0 = Date.now();
     try {
       const cfg = loadConfig();
       if (opt.enabled === false || cfg.enabled === false) {
-        return { ok: false, skipped: 'disabled' };
+        if (!preview) return { ok: false, skipped: 'disabled' };
+        const record = { decision: 'skip', reason: 'PLUGIN_DISABLED' };
+        return { ok: true, preview, run: { decision: record.decision, why: record.reason, explanation: explainRun({ record, cfg, preview }) } };
       }
 
-      const host = llmNow(cfg);
-      if (!host.ready) log.info(`宿主模型不可用（${host.reason || '?'}），这一拍退回命令行生成器`);
+      const host = llmNow(cfg, { quiet: preview });
+      if (!preview && !host.ready) log.info(`宿主模型不可用（${host.reason || '?'}），这一拍退回命令行生成器`);
 
       const r = await tick({
+        preview,
         generate: host.ready ? host.generate : null,
         llmReady: host.ready ? true : null,
         watchVideo: (id, options) => watchVideo(id, { ...options, host, ctx }),
       });
 
-      ticks += 1;
-      lastAt = Date.now();
-      lastRun = {
-        at: lastAt,
+      const at = Date.now();
+      const slot = r.record?.topic?.slot || r.record?.content?.slot || null;
+      const source = r.record?.content?.source || '';
+      const generated = /^(?:llm|llm-retry|judge|project-check-in)$/.test(source);
+      const llm = host.ready ? { via: 'host', provider: host.provider, model: host.model } : { via: 'cli' };
+      let explanation = r.explanation;
+      if (preview && ['DATA_UNAVAILABLE', 'CHITCHAT_NO_MODEL', 'LLM_NOT_READY'].includes(r.record?.reason)) {
+        const health = await connectivity({ cfg: r.cfg, host, now: at });
+        explanation = explainRun({ record: r.record, cfg: r.cfg, health, preview });
+      }
+      const run = {
+        at,
         reason,
         decision: r?.record?.decision || null,
         why: r?.record?.reason || null,
-        slot: r?.record?.topic?.slot || null,
+        slot: preview ? slot : r.record?.topic?.slot || null,
+        ...(preview && slot ? { topicLabel: topicLabel(slot) } : {}),
+        topicMisses: r.record?.topicMisses || [],
+        explanation,
         chars: r?.record?.content?.chars || 0,
-        text: r?.record?.content?.text || '',
+        text: preview && r.record?.decision !== 'send' ? '' : r.record?.content?.text || '',
         delivery: r?.record?.delivery || null,
         mail: r?.record?.mail || null,
-        llm: host.ready ? { via: 'host', provider: host.provider, model: host.model } : { via: 'cli' },
-        ms: lastAt - t0,
+        llm: preview ? (generated && host.ready ? llm : null) : llm,
+        ms: at - t0,
       };
+      if (preview) return { ok: true, preview, run };
+
+      ticks += 1;
+      lastAt = at;
+      lastRun = run;
       lastError = null;
       log.info(summaryLine(r, lastAt - t0));
       return { ok: true, run: lastRun };
     } catch (e) {
+      if (preview) return { ok: false, preview, error: '安全试跑未能完成。请先运行连通测试，再试一次。' };
       lastError = String(e?.message || e).slice(0, 300);
       log.error(`这一拍出错（已兜住）：${lastError}`);
       return { ok: false, error: lastError };
     } finally {
-      running = false;
+      if (preview) previewRunning = false;
+      else running = false;
     }
   }
 
@@ -445,6 +510,7 @@ export function apply(ctx, config = {}) {
     const cfg = loadConfig();
     const now = Date.now();
     if (cfg.enabled === false || (!manual && cfg.exploration.auto !== true)) return { ok: false, reason: 'DISABLED' };
+    if (!manual && characterRestAt(cfg, now).asleep) return { ok: false, reason: 'CHARACTER_ASLEEP' };
     if (!requestedResearch && (inQuiet(now, cfg.quietHours, cfg.timezone) || ((!manual || retry) && busyNow(now, cfg)))) {
       return { ok: false, reason: 'QUIET_OR_BUSY' };
     }
@@ -464,6 +530,7 @@ export function apply(ctx, config = {}) {
     const explicitTopic = String(manualTopic || '').trim();
     const configuredTopic = String(cfg.exploration?.nextTopic || '').trim();
     const focusTopic = requestedResearch ? '' : (explicitTopic || (!retry ? configuredTopic : ''));
+    const feedback = focusTopic || retry || requestedResearch ? null : explorationFeedbackHints(cfg, status, now);
     exploring = true;
     lastExploreAttempt = now;
     try {
@@ -472,8 +539,11 @@ export function apply(ctx, config = {}) {
         observeVideo: host.observeVideo,
         watchDouyin: (id) => watchVideo(id, { cfg, host, llm: host.generate, ctx: explorationToolsCtx || ctx }),
       });
+      const minuteNow = minutesOfDayOf(now, cfg.timezone);
+      const nightShare = characterRestAt(cfg, now).windDown || minuteNow >= 21 * 60 + 30 || minuteNow < 6 * 60;
       const r = await exploreRound({ persona, previous, interest: cfg.exploration.interest, focusTopic, now, generate: host.generate,
-        includeMood: cfg.exploration.mood === true, media, leisureEvery: cfg.exploration.leisureEvery, timing: cfg.exploration, retry, onRetryEvidence, requestedResearch });
+        includeMood: cfg.exploration.mood === true, media, bias: cfg.exploration.bias, leisureEvery: cfg.exploration.leisureEvery,
+        timing: cfg.exploration, retry, onRetryEvidence, requestedResearch, topicFeedback: feedback, night: nightShare });
       const fresh = loadConfig();
       if (disposed || fresh.enabled === false || (!manual && fresh.exploration.auto !== true) ||
           (retry && (fresh.rules?.actionGate?.enabled !== true || fresh.exploration.web !== true)) ||
@@ -484,6 +554,7 @@ export function apply(ctx, config = {}) {
         return r;
       }
       saveExploration(r.state);
+      if (r.action !== 'skip') consumeExplorationFeedback(fresh, feedback);
       // 仅在「近一轮探索主题」确实在本轮产生非跳过结果后自动消费清空，避免用户误卡死未来探索。
       if (focusTopic && r.action !== 'skip' && String(fresh.exploration?.nextTopic || '').trim() === focusTopic) {
         saveConfig({ ...fresh, exploration: { ...fresh.exploration, nextTopic: '' } });
@@ -531,13 +602,21 @@ export function apply(ctx, config = {}) {
       const text = command ? result?.text || '这条任务没跑完，暂时没有结果。' : !result?.ok ? '这次换源没跑完，我先把这个坑留着。'
         : result.foundBody ? '换了个站，正文找到了。'
           : '换了来源找过，还是没拿到正文。';
-      const sent = douyinPrimary(cfg) ? await sendDouyinText({ cfg, peer, text, source: 'task' })
-        : await sendQqText({ to: peer, text, cfg, confirm: true, track: true });
+      const sent = internalPrimary(cfg)
+        ? await sendInternalMessage({ cfg, sessionId: peer, text, source: 'task' })
+        : douyinPrimary(cfg)
+          ? await sendDouyinText({ cfg, peer, text, source: 'task' })
+          : await sendQqText({ to: peer, text, cfg, confirm: true, track: true });
       if (!sent.ok || sent.dryRun) log.warn('任务结果没能发到当前主通道：' + (sent.error || '演练模式'));
       return sent;
     },
   };
   const releaseActionExecutor = opt.enabled === false ? () => {} : bindActionExecutor(actionExecutor);
+  const releaseInternalDispatcher = opt.enabled === false ? () => {} : bindInternalDispatcher(
+    ({ sessionId, wrapped, cfg, timeoutMs }) => dispatchToHostSession({
+      sessionId, wrapped, cfg, controller: sessionController(), sessions: sessionsHost(), timeoutMs,
+    }),
+  );
 
   async function flushTaskResults(cfg) {
     if (chatChanging() || cfg.dryRun !== false || cfg.send?.enabled !== true) return;
@@ -568,17 +647,47 @@ export function apply(ctx, config = {}) {
     timer.unref?.();
   }
 
-  // 秒级只看 QQ 桥的两份标记，不重复跑邮件、感知和普通主动消息。
+  let lastQuickInbound = '';
+
+  async function processAgreements(cfg, now) {
+    if (opt.enabled === false || cfg.enabled === false || cfg.agreements?.enabled !== true) return false;
+    pruneAgreements(cfg, now);
+    const source = { channel: activeChatChannel(cfg), peer: chatPeer(cfg) };
+    if (!source.peer || !canReadChat(cfg) || chatChanging() || inQuiet(now, cfg.quietHours, cfg.timezone)) return false;
+    if (source.channel === 'qq') {
+      const { incoming } = chatDialogue(cfg);
+      const key = [incoming.peer, incoming.ts, incoming.text].join(':');
+      const age = now - incoming.ts;
+      if (key !== lastQuickInbound && incoming.kind === 'private' && incoming.peer === source.peer && incoming.observedAt &&
+          age >= 0 && age <= Number(cfg.rules?.qqCommands?.freshSec ?? 120) * 1000) {
+        lastQuickInbound = key;
+        observePrivateMessage(ctx, { cfg, peer: source.peer, text: incoming.text, at: incoming.ts, timingOnly: true });
+      }
+    }
+    void flushAgreementIntake(cfg, now, source).catch(() => {});
+    if (running || !dueAgreement(cfg, now, source)) return false;
+    running = true;
+    try {
+      const result = await tickDueAgreement({ active: () => !disposed && opt.enabled !== false });
+      if (result && !result.ok) log.warn('小本本约定发送回执未确认');
+      return Boolean(result);
+    } finally {
+      running = false;
+    }
+  }
+
+  // 秒级检查热聊补话、短时来信和到期约定，不重复跑邮件、感知和普通主动消息。
   function scheduleContinuation() {
     if (disposed) return;
     continuationTimer = setTimeout(async () => {
       try {
         const cfg = loadConfig();
         const now = Date.now();
+        if (await processAgreements(cfg, now)) return;
         if (opt.enabled !== false && cfg.enabled !== false && !running &&
             (!douyinPrimary(cfg) || !!readyDouyinBinding())) await flushTaskResults(cfg);
         if (opt.enabled === false || !qqContinuationEnabled(cfg) ||
-            inQuiet(now, cfg.quietHours, cfg.timezone) || busyNow(now, cfg)) {
+            inQuiet(now, cfg.quietHours, cfg.timezone) || busyNow(now, cfg) || characterRestAt(cfg, now).asleep) {
           continuation.observe({ incoming: {}, outgoing: {} }, '', now);
           return;
         }
@@ -607,6 +716,10 @@ export function apply(ctx, config = {}) {
   /** 状态快照：状态接口、工具、以及 --status 之外的自检都用它。 */
   function snapshot() {
     const cfg = loadConfig();
+    const binding = chatBinding();
+    const isDy = douyinPrimary(cfg);
+    const isInt = internalPrimary(cfg);
+    const internalState = isInt && binding.sessionId ? readInternalState(binding.sessionId) : null;
     let st = {};
     try {
       st = loadState();
@@ -625,12 +738,16 @@ export function apply(ctx, config = {}) {
       nextAt: nextAt ? new Date(nextAt).toISOString() : null,
       lastError,
       last: lastRun,
+      agreements: { enabled: cfg.agreements?.enabled === true, timezone: cfg.timezone, items: listAgreements(cfg).map(
+        ({ id, title, dueAt, explicit }) => ({ id, title, dueAt, explicit })) },
       exploration: (() => {
         const state = loadExploration();
         const persona = loadPersona({ cfg });
         const peakStatus = deepseekPeakStatus(Date.now(), cfg);
-        return { ...explorationStatus(state, persona), auto: cfg.exploration.auto, mode: cfg.exploration?.mode === 'light' ? 'light' : 'deep', running: exploring,
+        const status = explorationStatus(state, persona);
+        return { ...status, feedback: explorationFeedbackForUi(status, cfg), auto: cfg.exploration.auto, mode: cfg.exploration?.mode === 'light' ? 'light' : 'deep', running: exploring,
           offPeakOnly: cfg.exploration.offPeakOnly === true,
+          pausedForRest: cfg.exploration.auto === true && characterRestAt(cfg).asleep,
           nextTopic: String(cfg.exploration?.nextTopic || ''),
           peakStatus,
           mood: cfg.exploration.mood === true ? explorationMood(state, persona, Date.now(), cfg.exploration) : null };
@@ -644,9 +761,17 @@ export function apply(ctx, config = {}) {
         llm,
       },
       externalChat: {
-        primary: cfg.channels.primary, restartRequired: douyinPrimary(cfg) && !!switchState().restartBoot,
-        ...(douyinPrimary(cfg) ? {
-          sessionId: chatBinding().sessionId || '',
+        primary: cfg.channels.primary,
+        restartRequired: isDy && !!switchState().restartBoot,
+        sessionId: binding.sessionId || '',
+        sessionTitle: binding.sessionTitle || internalState?.title || '',
+        sharedWithQq: Boolean(binding.qqBinding?.peerId),
+        ...(isInt ? {
+          bound: Boolean(binding.sessionId),
+          syncedAt: internalState?.syncedAt || 0,
+          lastUserAt: internalState?.incoming?.ts || 0,
+        } : {}),
+        ...(isDy ? {
           polledAt: readDouyinState(douyinPeer(cfg)).polledAt,
           status: readDouyinState(douyinPeer(cfg)).pollError || readDouyinState(douyinPeer(cfg)).replyError || '',
           gap: !!readDouyinState(douyinPeer(cfg)).gap,
@@ -655,7 +780,9 @@ export function apply(ctx, config = {}) {
       },
       send: {
         enabled: cfg?.send?.enabled === true,
-        peer: douyinPrimary(cfg) ? douyinPeerName(cfg) || douyinPeer(cfg) : cfg.channels.qq.peerId || '',
+        peer: isInt
+          ? (binding.sessionTitle || (binding.sessionId ? binding.sessionId.slice(0, 8) : ''))
+          : isDy ? douyinPeerName(cfg) || douyinPeer(cfg) : cfg.channels.qq.peerId || '',
       },
       mail: {
         enabled: cfg?.mail?.enabled === true,
@@ -676,12 +803,41 @@ export function apply(ctx, config = {}) {
     };
   }
 
-  /**
-   * 设置页存一项。
-   * 只认 settings.js 白名单里的路径；值先过校验再落盘，写进去的一定能跑。
-   * 落盘用 saveConfig（和命令行 --set 写的是同一个文件），下一拍自动生效——
-   * tick 每拍都重新读盘，不做缓存，所以不用重启。
-   */
+  async function openSharedSession(cfg, existingId, kind = 'douyin', customTitle = '') {
+    const controller = sessionController();
+    const registry = workspaceRegistry();
+    if (existingId && !registry?.archivedSessionIds?.includes(existingId)) {
+      if (typeof controller?.inspect !== 'function') throw new Error('DSH 会话服务尚未就绪，请稍后重试');
+      try {
+        if (await controller.inspect(existingId, AbortSignal.timeout(cfg.send.timeoutMs))) return existingId;
+      } catch (error) {
+        // The host throws ApiSessionNotFound for an absent cold Session.
+        if (error.constructor?.name !== 'ApiSessionNotFound' &&
+            !['session/not-found', 'SESSION_QUERY_SESSION_NOT_FOUND'].includes(error.code)) throw error;
+      }
+    }
+    if (typeof controller?.create !== 'function') throw new Error('DSH 会话服务尚未就绪，暂时无法新建会话');
+    const [workspace] = registry?.list?.() || [];
+    const created = await controller.create(workspace?.id ? { workspaceId: workspace.id } : {});
+    if (!created?.sessionId) throw new Error('DSH 未返回新建会话的编号');
+    const title = String(customTitle || '').trim() || (
+      kind === 'douyin'
+        ? (douyinPeerName(cfg) ? `抖音私信 · ${douyinPeerName(cfg)}` : '抖音私信')
+        : kind === 'qq'
+          ? (cfg.channels?.qq?.peerId ? `QQ 陪伴 · ${cfg.channels.qq.peerId}` : 'QQ 陪伴')
+          : '陪伴会话'
+    );
+    if (typeof controller.rename === 'function') {
+      try {
+        await controller.rename({ sessionId: created.sessionId, title });
+      } catch {
+        log.warn('会话已创建，暂时无法设置标题');
+      }
+    }
+    return created.sessionId;
+  }
+
+  /** 设置页只保存 settings.js 白名单中的路径，校验后写入配置。 */
   async function saveFromBody(req) {
     let body = null;
     try {
@@ -691,7 +847,8 @@ export function apply(ctx, config = {}) {
     }
     if (!body || typeof body.path !== 'string' || !body.path) return { ok: false, error: '缺 path' };
 
-    const r = applyChange(loadConfig(), body.path, body.value);
+    const initialCfg = loadConfig();
+    const r = applyChange(initialCfg, body.path, body.value);
     if (!r.ok) return r;
     // 凭据类（IMAP 授权码）不进 config.json，单独落 credentials.json，且读了也不回显
     if (r.secret) {
@@ -712,26 +869,49 @@ export function apply(ctx, config = {}) {
     const notes = [];
     if (r.path === 'channels.primary') {
       try {
-        const from = loadConfig().channels.primary;
+        const from = initialCfg.channels.primary;
         if (from !== r.value) {
           const call = localChatApi(localApiOrigin(req.headers || {}), { timeoutMs: r.cfg.send.timeoutMs, headers: req.headers || {} });
+          const qqPeer = String(initialCfg.channels.qq.peerId || '').trim();
+          const dyPeer = douyinPeer(initialCfg);
           const result = await changePrimaryChannel({ from, to: r.value, cfg: r.cfg, call,
-            save: () => saveConfig(r.cfg), drain: () => douyin.drain(),
-            async canSwitchWithoutRestart(sessionId) {
-              const controller = serviceOf(ctx, 'sessionController');
-              if (!controller) return false;
-              const lastIn = bridgeLastIn();
-              const lastOut = bridgeLastOut();
-              if (lastIn?.ts && (!lastOut?.ts || lastOut.ts < lastIn.ts || !lastOut.lastAt)) return false;
+            save() {
+              const latest = loadConfig();
+              if (latest.channels.primary !== from ||
+                  String(latest.channels.qq.peerId || '').trim() !== qqPeer || douyinPeer(latest) !== dyPeer) {
+                throw new Error('切换期间主通道或联系人已变更，请重试');
+              }
+              latest.channels = { ...latest.channels, primary: r.value };
+              saveConfig(latest);
+            },
+            drain: () => douyin.drain(),
+            openDouyinSession: existingId => openSharedSession(r.cfg, existingId, 'douyin'),
+            openSession: (existingId, kind) => openSharedSession(r.cfg, existingId, kind || r.value),
+            async canSwitchWithoutRestart(sessionId, qqBinding) {
+              const controller = sessionController();
+              if (typeof controller?.inspect !== 'function') return false;
+              if (qqBinding) {
+                const lastIn = bridgeLastIn();
+                const lastOut = bridgeLastOut();
+                if (lastIn?.ts && (!lastOut?.ts || lastOut.ts < lastIn.ts || !lastOut.lastAt)) return false;
+              }
               const info = await controller.inspect(sessionId, AbortSignal.timeout(r.cfg.send.timeoutMs));
               return info?.events?.findLast?.(e => ['turn/start', 'turn/end'].includes(e.type))?.type !== 'turn/start';
             },
           });
+          notes.push(...(result.notes || []));
           if (r.value === 'douyin') {
-            douyin.start(pollDelayMs(r.cfg.channels.douyin));
-            if (result.restartRequired) notes.push('已关闭旧抖音盯梢和 QQ 绑定。请重启 DSH 后由陪伴接管抖音私信。');
-          } else {
-            notes.push('已切回 QQ，抖音原聊天盯梢保持关闭。');
+            douyin.start(pollDelayMs(loadConfig().channels.douyin));
+            if (result.restartRequired) notes.push('请重启 DSH，完成抖音私信接管。');
+          } else if (r.value === 'internal') {
+            const sid = sharedSessionId();
+            if (sid) {
+              void syncInternalHistory({
+                sessionId: sid, sessions: sessionsHost(), controller: sessionController(), persistence: sessionPersistence(),
+              }).catch(() => {});
+            }
+          } else if (!notes.length) {
+            notes.push(from === 'douyin' ? '已切回 QQ，抖音原聊天盯梢保持关闭。' : '已切到 QQ 主通道。');
           }
         }
       } catch (error) {
@@ -806,10 +986,70 @@ export function apply(ctx, config = {}) {
                 if (route === '/config' && req.method === 'POST') {
                   return json(200, await saveFromBody(req));
                 }
+                if (route === '/diagnostics' && (req.method || 'GET') === 'GET') {
+                  const cfg = loadConfig();
+                  return json(200, await diagnostics({ cfg, st: loadState(), host: llmNow(cfg, { quiet: true }) }));
+                }
+                if (route === '/feedback/receipt' && req.method === 'POST') {
+                  let body;
+                  try {
+                    const raw = typeof req?.on === 'function' ? await readBody(req) : '';
+                    body = raw ? JSON.parse(raw) : req?.body;
+                  } catch {
+                    return json(400, { ok: false, error: '请求体不是 JSON' });
+                  }
+                  const { slot, id, received } = body || {};
+                  if (typeof slot !== 'string' || !slot || typeof id !== 'string' || !id || typeof received !== 'boolean') {
+                    return json(400, { ok: false, error: '接住率修改缺少有效参数' });
+                  }
+                  const cfg = loadConfig();
+                  const next = setFeedbackReceipt(slot, id, received, { tz: cfg.timezone, cfg });
+                  if (!next) return json(409, { ok: false, error: '这条记录当前无法修改，请刷新后再试。' });
+                  return json(200, { ok: true, slots: feedbackSlotsForUi(next, cfg.timezone, cfg) });
+                }
+                if (route === '/connectivity' && req.method === 'POST') {
+                  const cfg = loadConfig();
+                  return json(200, await connectivity({ cfg, host: llmNow(cfg, { quiet: true }) }));
+                }
                 if (route === '/tick' && req.method === 'POST') {
-                  if (running) return json(409, { ok: false, error: 'BUSY' });
-                  const r = await runOnce('api');
-                  return json(200, { ...r, state: snapshot() });
+                  let body;
+                  try {
+                    const raw = typeof req?.on === 'function' ? await readBody(req) : '';
+                    body = raw ? JSON.parse(raw) : req?.body;
+                  } catch {
+                    return json(400, { ok: false, error: '请求体不是 JSON' });
+                  }
+                  if (body !== undefined && (!body || typeof body !== 'object' || Array.isArray(body))) {
+                    return json(400, { ok: false, error: '请求体必须是 JSON 对象' });
+                  }
+                  if (body?.preview !== undefined && typeof body.preview !== 'boolean') {
+                    return json(400, { ok: false, error: 'preview 必须是布尔值' });
+                  }
+                  const preview = body?.preview === true;
+                  const r = await runOnce('api', { preview });
+                  if (r.skipped === 'busy') return json(409, { ok: false, error: 'BUSY' });
+                  return json(200, preview ? r : { ...r, state: snapshot() });
+                }
+                if ((route === '/agreements/dismiss' || route === '/exploration/feedback') && req.method === 'POST') {
+                  let body;
+                  try {
+                    const raw = typeof req?.on === 'function' ? await readBody(req) : '';
+                    body = raw ? JSON.parse(raw) : req?.body;
+                  } catch {
+                    return json(400, { ok: false, error: '请求体不是 JSON' });
+                  }
+                  if (typeof body?.id !== 'string' || !/^[a-f0-9]{24}$/u.test(body.id)) {
+                    return json(400, { ok: false, error: '缺少有效的条目标识' });
+                  }
+                  const cfg = loadConfig();
+                  if (route === '/exploration/feedback' && !['more', 'change', 'pause', 'delete'].includes(body.action)) {
+                    return json(400, { ok: false, error: '未知的探索反馈操作' });
+                  }
+                  const changed = route === '/agreements/dismiss' ? dismissAgreement(body.id, cfg)
+                    : applyExplorationFeedback({ id: body.id, action: body.action, cfg,
+                      status: explorationStatus(loadExploration(), loadPersona({ cfg })) });
+                  if (!changed) return json(409, { ok: false, error: '条目已变化，请刷新后再试。' });
+                  return json(200, { ok: true, state: snapshot() });
                 }
                 if (route === '/explore' && req.method === 'POST') {
                   let body = {};
@@ -824,16 +1064,98 @@ export function apply(ctx, config = {}) {
                   const r = await runExploration(true, null, null, null, manualTopic);
                   return json(200, { ...r, state: snapshot() });
                 }
+                if (route === '/sessions' && (req.method || 'GET') === 'GET') {
+                  const list = await listHostSessions({
+                    sessions: sessionsHost(),
+                    persistence: sessionPersistence(),
+                    workspaceRegistry: workspaceRegistry(),
+                  });
+                  const b = chatBinding();
+                  return json(200, { ok: true, sessions: list, boundSessionId: b.sessionId || '', sessionTitle: b.sessionTitle || '' });
+                }
+                if (route === '/internal/session' && req.method === 'POST') {
+                  let body = {};
+                  try {
+                    const raw = typeof req?.on === 'function' ? await readBody(req) : '';
+                    body = raw ? JSON.parse(raw) : (req?.body || {});
+                  } catch {
+                    return json(400, { ok: false, error: '请求体不是 JSON' });
+                  }
+                  const cfg = loadConfig();
+                  if (body?.create === true) {
+                    const customTitle = typeof body.title === 'string' ? body.title.trim().slice(0, 60) : '';
+                    const newId = await openSharedSession(cfg, undefined, 'internal', customTitle);
+                    const finalTitle = customTitle || '陪伴会话';
+                    bindSharedSession(newId, { title: finalTitle });
+                    await syncInternalHistory({
+                      sessionId: newId, sessions: sessionsHost(), controller: sessionController(), persistence: sessionPersistence(),
+                    }).catch(() => {});
+                    return json(200, {
+                      ok: true,
+                      sessionId: newId,
+                      title: finalTitle,
+                      notes: [`已新建并绑定共用会话「${finalTitle}」(${newId.slice(0, 8)})。`],
+                      state: snapshot(),
+                    });
+                  }
+                  const sid = typeof body?.sessionId === 'string' ? body.sessionId.trim() : '';
+                  if (!sid) return json(400, { ok: false, error: '请提供 sessionId 或 create: true' });
+                  const list = await listHostSessions({
+                    sessions: sessionsHost(),
+                    persistence: sessionPersistence(),
+                    workspaceRegistry: workspaceRegistry(),
+                  });
+                  const matched = list.find((item) => item.id === sid);
+                  let foundTitle = matched?.title || '';
+                  if (!matched) {
+                    const controller = sessionController();
+                    const live = sessionsHost()?.get?.(sid);
+                    if (live) {
+                      foundTitle = String(live.header?.title || '').trim();
+                    } else if (typeof controller?.inspect === 'function') {
+                      const info = await controller.inspect(sid, AbortSignal.timeout(cfg.send?.timeoutMs || 8000));
+                      foundTitle = String(info?.events?.findLast?.((e) => e.type === 'session/title')?.data?.title || info?.meta?.title || '').trim();
+                    } else {
+                      return json(404, { ok: false, error: '找不到该会话，请刷新列表后重试' });
+                    }
+                  }
+                  bindSharedSession(sid, { title: foundTitle });
+                  await syncInternalHistory({
+                    sessionId: sid, sessions: sessionsHost(), controller: sessionController(), persistence: sessionPersistence(),
+                  }).catch(() => {});
+                  const latestBinding = chatBinding();
+                  const label = latestBinding.sessionTitle || foundTitle;
+                  return json(200, {
+                    ok: true,
+                    sessionId: sid,
+                    title: label,
+                    notes: [`已绑定共用会话${label ? `「${label}」` : ''}(${sid.slice(0, 8)})。`],
+                    state: snapshot(),
+                  });
+                }
                 if (route === '/rollover/switch' && req.method === 'POST') {
                   localApiOrigin(req.headers || {});
-                  if (!douyinPrimary(loadConfig())) return json(400, { ok: false, error: '当前主通道不是抖音' });
+                  const curCfg = loadConfig();
+                  if (!douyinPrimary(curCfg) && !internalPrimary(curCfg)) return json(400, { ok: false, error: '当前主通道不是抖音或内部会话' });
                   const body = JSON.parse((await readBody(req)) || '{}');
-                  const b = readyDouyinBinding();
+                  const b = internalPrimary(curCfg)
+                    ? (chatBinding().sessionId ? chatBinding() : null)
+                    : readyDouyinBinding();
                   if (!b) return json(409, { ok: false, error: '请等主通道接管完成' });
                   const record = pendingRollovers(rolloverFile, rolloverAdapter).find(
                     row => row.oldSessionId === b.sessionId && row.newSessionId === body.sessionId);
                   if (!record) return json(400, { ok: false, error: '找不到这个待切换会话' });
-                  writeChatData('external-chat', { ...b, sessionId: record.newSessionId, preparedSessionId: '' });
+                  writeChatData('external-chat', {
+                    ...b,
+                    sessionId: record.newSessionId,
+                    preparedSessionId: '',
+                    ...(record.title ? { sessionTitle: record.title } : {}),
+                  });
+                  if (internalPrimary(curCfg)) {
+                    await syncInternalHistory({
+                      sessionId: record.newSessionId, sessions: sessionsHost(), controller: sessionController(), persistence: sessionPersistence(),
+                    }).catch(() => {});
+                  }
                   return json(200, { ok: true, state: snapshot() });
                 }
                 if (route === '/rollover/dismiss' && req.method === 'POST') {
@@ -1073,27 +1395,45 @@ export function apply(ctx, config = {}) {
   }
 
   const releases = new Map();
-  let projectionsService, registryService;
   if (opt.enabled !== false) {
     whenService(ctx, 'sessionProjections', (c) => { projectionsService = serviceOf(c, 'sessionProjections'); }, log);
     whenService(ctx, 'workspaceRegistry', (c) => { registryService = serviceOf(c, 'workspaceRegistry'); }, log);
+    whenService(ctx, 'sessions', (c) => {
+      sessionsService = serviceOf(c, 'sessions');
+      if (internalPrimary(loadConfig()) && sharedSessionId()) {
+        void syncInternalHistory({
+          sessionId: sharedSessionId(), sessions: sessionsService, controller: sessionController(), persistence: sessionPersistence(),
+        }).catch(() => {});
+      }
+    }, log);
+    whenService(ctx, 'sessionPersistence', (c) => {
+      persistenceService = serviceOf(c, 'sessionPersistence');
+      if (internalPrimary(loadConfig()) && sharedSessionId()) {
+        void syncInternalHistory({
+          sessionId: sharedSessionId(), sessions: sessionsHost(), controller: sessionController(), persistence: persistenceService,
+        }).catch(() => {});
+      }
+    }, log);
     whenService(ctx, 'sessionController', (c) => {
       const controller = serviceOf(c, 'sessionController') || serviceOf(ctx, 'sessionController');
       if (disposed || !controller || releases.has(controller)) return;
+      controllerService = controller;
       const rollover = createSessionRollover({
         controller,
         projections: () => projectionsService || serviceOf(ctx, 'sessionProjections'),
-        workspaceRegistry: () => registryService || serviceOf(ctx, 'workspaceRegistry'),
+        workspaceRegistry,
         adapter: rolloverAdapter,
         file: rolloverFile,
         getConfig: loadConfig,
         log,
         async notify({ handoff, usage, prepared, displayTitle }) {
           const cfg = loadConfig();
+          const isInt = internalPrimary(cfg);
           const dy = douyinPrimary(cfg);
-          const to = dy ? douyinPeer(cfg) : cfg.channels?.qq?.peerId;
+          const to = isInt ? handoff.oldSessionId : dy ? douyinPeer(cfg) : cfg.channels?.qq?.peerId;
           if (disposed || cfg.enabled === false || cfg.dryRun !== false || cfg.send?.enabled !== true || !to ||
-              (!dy && (cfg.sources?.qq?.enabled === false || cfg.channels?.qq?.enabled === false || cfg.channels?.qq?.send === false))) return;
+              (isInt && (cfg.channels?.internal?.enabled === false || cfg.channels?.internal?.send === false)) ||
+              (!dy && !isInt && (cfg.sources?.qq?.enabled === false || cfg.channels?.qq?.enabled === false || cfg.channels?.qq?.send === false))) return;
           const { newSessionId, carryMessages, fallbackMessages } = handoff;
           const percent = Math.round(usage.ratio * 1000) / 10;
           const context = carryMessages ? `已备好 ${fallbackMessages.length} 条前情，切换时会更新到最近 ${carryMessages} 条` : '会从空白上下文开始';
@@ -1101,18 +1441,72 @@ export function apply(ctx, config = {}) {
           const switching = prepared ? '方便时重启 DSH 自动切换，或在「陪伴」设置页点一下立即重绑'
             : '方便时在「陪伴」设置页点一下立即重绑';
           const text = `当前会话上下文用了 ${percent}%（${usage.used}/${usage.limit}）。已建好${title}[${newSessionId.slice(0, 8)}]，${context}。这边还能聊，${switching}。`;
-          const sent = dy ? await sendDouyinText({ cfg, text }) : await sendQQPrivate({ to, text, dryRun: false, timeoutMs: cfg.send?.timeoutMs });
+          const sent = isInt
+            ? await sendInternalMessage({ cfg, sessionId: to, text, source: 'rollover' })
+            : dy
+              ? await sendDouyinText({ cfg, text })
+              : await sendQQPrivate({ to, text, dryRun: false, timeoutMs: cfg.send?.timeoutMs });
           if (!sent.ok) log.warn('续聊提醒发送失败：' + sent.error);
         },
       });
-      const removePrompt = installQqPromptMerge(controller, rollover.prompt);
+      const aroundPrompt = async (payload, signal, next) => {
+        let nextPayload = payload;
+        try {
+          const cfg = loadConfig();
+          const sid = internalPrimary(cfg) ? sharedSessionId() : '';
+          if (sid && payload?.sessionId === sid && cfg.enabled !== false && canReadChat(cfg) && Array.isArray(payload.content) && payload.content.length) {
+            const idx = payload.content.findIndex((part) => part?.type === 'text' && typeof part.text === 'string');
+            const rawText = idx >= 0 ? payload.content[idx].text : textFromContent(payload.content);
+            const trimmed = String(rawText || '').trim();
+            if (trimmed && !isProactiveInternalText(trimmed) &&
+                !trimmed.startsWith('<qq_reply_context>') && !trimmed.startsWith('<external_reply_context>')) {
+              const context = await buildReplyContext(ctx, {
+                cfg, peer: sid, kind: 'private', text: trimmed, at: Date.now(), observed: false,
+              });
+              if (context) {
+                const content = payload.content.slice();
+                if (idx >= 0) content[idx] = { ...content[idx], text: context + '\n\n' + content[idx].text };
+                else content.unshift({ type: 'text', text: context });
+                nextPayload = { ...payload, content };
+              }
+            }
+          }
+        } catch (error) {
+          log.warn('内部会话上下文注入跳过：' + String(error?.message || error).slice(0, 120));
+        }
+        return rollover.prompt(nextPayload, signal, next);
+      };
+      const removePrompt = installQqPromptMerge(controller, aroundPrompt);
       const lastAssistant = new Map();
       const assistantText = (msg) => (Array.isArray(msg?.content) ? msg.content : [])
         .map((p) => (p?.type === 'text' ? String(p.text || '') : '')).join('').trim();
       const removeListener = ctx.on?.('session/event', (session, event) => {
         if (disposed || !session?.id) return;
         douyin.observe(session, event);
-        if (douyinPrimary(loadConfig())) {
+        const cfg = loadConfig();
+        if (internalPrimary(cfg)) {
+          observeInternalEvent(session, event, cfg);
+          if (event?.type === 'assistant/message') {
+            const text = assistantText(event.data?.message);
+            if (text) lastAssistant.set(session.id, { turn: event.data?.turn, text });
+            return;
+          }
+          if (event?.type === 'turn/end') {
+            if (cfg.exploration?.portrait === true && session.id === sharedSessionId()) {
+              const last = lastAssistant.get(session.id);
+              if (last?.text && (last.turn === undefined || last.turn === event.data?.turn)) {
+                lastAssistant.delete(session.id);
+                const state = readInternalState(session.id);
+                if (state.outgoing?.source === 'reply') {
+                  appendEmotionInbox({ user: emotionPeer(cfg), role: 'ai', text: last.text, t: Date.now() });
+                }
+              }
+            }
+            return rollover.handleEvent(session, event).catch((error) => log.warn('续聊准备失败：' + error.message));
+          }
+          return;
+        }
+        if (douyinPrimary(cfg)) {
           if (event?.type === 'turn/end') return rollover.handleEvent(session, event).catch(error => log.warn('续聊准备失败：' + error.message));
           return;
         }
@@ -1122,7 +1516,6 @@ export function apply(ctx, config = {}) {
           return;
         }
         if (event?.type === 'turn/end') {
-          const cfg = loadConfig();
           if (cfg.exploration?.portrait === true) {
             const b = rolloverAdapter.bindingFor(session.id);
             const last = lastAssistant.get(session.id);
@@ -1150,6 +1543,7 @@ export function apply(ctx, config = {}) {
     stop() {
       disposed = true;
       releaseActionExecutor();
+      releaseInternalDispatcher();
       douyin.stop();
       for (const release of releases.values()) release();
       releases.clear();
@@ -1181,6 +1575,13 @@ export function apply(ctx, config = {}) {
   if (opt.enabled !== false && douyinPrimary(loadConfig())) {
     markChatBoot();
     douyin.start(pollDelayMs(loadConfig().channels.douyin));
+  } else if (opt.enabled !== false && internalPrimary(loadConfig())) {
+    markChatBoot();
+    if (sharedSessionId()) {
+      void syncInternalHistory({
+        sessionId: sharedSessionId(), sessions: sessionsHost(), controller: sessionController(), persistence: sessionPersistence(),
+      }).catch(() => {});
+    }
   }
   log.info(
     `插件已激活：每 ${tickMinutes()} 分钟一拍，首拍 +${Math.round(firstDelay / 1000)}s，` +

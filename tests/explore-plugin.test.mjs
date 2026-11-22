@@ -4,12 +4,30 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pg-explore-plugin-'));
+const files = {
+  PG_CONFIG_PATH: path.join(dir, 'config.json'),
+  PG_STATE_PATH: path.join(dir, 'state.json'),
+  PG_LOG_DIR: path.join(dir, 'logs'),
+  PG_DSH_HOME: dir,
+  PG_SECRETS_PATH: path.join(dir, 'credentials.json'),
+};
+
+test.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+function isolate(t) {
+  const original = Object.entries(files).map(([key]) => [key, process.env[key]]);
+  Object.assign(process.env, files);
+  t.after(() => {
+    for (const [key, value] of original) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+}
+
 test('manual exploration uses the host, saves progress across rounds and never sends', async (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pg-explore-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  process.env.PG_CONFIG_PATH = path.join(dir, 'config.json');
-  process.env.PG_STATE_PATH = path.join(dir, 'state.json');
-  process.env.PG_DSH_HOME = dir;
+  isolate(t);
   const personaFile = path.join(dir, 'persona.md');
   fs.writeFileSync(personaFile, '喜欢推理小说和不可靠叙述者。');
   fs.writeFileSync(process.env.PG_CONFIG_PATH, JSON.stringify({
@@ -64,11 +82,8 @@ test('manual exploration uses the host, saves progress across rounds and never s
 });
 
 test('manual exploration failure writes diagnostic note to plugin.log and returns note in response', async (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pg-explore-fail-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  process.env.PG_CONFIG_PATH = path.join(dir, 'config.json');
-  process.env.PG_STATE_PATH = path.join(dir, 'state.json');
-  process.env.PG_DSH_HOME = dir;
+  isolate(t);
+  fs.rmSync(path.join(dir, 'data', 'exploration.json'), { force: true });
   const personaFile = path.join(dir, 'persona.md');
   fs.writeFileSync(personaFile, '喜欢推理小说。');
   fs.writeFileSync(process.env.PG_CONFIG_PATH, JSON.stringify({

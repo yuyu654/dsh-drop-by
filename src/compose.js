@@ -14,6 +14,8 @@ import { SLOTS } from './topics.js';
 import { signalFacts } from './signals.js';
 import { memoryFacts } from './memorysource.js';
 import { explorationToneHint } from './explore.js';
+import { WIND_DOWN_HINT, WOKEN_HINT } from './character-rest.js';
+import { OPENING_SELF_CHECK } from './chat-rhythm.js';
 import { ATTRIBUTION_RULE, falseAttribution } from './attribution.js';
 import { recentOutbound } from './outbound.js';
 import { slotStats } from './feedback.js';
@@ -71,12 +73,17 @@ const VAGUE = [
   { code: 'CHEER_END', re: /(加油|别放弃|你可以的|慢慢来|相信自己|做自己|接受自己)[。！!～~]?$/, why: '结尾在劝人' },
 ];
 
+function messageMaxChars(value, fallback, ctx) {
+  const max = Math.max(10, Number(value) || fallback);
+  return ctx?.characterWindDown ? Math.max(10, Math.floor(max * 2 / 3)) : max;
+}
+
 /**
  * 红线检查。返回 { ok, violations:[{code,why}], text }
  * 不自动改写：违规就换一条路（重写一次 / 模板），不要把一个奇怪的样子又修回奇怪。
  */
 export function guard(text, cfg, ctx = null, opts = {}) {
-  const maxChars = Math.max(10, Number(opts.maxChars ?? cfg?.content?.maxChars) || 60);
+  const maxChars = messageMaxChars(opts.maxChars ?? cfg?.content?.maxChars, 60, ctx);
   const t = String(text || '').trim();
   const violations = [];
   if (falseAttribution(t, ctx)) violations.push({
@@ -95,7 +102,8 @@ export function guard(text, cfg, ctx = null, opts = {}) {
   if (parts.length > 1) {
     const tooLong = parts.find((part) => part.length > maxChars);
     if (tooLong) violations.push({ code: 'TOO_LONG', why: `有一段超过 ${maxChars} 字（${tooLong.length}）：${tooLong.slice(0, 16)}…` });
-    if (parts.length > 4) violations.push({ code: 'TOO_MANY_PARTS', why: `分了 ${parts.length} 段，一轮最多四段` });
+    const maxParts = ctx?.characterWindDown ? 1 : 4;
+    if (parts.length > maxParts) violations.push({ code: 'TOO_MANY_PARTS', why: `分了 ${parts.length} 段，一轮最多 ${maxParts} 段` });
   } else if (t.length > maxChars) {
     violations.push({ code: 'TOO_LONG', why: `超过 ${maxChars} 字（${t.length}）` });
   }
@@ -259,6 +267,8 @@ export function renderTemplate(topic, ctx) {
       return e.kind === 'early'
         ? `${e.when || '明天'}早上 ${e.at} 有课。今晚早点睡。`
         : `${e.at} 有课，还有 ${e.leftMin} 分钟。`;
+    case 'characterRest':
+      return e.kind === 'bed' ? '我差不多准备睡了，晚安。' : '刚醒，早呀。';
     case 'examSoon':
       return `还有 ${e.leftMin} 分钟开考。东西带齐，别慌。`;
     case 'examReview':
@@ -470,7 +480,7 @@ export function buildPrompt({ ctx, topic, persona, cfg, feedback, st = {} }) {
   const tone = explorationToneHint(ctx);
   if (tone) facts.push(tone);
 
-  const maxChars = Math.max(10, Number(cfg?.content?.maxChars) || 60);
+  const maxChars = messageMaxChars(cfg?.content?.maxChars, 60, ctx);
   const samples = styleSamples(ctx, 2, cfg);
   const recentSends = Array.isArray(ctx?.recentSends) ? ctx.recentSends.slice(-3) : [];
 
@@ -605,11 +615,14 @@ export function buildPrompt({ ctx, topic, persona, cfg, feedback, st = {} }) {
     `现在是 ${ctx.clock || ''}。在 QQ 上给「她」发一条消息，纯文字：没有表情、没有语音、不带解释。`,
     `这一条的由头：${topic.brief}`,
     facts.length ? `已知事实：\n- ${facts.join('\n- ')}` : '',
+    ctx.characterWoken ? WOKEN_HINT : '',
+    topic?.slot === 'share' && !ctx.characterWindDown ? OPENING_SELF_CHECK : '',
     recentOutBlock,
     statBlock,
     '',
     '【硬性要求，违反任意一条整条作废】',
-    `1. 一到两句，总共不超过 ${maxChars} 字。想分成两条连着说，就在两段中间空一行（每条各自不超过 ${maxChars} 字，一轮最多四条，一条只放一层意思）；不想分就写成一段。`,
+    ctx.characterWindDown ? `${WIND_DOWN_HINT} 整条最多 ${maxChars} 字。`
+      : `1. 一到两句，总共不超过 ${maxChars} 字。想分成两条连着说，就在两段中间空一行（每条各自不超过 ${maxChars} 字，一轮最多四条，一条只放一层意思）；不想分就写成一段。`,
     '2. 必须落到一个具体的东西上：她说过的一句话、一个动作、一个东西、一个时间。通篇在讲道理就是失败。',
     '3. 主语只能是「你」或「我」。不许用「人」「大家」「我们」「很多人」当主语。',
     '4. 不许「不是…而是…」这类对偶说理；不许「我最近在想」「说到底」这种感悟式开头；结尾不许劝人（去吧、加油、慢慢来、别放弃）。',
@@ -656,7 +669,7 @@ export function buildPrompt({ ctx, topic, persona, cfg, feedback, st = {} }) {
  */
 export function buildChitchatPrompt({ ctx, topic, persona, cfg, feedback, st = {} }) {
   const localNotes = localStyle(cfg).notes;
-  const maxChars = Math.max(10, Number(topic?.evidence?.maxChars) || 40);
+  const maxChars = messageMaxChars(topic?.evidence?.maxChars, 40, ctx);
   const tz = ctx.tz || cfg?.timezone || 'Asia/Shanghai';
   const nowTs = Number(ctx.now) || Date.now();
   const recentOut = Array.isArray(ctx.recentOutbound) ? ctx.recentOutbound : [];
@@ -712,7 +725,8 @@ export function buildChitchatPrompt({ ctx, topic, persona, cfg, feedback, st = {
     '',
     '【这一条要写成什么样】',
     seed ? '' : explorationToneHint(ctx),
-    `1. 一到两句，总共不超过 ${maxChars} 字。短是这条的全部。想分成两条说，两段中间空一行（每条各自不超过 ${maxChars} 字，最多两条）。`,
+    ctx.characterWindDown ? `${WIND_DOWN_HINT} 整条最多 ${maxChars} 字。`
+      : `1. 一到两句，总共不超过 ${maxChars} 字。短是这条的全部。想分成两条说，两段中间空一行（每条各自不超过 ${maxChars} 字，最多两条）。`,
     '2. 必须落在一个具体的东西上：一件小事、一个念头、一个她身上的细节、一个时间点。「想你了」这种空句不算。',
     '3. 不要总结、不要讲道理、不要提问轰炸；最多一个轻问，或者干脆只是陈述。',
     night

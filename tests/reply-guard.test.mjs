@@ -4,7 +4,7 @@
 // （qq-history 里那条 user、没有 reply），而 outbound.js 看到的是更新的证据
 // （qq-reply.out.txt 的 mtime 晚于她那句话）——两条线在 engine 里必须对上。
 // 用 PG_DSH_HOME 造假家目录，不碰真实记录、不联网、不叫模型。
-import { test, after } from 'node:test';
+import { test, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -40,7 +40,8 @@ const baseCfg = {
 };
 
 // 她 20 分钟前在 QQ 说了一句，qq-history 里没有我们的 reply（driver 还没写/写失败）
-const herTs = Date.now() - 20 * 60_000;
+const now = Date.parse('2026-11-22T12:00:00+08:00');
+const herTs = now - 20 * 60_000;
 fs.mkdirSync(path.join(home, 'autonomy'), { recursive: true });
 fs.mkdirSync(path.join(home, 'douyin-duty', 'memory'), { recursive: true });
 fs.writeFileSync(
@@ -57,6 +58,8 @@ fs.writeFileSync(cfgPath, JSON.stringify(baseCfg));
 
 const { tick: engineTick } = await import('../src/engine.js');
 const tick = (options) => engineTick({ ...options, probeSystem: async () => ({ idle_ms: 0 }) });
+
+beforeEach(t => t.mock.method(Date, 'now', () => now));
 
 after(() => {
   fs.rmSync(home, { recursive: true, force: true });

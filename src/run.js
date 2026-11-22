@@ -71,6 +71,7 @@ import { pickTopic, explainNoTopic, classifySleep, bedTimeOf, fishStale, SLOTS, 
 import { summarizeVideo, readCache, CACHE_DIR } from './videosum.js';
 import { outboundFor, answeredAlready, recentOutbound, douyinLastInbound } from './outbound.js';
 import { feedbackSummary, adaptiveExtraMin } from './feedback.js';
+import { topicLabel } from './explain.js';
 import { parseAgenda, agendaSource, nextCourse, currentWeek, courseEnabled } from './agenda.js';
 import { parseExams, examsSource, reviewDue, soonDue } from './exams.js';
 import { pickNoReply, noReplyDue } from './noreply.js';
@@ -1548,6 +1549,15 @@ ${v.raw}`);
     console.log('=== 桥 ===');
     const bi = bridgeInfo();
     console.log(`  qq-bridge ${bi.ok ? '可连' : '缺配置'}  api=${bi.api || '-'}  self=${bi.selfId || '-'}`);
+    const { preferences } = feedbackSummary(loadState(), cfg, now);
+    if (preferences.length) {
+      const format = new Intl.DateTimeFormat('zh-CN', { timeZone: cfg.timezone, dateStyle: 'short', timeStyle: 'short' });
+      console.log('=== 生效的话题偏好 ===');
+      for (const { target, mode, expiresAt } of preferences) {
+        const label = target.keyword || topicLabel(target.slot);
+        console.log(`  ${label} · ${mode === 'allow_silent' ? '沉默豁免' : '暂停主动提起'} · ${expiresAt ? '有效至 ' + format.format(expiresAt) : '长期'}`);
+      }
+    }
     console.log('=== 最近判定 ===');
     const rows = tail(5, now, cfg.timezone, cfg);
     if (!rows.length) console.log('  （今天还没有日志）');

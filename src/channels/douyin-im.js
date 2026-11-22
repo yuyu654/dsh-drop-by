@@ -153,7 +153,7 @@ export async function readDouyinIm(cfg, signal) {
 
 let sends = Promise.resolve();
 
-export function sendDouyinText({ cfg, peer = douyinPeer(cfg), text, source = 'companion', expectedRequestId, getConfig = loadConfig }) {
+export function sendDouyinText({ cfg, peer = douyinPeer(cfg), text, source = 'companion', expectedRequestId, getConfig = loadConfig, canDispatch }) {
   const job = sends.then(async () => {
     const current = getConfig();
     if (!douyinPrimary(current) || douyinPeer(current) !== peer || current.enabled === false ||
@@ -165,6 +165,7 @@ export function sendDouyinText({ cfg, peer = douyinPeer(cfg), text, source = 'co
     if (!originalWatcherDisabled()) return { ok: false, error: '请关闭抖音原聊天盯梢' };
     const scripts = douyinInstallation();
     if (!scripts.ready) return { ok: false, error: '缺少 dsh-douyin-scroll 的私信脚本' };
+    if (canDispatch && !canDispatch(0)) return { ok: false, reason: 'TOPIC_PREFERENCE_MUTED', parts: 0 };
     const firstAt = Date.now();
     try {
       const result = await run(process.execPath,

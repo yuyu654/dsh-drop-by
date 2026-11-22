@@ -50,7 +50,8 @@ writeChatData('external-chat', { sessionId: 'shared-1' });
 
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-test('CHANNEL_SWITCH_PENDING skips without incrementing todaySent or lastSendAt', async () => {
+test('CHANNEL_SWITCH_PENDING skips without incrementing todaySent or lastSendAt', async (t) => {
+  t.mock.method(Date, 'now', () => Date.parse('2026-11-22T12:00:00+08:00'));
   const res = await tick({ persist: true, probeSystem: async () => ({ idle_ms: 0 }) });
   assert.equal(res.record.decision, 'skip');
   assert.equal(res.record.reason, 'CHANNEL_SWITCH_PENDING');
