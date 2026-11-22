@@ -278,14 +278,18 @@ test('ensureAsr：端口在听就不动；不在且 autostart 关着就报错、
   assert.equal(spawned, 0, '关掉自动拉起就一条进程都不许起');
 });
 
-test('ensureAsr：不在就按脚本拉起，等到端口通才算成功（started:true）', async () => {
+test('ensureAsr：不在就按脚本拉起，等到端口通才算成功（started:true）', async (t) => {
+  const dir = tmp();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const script = path.join(dir, 'start-asr.ps1');
+  fs.writeFileSync(script, '# mock asr launcher\n', 'utf8');
   let n = 0;
   let ranScript = false;
   const r = await ensureAsr({
-    cfg: {},
+    cfg: { content: { forward: { asrScript: script } } },
     tcp: async () => ++n > 2,
     spawnRun: async (cmd, args) => {
-      ranScript = cmd === 'powershell' && args.includes('-File');
+      ranScript = cmd === 'powershell' && args.includes('-File') && args.includes(script);
       return { ok: true, stdout: 'asr-server: STARTED 8000' };
     },
     sleep: async () => {},
