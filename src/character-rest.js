@@ -1,8 +1,5 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { CHARACTER_REST_DEFAULTS } from './config.js';
-import { channelFile } from './channels/douyin-im.js';
 import { shiftDay } from './retention.js';
 import { dayKey, minToHm, minutesOfDayOf } from './time.js';
 import { parseHm } from './schedule.js';
@@ -32,40 +29,8 @@ function settings(cfg) {
   const duration = wrap(wake - bed);
   const safeShift = Math.floor((Math.min(duration, DAY - duration) - 1) / 2);
   const jitter = finiteInt(raw.jitterMin, defaults.jitterMin, 0, 120);
-  const adaptMax = raw.adapt === true ? finiteInt(raw.adaptMaxMin, defaults.adaptMaxMin, 0, 60) : 0;
-  const adaptDays = finiteInt(raw.adaptDays, defaults.adaptDays, 3, 30);
   const windDown = finiteInt(raw.windDownMin, defaults.windDownMin, 0, 180);
-  return { zone: cfg?.timezone || 'Asia/Shanghai', bed, wake, duration, safeShift, jitter, adaptMax, adaptDays, windDown };
-}
-
-function signature(rule) {
-  return JSON.stringify([rule.zone, rule.bed, rule.wake, rule.adaptMax]);
-}
-
-function parsedDays(raw, rule) {
-  const parsed = JSON.parse(raw);
-  return parsed?.basis === signature(rule) && parsed.days && typeof parsed.days === 'object' ? parsed.days : {};
-}
-
-function readDays(rule) {
-  if (!rule.adaptMax) return {};
-  try { return parsedDays(fs.readFileSync(channelFile('character-rest'), 'utf8'), rule); }
-  catch { return {}; }
-}
-
-function adaptation(days, day, rule) {
-  if (!rule.adaptMax) return { bed: 0, wake: 0, bedSamples: 0, wakeSamples: 0 };
-  const since = shiftDay(day, -rule.adaptDays);
-  const recent = Object.entries(days).filter(([key]) => key >= since && key < day).map(([, row]) => row);
-  const stats = field => {
-    const values = recent.map(row => row?.[field]).filter(Number.isFinite).sort((a, b) => a - b);
-    if (values.length < 3) return { offset: 0, samples: values.length };
-    const median = (values[Math.floor((values.length - 1) / 2)] + values[Math.floor(values.length / 2)]) / 2;
-    return { offset: clamp(Math.round(median / 2), -rule.adaptMax, rule.adaptMax), samples: values.length };
-  };
-  const evening = stats('evening');
-  const morning = stats('morning');
-  return { bed: evening.offset, wake: morning.offset, bedSamples: evening.samples, wakeSamples: morning.samples };
+  return { zone: cfg?.timezone || 'Asia/Shanghai', bed, wake, duration, safeShift, jitter, windDown };
 }
 
 function dailyJitter(day, endpoint, limit) {
@@ -78,13 +43,11 @@ function evaluateRest(cfg, at = Date.now()) {
   const rule = settings(cfg);
   const day = dayKey(at, rule.zone);
   const minute = minutesOfDayOf(at, rule.zone);
-  const days = readDays(rule);
   const cycles = [-1, 0, 1].map(offset => {
     const cycleDay = shiftDay(day, offset);
-    const adapt = adaptation(days, cycleDay, rule);
     const limit = Math.min(rule.safeShift, rule.jitter);
-    const shift = endpoint => clamp(adapt[endpoint] + dailyJitter(cycleDay, endpoint, limit), -rule.safeShift, rule.safeShift);
-    return { day: cycleDay, adapt,
+    const shift = endpoint => clamp(dailyJitter(cycleDay, endpoint, limit), -rule.safeShift, rule.safeShift);
+    return { day: cycleDay,
       start: offset * DAY + rule.bed + shift('bed'),
       end: offset * DAY + rule.bed + rule.duration + shift('wake') };
   });
@@ -159,7 +122,7 @@ export function characterRestGreeted(ctx, kind, cfg, now = Date.now()) {
   });
 }
 
-/** UI-friendly snapshot of today's effective sleep/wake times and current adaptation offsets. */
+/** UI-friendly snapshot of today's effective sleep/wake times. */
 export function characterRestStatus(cfg, at = Date.now()) {
   const { rule, current, asleep, windDown } = evaluateRest(cfg, at);
   const bedMin = wrap(current.start);
@@ -175,61 +138,5 @@ export function characterRestStatus(cfg, at = Date.now()) {
     jitterMin: rule.jitter,
     asleep,
     windDown,
-    adaptEnabled: rule.adaptMax > 0,
-    adaptBedMin: current.adapt.bed,
-    adaptWakeMin: current.adapt.wake,
-    bedSamples: current.adapt.bedSamples,
-    wakeSamples: current.adapt.wakeSamples,
   };
-}
-
-let chatWrites = Promise.resolve();
-
-/** The private reply path queues this observation without waiting for disk. Keep only daily minute offsets. */
-export function recordCharacterChat(cfg, timestamps, now = Date.now()) {
-  const rule = settings(cfg);
-  const radius = Math.min(rule.safeShift, rule.adaptMax * 4);
-  if (!radius) return Promise.resolve();
-  const today = dayKey(now, rule.zone);
-  const oldest = shiftDay(today, -rule.adaptDays - 1);
-  const observations = [];
-  for (const at of timestamps) {
-    if (!Number.isFinite(at) || at <= 0 || at > now) continue;
-    const day = dayKey(at, rule.zone);
-    if (day < oldest) continue;
-    const minute = minutesOfDayOf(at, rule.zone);
-    for (const [field, anchor] of [['evening', rule.bed], ['morning', rule.wake]]) {
-      const distance = wrap(minute - anchor + DAY / 2) - DAY / 2;
-      if (Math.abs(distance) > radius) continue;
-      const sampleDay = shiftDay(day, Math.round((minute - anchor - distance) / DAY));
-      observations.push({ field, distance, day: sampleDay });
-    }
-  }
-  if (!observations.length) return Promise.resolve();
-
-  const file = channelFile('character-rest');
-  chatWrites = chatWrites.then(async () => {
-    let days = {};
-    try { days = parsedDays(await fs.promises.readFile(file, 'utf8'), rule); }
-    catch (error) {
-      if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
-    }
-    for (const day of Object.keys(days)) if (day < oldest) delete days[day];
-    for (const { field, distance, day } of observations) {
-      if (day < oldest) continue;
-      const row = days[day] ||= {};
-      if (!Number.isFinite(row[field]) || (field === 'evening' ? distance > row[field] : distance < row[field])) {
-        row[field] = distance;
-      }
-    }
-    const temp = file + '.' + randomUUID() + '.tmp';
-    await fs.promises.mkdir(path.dirname(file), { recursive: true });
-    try {
-      await fs.promises.writeFile(temp, JSON.stringify({ basis: signature(rule), days }), { flag: 'wx', mode: 0o600 });
-      await fs.promises.rename(temp, file);
-    } finally {
-      await fs.promises.rm(temp, { force: true });
-    }
-  }).catch(() => { /* An optional observation must never delay or fail a private reply. */ });
-  return chatWrites;
 }

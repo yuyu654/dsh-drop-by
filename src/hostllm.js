@@ -12,6 +12,8 @@
 // 属性访问会**直接抛**（"cannot get property … without inject"），`?.` 挡不住。
 
 import { randomUUID } from 'node:crypto';
+import { sharedSessionId, extractSessionModelFromEvents } from './channels/internal.js';
+import { readChatData } from './channels/douyin-im.js';
 
 /** 取一个可选服务，取不到返回 null，绝不抛。 */
 function serviceOf(ctx, name) {
@@ -38,6 +40,142 @@ function userMessage(text, images = []) {
     role: 'user',
     content: [{ type: 'text', text: String(text ?? '') }, ...images],
     source: { kind: 'plugin', plugin: 'dsh-drop-by' },
+  };
+}
+
+let activeHostCtx = null;
+let cachedModels = [];
+
+export function setHostLlmContext(ctx) {
+  activeHostCtx = ctx || null;
+}
+
+export function parseExplorationModelSpec(raw, catalog = []) {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  const idx = s.indexOf(':');
+  if (idx > 0 && idx < s.length - 1) {
+    return { provider: s.slice(0, idx).trim(), model: s.slice(idx + 1).trim() };
+  }
+  const hit = (Array.isArray(catalog) ? catalog : []).find((m) => m.model === s);
+  return hit ? { provider: hit.provider, model: hit.model } : { provider: '', model: s };
+}
+
+export function resolveBoundSessionModel(ctx = activeHostCtx) {
+  const sid = sharedSessionId();
+  if (!sid) return null;
+  try {
+    const events = serviceOf(ctx, 'sessions')?.get?.(sid)?.snapshotEvents?.();
+    const picked = extractSessionModelFromEvents(events);
+    if (picked?.provider && picked?.model) return { ...picked, from: 'bound-session' };
+  } catch { /* ignore */ }
+  try {
+    const saved = readChatData('external-chat')?.sessionModel;
+    if (saved?.provider && saved?.model && (!saved.sessionId || saved.sessionId === sid)) {
+      return { provider: saved.provider, model: saved.model, from: 'bound-session' };
+    }
+  } catch { /* ignore */ }
+  try {
+    const opt = serviceOf(ctx, 'agents')?.get?.(sid)?.options;
+    if (opt?.provider && opt?.model) {
+      return { provider: String(opt.provider), model: String(opt.model), from: 'bound-session' };
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+function collectModelsFromList(providerId, providerName, rows, out, seen) {
+  for (const m of Array.isArray(rows) ? rows.slice(0, 200) : []) {
+    if (m?.provider && m.provider !== providerId) continue;
+    const mid = typeof m === 'string' ? m.trim() : String(m?.id || m?.model || '').trim();
+    if (!mid) continue;
+    const key = `${providerId}:${mid}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      provider: providerId,
+      providerName: providerName || providerId,
+      model: mid,
+      modelName: String((typeof m === 'object' ? (m?.name || m?.label) : '') || mid).trim(),
+    });
+  }
+}
+
+function collectSyncModelsFromLlm(ctx) {
+  const llm = serviceOf(ctx, 'llm');
+  if (!llm) return [];
+  const out = [];
+  const seen = new Set();
+  try {
+    const providers = (typeof llm.listProviders === 'function' ? llm.listProviders() : null) || [];
+    for (const p of Array.isArray(providers) ? providers.slice(0, 32) : []) {
+      const pid = String(p?.id || p?.provider || '').trim();
+      if (!pid) continue;
+      const pName = String(p?.displayName || p?.name || pid).trim();
+      if (Array.isArray(p?.models)) collectModelsFromList(pid, pName, p.models, out, seen);
+      if (typeof llm.listModels === 'function') {
+        try {
+          const maybe = llm.listModels(pid);
+          if (Array.isArray(maybe)) {
+            collectModelsFromList(pid, pName, maybe, out, seen);
+          } else if (maybe && typeof maybe.then === 'function') {
+            maybe.then((rows) => {
+              if (!Array.isArray(rows) || !rows.length) return;
+              const next = [...cachedModels];
+              const mergedSeen = new Set(next.map((m) => `${m.provider}:${m.model}`));
+              collectModelsFromList(pid, pName, rows, next, mergedSeen);
+              cachedModels = next;
+            }).catch(() => {});
+          }
+        } catch { /* ignore sync listModels failure */ }
+      }
+    }
+  } catch { /* ignore */ }
+  return out;
+}
+
+export async function refreshHostModelCatalog(ctx = activeHostCtx) {
+  const llm = serviceOf(ctx, 'llm');
+  if (!llm || typeof llm.listProviders !== 'function') return getHostModelCatalog(ctx);
+  const out = [];
+  const seen = new Set();
+  try {
+    const providers = (await Promise.resolve(llm.listProviders())) || [];
+    for (const p of Array.isArray(providers) ? providers.slice(0, 32) : []) {
+      const pid = String(p?.id || p?.provider || '').trim();
+      if (!pid) continue;
+      const pName = String(p?.displayName || p?.name || pid).trim();
+      if (Array.isArray(p?.models)) collectModelsFromList(pid, pName, p.models, out, seen);
+      if (typeof llm.listModels === 'function') {
+        let timer;
+        try {
+          const rows = await Promise.race([
+            Promise.resolve().then(() => llm.listModels(pid)),
+            new Promise((resolve) => { timer = setTimeout(() => resolve(null), 1500); timer.unref?.(); }),
+          ]);
+          if (Array.isArray(rows)) collectModelsFromList(pid, pName, rows, out, seen);
+        } catch { /* ignore provider failure */ }
+        finally { clearTimeout(timer); }
+      }
+    }
+    if (out.length) cachedModels = out;
+  } catch { /* ignore */ }
+  return getHostModelCatalog(ctx);
+}
+
+export function getHostModelCatalog(ctx = activeHostCtx) {
+  const merged = [];
+  const seen = new Set();
+  for (const item of [...collectSyncModelsFromLlm(ctx), ...cachedModels]) {
+    const key = `${item.provider}:${item.model}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(item);
+  }
+  return {
+    models: merged,
+    boundModel: resolveBoundSessionModel(ctx),
+    defaultModel: pickTarget(ctx, null),
   };
 }
 
@@ -80,7 +218,7 @@ function pickTarget(ctx, prefer) {
  * 造一个 llm.js 同形的生成器。
  * @returns {{ready:boolean, reason?:string, provider?:string, model?:string, generate?:Function}}
  */
-export function makeHostLlm(ctx, { cfg, log = () => {} } = {}) {
+export function makeHostLlm(ctx, { cfg, log = () => {}, forExploration = false } = {}) {
   const llm = serviceOf(ctx, 'llm');
   if (!llm || typeof llm.stream !== 'function') {
     return { ready: false, reason: 'HOST_LLM_MISSING' };
@@ -89,7 +227,21 @@ export function makeHostLlm(ctx, { cfg, log = () => {} } = {}) {
   const prefer = cfg?.content?.llm?.provider && cfg?.content?.llm?.model
     ? { provider: cfg.content.llm.provider, model: cfg.content.llm.model }
     : null;
-  const target = pickTarget(ctx, prefer);
+  let target = null;
+  if (forExploration) {
+    const explicit = parseExplorationModelSpec(cfg?.exploration?.model, getHostModelCatalog(ctx).models);
+    if (explicit?.model) {
+      const fallbackProvider = resolveBoundSessionModel(ctx)?.provider || pickTarget(ctx, prefer)?.provider || '';
+      if (explicit.provider || fallbackProvider) {
+        target = { provider: explicit.provider || fallbackProvider, model: explicit.model, from: 'exploration-config' };
+      }
+    }
+    if (!target) {
+      target = resolveBoundSessionModel(ctx) || pickTarget(ctx, prefer);
+    }
+  } else {
+    target = pickTarget(ctx, prefer);
+  }
   if (!target) return { ready: false, reason: 'HOST_LLM_NO_MODEL' };
 
   // 默认上限放宽到 1024：带思考/reasoning 的模型（如 deepseek-v4.1-flash）会把推理过程也计入 maxTokens，
@@ -218,9 +370,20 @@ export function makeHostLlm(ctx, { cfg, log = () => {} } = {}) {
     return attemptOnce({ prompt, images: content, timeoutMs, modelTarget: visionTarget });
   }
 
+  async function saveImage({ data, mediaType = 'image/jpeg', name = 'explore-page.jpg' } = {}) {
+    const attachments = serviceOf(ctx, 'attachments');
+    if (!attachments || typeof attachments.saveImage !== 'function' || !data) return null;
+    try {
+      return await attachments.saveImage.call(attachments, { data, mediaType, name });
+    } catch {
+      return null;
+    }
+  }
+
   return {
     ready: true,
     observeVideo,
+    saveImage,
     provider: target.provider,
     model: target.model,
     from: target.from,

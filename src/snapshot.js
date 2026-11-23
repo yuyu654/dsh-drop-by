@@ -328,7 +328,7 @@ export function buildSnapshot({ ctx = {}, topic = null, cfg = {}, st = {}, now =
     const seed = String(topic.evidence?.seed || '').trim();
     const seedLine = seed
       ? (topic.evidence?.seedKind === 'persona'
-          ? `这一拍可聊的角色偏好或习惯：${seed}。按喜好或想法表达，只有聊天或候选事实支持时才说已经发生的事。`
+          ? `这一拍可聊的角色偏好或习惯：${seed}。仅作性格与生活气息参考，不必照着字面索要饮料/物品或复述设定，也可只顺着当下时段随口说一句日常短话；只有聊天或候选事实支持时才说已经发生的事。`
           : `这一拍可用的记忆起点（仅作素材，别照念）：${seed}`)
       : (topic.evidence?.conversation ? `这一拍可用的对话衔接：${topic.evidence.conversation}` : '');
     const bareLeft = Number(topic.evidence?.bareLeft);

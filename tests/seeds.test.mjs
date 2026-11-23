@@ -143,3 +143,31 @@ test('personaPool 从人设提取角色自身生活/毛病/偏好种子，且 pi
   const second = pickSeed({ cfg, persona, now: NOW, st, rnd: () => 0 });
   assert.equal(second.seed?.kind, 'memory');
 });
+
+test('memoryPool 过滤 CCF-C/论文/拆功能点等项目焦虑记忆，pickSeed 对最近刚提过的饮料种子去重', () => {
+  const dir = tmpMem([
+    memOf('真奈想独立投一篇 CCF-C，想从插件里拆一个功能点做研究又怕赛道太挤'),
+    memOf('昨天买到一家挺好的桂花乌龙'),
+  ]);
+  const cfg = cfgOf(dir);
+  const { pool } = memoryPool({ cfg, now: NOW });
+  assert.equal(pool.length, 1);
+  assert.match(pool[0].text, /桂花乌龙/);
+
+  const persona = {
+    ok: true,
+    text: [
+      '## 我是谁',
+      '- 明知胃不好还是爱喝冰饮料，常让「你」顺手带一杯。',
+      '- 喜欢看推理小说和漫画。',
+    ].join('\n'),
+  };
+  const picked = pickSeed({
+    cfg: cfgOf(tmpMem([])),
+    persona,
+    now: NOW,
+    st: { content: { recentSends: ['中午了，吃了没？顺手给我带杯饮料嘛~'] } },
+    rnd: () => 0,
+  });
+  assert.match(picked.seed?.text || '', /推理小说/);
+});

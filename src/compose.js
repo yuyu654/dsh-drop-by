@@ -518,7 +518,7 @@ export function buildPrompt({ ctx, topic, persona, cfg, feedback, st = {} }) {
         ? []
         : [
             '- 说给外行朋友听：严禁公式、字母代号和冷门专业黑话，一定要翻译成生活里听得懂的大白话。',
-            '- 有一个具体发现就能分享，不必用问题结尾。',
+            '- 有一个具体发现就能分享，不必用问题结尾；禁止套用“你站哪派”“你是…派还是…派”“你猜…随便猜一个”“你那个掉了没”等模板话术。',
           ]),
     ],
     reply: ['- 先接住她那句话：她说了什么就应什么，别自顾自换话题。'],
@@ -684,7 +684,9 @@ export function buildChitchatPrompt({ ctx, topic, persona, cfg, feedback, st = {
   const isPersonaSeed = topic?.evidence?.seedKind === 'persona';
   const seedBlock = seed
     ? [
-        `这一句的起点（是素材，不是任务）：${seed}`,
+        isPersonaSeed
+          ? `这一句的底色参考（不是任务，不必照着字面索要饮料或复述设定，可只顺着当下时段随口说一句日常）：${seed}`
+          : `这一句的起点（是素材，不是任务）：${seed}`,
         isPersonaSeed
           ? PERSONA_FACT_RULE
           : '',

@@ -34,3 +34,19 @@ test('QQ 背景里的「当前感受」只留情绪，不把探索的业务词�
   assert.match(context, /有点闷/);
   for (const w of ['术语', '不上不下']) assert.equal(context.includes(w), false, w);
 });
+
+test('QQ reply omits heavy exploration JSON blocks on minimal replies like 好', async () => {
+  const persona = { ok: true, text: '喜欢推理' };
+  const cfg = { channels: { qq: { peerId: '42' } }, exploration: { mood: true } };
+  const at = 3_000_000;
+  const { state } = await exploreRound({ persona, now: at, includeMood: true, generate: async () => ({
+    ok: true, text: JSON.stringify({ action: 'start', topic: '长篇漫画《示例》', progress: '详细分析人物关系和分镜节奏',
+      next: '接下来分析第二话', mood: '有点得意' }),
+  }) });
+  const minimal = qqReplyContext({ kind: 'private', peer: '42', cfg, state, persona, now: at + 1000, text: '好' });
+  assert.doesNotMatch(minimal, /研究进展|休闲发现|详细分析/);
+  assert.match(minimal, /有点得意/);
+  const full = qqReplyContext({ kind: 'private', peer: '42', cfg, state, persona, now: at + 1000, text: '那部漫画后来怎样了' });
+  assert.match(full, /研究进展/);
+  assert.doesNotMatch(full, /接下来分析第二话/);
+});

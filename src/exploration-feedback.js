@@ -33,13 +33,14 @@ export function forwardCuriosity(text, { item, title } = {}) {
 
 function read(opts, now) {
   let old;
-  try { old = readChatData(FILE); } catch { return { choices: [], candidates: [], seeds: [], hidden: [] }; }
+  try { old = readChatData(FILE); } catch { old = {}; }
   const fresh = (key, age) => (Array.isArray(old?.[key]) ? old[key] : []).filter(row =>
     Number.isFinite(row?.at) && row.at <= now && row.at + age > now);
   return {
     choices: fresh('choices', ttl(opts)),
     candidates: fresh('candidates', ttl(opts)).slice(0, cap(opts)),
     seeds: fresh('seeds', warm(opts)),
+    shares: fresh('shares', warm(opts)),
     hidden: fresh('hidden', ttl(opts)),
   };
 }
@@ -51,6 +52,7 @@ function write(state, opts) {
     choices: trim(state.choices, max),
     candidates: trim(state.candidates, max),
     seeds: trim(state.seeds, max * 2),
+    shares: trim(state.shares, max * 2),
     hidden: trim(state.hidden, max * 3),
   });
 }
@@ -87,20 +89,40 @@ export function applyExplorationFeedback({ action, id, cfg, status, now = Date.n
     write(state, opts);
     return true;
   }
-  if (opts.enabled === false || !['more', 'change', 'pause'].includes(action)) return false;
+  if (opts.enabled === false || !['more', 'change', 'pause', 'clear'].includes(action)) return false;
   const entry = currentEntries(status, opts, now).find(row => row.id === id);
   if (!entry) return false;
-  const key = topicKey(entry.topic);
-  state.choices = [{ key, topic: entry.topic, action, at: now }, ...state.choices.filter(row => row.key !== key)];
+  if (action === 'clear') {
+    const key = topicKey(entry.topic);
+    state.choices = state.choices.filter(row => row.key !== key);
+    write(state, opts);
+    return true;
+  }
+  saveChoice(state, opts, { topic: entry.topic, action, at: now });
+  return true;
+}
+
+function saveChoice(state, opts, choice) {
+  const key = topicKey(choice.topic);
+  state.choices = [{ ...choice, key }, ...state.choices.filter(row => row.key !== key)];
   write(state, opts);
+}
+
+// An explicit private-chat request also works when passive curiosity feedback is off.
+export function recordExplorationDirection({ cfg, action, topic, now = Date.now() }) {
+  if (!['change', 'pause'].includes(action) || typeof topic !== 'string' ||
+      topic.length > 120 || topicKey(topic).length < 2) return false;
+  const opts = settings(cfg);
+  saveChoice(read(opts, now), opts, { topic, action, at: now, explicit: true });
   return true;
 }
 
 export function explorationFeedbackHints(cfg, status, now = Date.now()) {
   const opts = settings(cfg);
-  if (opts.enabled === false) return { prefer: '', avoid: [] };
   const state = read(opts, now);
-  const avoid = state.choices.filter(row => row.action !== 'more').map(row => row.topic);
+  const avoid = state.choices.filter(row => row.action !== 'more' && (opts.enabled !== false || row.explicit))
+    .map(row => row.topic);
+  if (opts.enabled === false) return { prefer: '', avoid };
   const active = new Set(currentEntries(status, opts, now).map(entry => topicKey(entry.topic)));
   const more = state.choices.find(row => active.has(row.key) && row.action === 'more' && !row.usedAt);
   if (more) return { prefer: more.topic, avoid, choice: more.key };
@@ -131,10 +153,18 @@ function setSeed(state, { peer, channel, id, topic, at, source, score }) {
 export function rememberExplorationShare({ cfg, peer, channel, id, topic, at }) {
   const opts = settings(cfg);
   topic = cleanTitle(topic);
-  if (opts.enabled === false || !topic || !peer || !Number.isFinite(at)) return;
+  if (!topic || !peer || !Number.isFinite(at)) return;
   const state = read(opts, at);
-  setSeed(state, { peer, channel, id, topic, at, source: 'share', score: 0 });
+  const sameChat = row => row.peer === String(peer) && row.channel === channel;
+  state.shares = [{ peer: String(peer), channel, topic, at }, ...state.shares.filter(row => !sameChat(row))];
+  if (opts.enabled !== false) setSeed(state, { peer, channel, id, topic, at, source: 'share', score: 0 });
   write(state, opts);
+}
+
+export function recentSharedExplorationTopic({ cfg, peer, channel, now = Date.now() }) {
+  const state = read(settings(cfg), now);
+  const sameChat = row => row.peer === String(peer) && row.channel === channel;
+  return state.shares.find(sameChat)?.topic || state.seeds.find(row => row.source === 'share' && sameChat(row))?.topic || '';
 }
 
 function related(topic, text) {
@@ -181,6 +211,7 @@ export function topicInExplorationFeedback(topic, list) {
   const key = topicKey(topic);
   return Boolean(key && Array.isArray(list) && list.some(item => {
     const other = topicKey(item);
-    return other.length >= 3 && (key.includes(other) || (key.length >= 3 && other.includes(key)));
+    return (key.length >= 2 && key === other) ||
+      (other.length >= 3 && (key.includes(other) || (key.length >= 3 && other.includes(key))));
   }));
 }

@@ -1,6 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { exploreRound, explorationProgress, explorationShare, explorationMood, explorationToneHint, styleApprovedDraft } from '../src/explore.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pg-explore-round-'));
+const env = {
+  PG_CONFIG_PATH: 'config.json', PG_STATE_PATH: 'state.json', PG_LOG_DIR: 'logs',
+  PG_DSH_HOME: 'dsh', PG_CHAT_DATA_DIR: 'data', PG_SECRETS_PATH: 'credentials.json',
+};
+const previous = Object.keys(env).map(key => [key, process.env[key]]);
+for (const [key, value] of Object.entries(env)) process.env[key] = path.join(dir, value);
+test.after(() => {
+  for (const [key, value] of previous) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+const { exploreRound, explorationProgress, explorationShare, explorationMood, explorationToneHint, styleApprovedDraft } =
+  await import('../src/explore.js');
 
 const persona = { ok: true, text: '喜欢推理小说，常留意不可靠叙述者。' };
 const result = (value) => ({ ok: true, text: JSON.stringify(value) });
@@ -255,4 +275,355 @@ test('legacy cadence is unchanged in deep mode and remains unused in light mode'
     return result({ action: 'skip' });
   } });
   assert.equal(light.state.lastRun.mode, 'light');
+});
+
+test('哔哩哔哩漫画或「不要视频」指定主题强制纠偏为 web 搜索并保留休闲回传规划', async () => {
+  for (const [focusTopic, expectedQuery, site] of [
+    ['哔哩哔哩漫画作品：《”哆哆嗦嗦“逃离你》', '哆哆嗦嗦逃离你', 'manga.bilibili.com'],
+    ['漫画，不要视频', '漫画'],
+  ]) {
+    const collected = [];
+    const media = {
+      web: true,
+      video: true,
+      calls: [],
+      collect: async (kind, query, options) => {
+        collected.push({ kind, query, options });
+        return [{ url: 'https://manga.bilibili.com/detail/mc123', title: expectedQuery, evidence: '网页正文', content: '漫画简介正文' }];
+      },
+    };
+    const round = await exploreRound({
+      persona,
+      focusTopic,
+      bias: 'leisure',
+      media,
+      generate: async ({ prompt }) => {
+        if (prompt.includes('替角色选这一轮的方向')) {
+          assert.match(prompt, /严禁选 video/);
+          // 模拟模型偏偏返回 mode=leisure 且误选 kind=video 的情况
+          return result({ mode: 'leisure', kind: 'video', query: focusTopic });
+        }
+        return result({ action: 'start', topic: focusTopic, progress: '看了漫画简介正文', next: '继续看第一话', progressSourceIndex: 0 });
+      },
+    });
+    assert.equal(round.ok, true);
+    assert.equal(collected.length, 1);
+    assert.equal(collected[0].kind, 'web');
+    assert.ok(collected[0].query.includes(expectedQuery));
+    assert.doesNotMatch(collected[0].query, /作品：|[《》”“]|不要视频/);
+    if (site) {
+      assert.ok(collected[0].query.includes('site:' + site));
+      assert.deepEqual(collected[0].options.preferredSites, [site]);
+      assert.equal(collected[0].options.fallbackQuery, expectedQuery);
+    }
+    assert.equal(round.state.lastRun.kind, 'web');
+    assert.equal(round.state.lastRun.query, expectedQuery);
+    assert.equal(round.state.thread.progressSource.evidence, '网页正文');
+  }
+});
+
+test('interest 指定哔哩哔哩漫画时即使规划模型返回 none 且无 query 也会强制转 web 搜索', async () => {
+  for (const [mode, exploreMode] of [['leisure', 'deep'], ['research', 'deep'], ['leisure', 'light']]) {
+    const collected = [];
+    const media = {
+      web: true,
+      video: true,
+      calls: [],
+      collect: async (kind, query, options) => {
+        collected.push({ kind, query, options });
+        return [{ url: 'https://manga.bilibili.com/detail/mc123', title: '“哆哆嗦嗦”逃离你', evidence: '搜索摘要', content: '职场喜剧漫画简介' }];
+      },
+    };
+    const round = await exploreRound({
+      persona,
+      interest: '哔哩哔哩漫画：“哆哆嗦嗦”逃离你',
+      bias: mode === 'leisure' ? 'leisure' : 'research',
+      exploreMode,
+      media,
+      generate: async ({ prompt }) => {
+        if (prompt.includes('替角色选这一轮的方向') || prompt.includes('挑一件简单')) {
+          return result({ mode, kind: 'none', query: '' });
+        }
+        return exploreMode === 'light'
+          ? result({ action: 'light', topic: '“哆哆嗦嗦”逃离你', summary: '看了职场喜剧漫画简介', progressSourceIndex: 0 })
+          : result({ action: 'start', topic: '“哆哆嗦嗦”逃离你', progress: '看了职场喜剧漫画简介', next: '看看网友评价', progressSourceIndex: 0 });
+      },
+    });
+    assert.equal(round.ok, true);
+    assert.equal(collected.length, 1);
+    assert.equal(collected[0].kind, 'web');
+    assert.equal(collected[0].query, '哆哆嗦嗦逃离你 site:manga.bilibili.com');
+    assert.deepEqual(collected[0].options.preferredSites, ['manga.bilibili.com']);
+    assert.equal(collected[0].options.fallbackQuery, '哆哆嗦嗦逃离你');
+    assert.equal(round.state.lastRun.kind, 'web');
+    assert.equal(round.state.lastRun.query, '哆哆嗦嗦逃离你');
+  }
+});
+
+function explorationRunData(prompt) {
+  return JSON.parse(prompt.split('\n').find((line) => line.startsWith('{"persona"')));
+}
+
+test('new interests withhold an unrelated research thread from planning and writing', async () => {
+  const old = await exploreRound({ persona, now: 100, generate: async () => result({
+    action: 'start', topic: '插排过载保护设计', progress: '记录漏保配置', next: '对照浪涌保护器型号',
+  }) });
+  const prompts = [];
+  const round = await exploreRound({
+    persona, previous: old.state, interest: '最近想了解独立游戏的关卡设计', now: 200,
+    media: { web: true, collect: async () => assert.fail('no web search expected') },
+    generate: async ({ prompt }) => {
+      const data = explorationRunData(prompt);
+      prompts.push(data);
+      assert.equal(data.thread, null);
+      assert.doesNotMatch(prompt, /对照浪涌保护器型号/);
+      return prompts.length === 1 ? result({ kind: 'none', mode: 'research' }) : result({
+        action: 'start', topic: '独立游戏关卡设计', progress: '从无文字提示入手', next: '比较两个关卡的引导方式',
+      });
+    },
+  });
+  assert.equal(prompts.length, 2);
+  assert.equal(round.state.thread.topic, '独立游戏关卡设计');
+  assert.ok(round.state.notes.some((entry) => entry.topic === '插排过载保护设计'));
+
+  for (const interest of ['最近想了解独立游戏的关卡设计', '随便看看有意思的东西']) {
+    const followed = await exploreRound({
+      persona, previous: round.state, interest, now: 300,
+      generate: async ({ prompt }) => {
+        assert.equal(explorationRunData(prompt).thread.topic, '独立游戏关卡设计');
+        return result({ action: 'continue', progress: '对比了两种引导', next: '补个反例' });
+      },
+    });
+    assert.equal(followed.ok, true);
+    assert.equal(followed.action, 'continue');
+  }
+});
+
+test('a one-round research focus only carries over while related long-term interest is present', async () => {
+  const title = '哔哩哔哩漫画作品：《”哆哆嗦嗦“逃离你》';
+  const first = await exploreRound({
+    persona, focusTopic: title, now: 100,
+    generate: async () => result({ action: 'start', topic: title, progress: '想到一个伏笔', next: '比较人物动机' }),
+  });
+  assert.equal(first.state.thread.pinnedOnce, true);
+
+  const matching = await exploreRound({
+    persona, previous: first.state, interest: '想继续追 B漫《哆哆嗦嗦逃离你》的连载', now: 200,
+    generate: async ({ prompt }) => {
+      assert.equal(explorationRunData(prompt).thread.topic, title);
+      return result({ action: 'continue', progress: '梳理了人物动机', next: '比较叙事节奏' });
+    },
+  });
+  assert.equal(matching.state.thread.pinnedOnce, true);
+
+  for (const interest of ['', '随便看看有意思的东西', '想了解其他漫画的创作流程']) {
+    const independent = await exploreRound({
+      persona, previous: matching.state, interest, now: 300,
+      generate: async ({ prompt }) => {
+        assert.equal(explorationRunData(prompt).thread, null);
+        assert.doesNotMatch(prompt, /比较叙事节奏/);
+        return result({ action: 'start', topic: '另一个小问题', progress: '换一条线', next: '比较例子' });
+      },
+    });
+    assert.equal(independent.state.thread.topic, '另一个小问题');
+    assert.equal(independent.state.thread.pinnedOnce, undefined);
+    assert.ok(independent.state.notes.some((entry) => entry.topic === title));
+  }
+
+  const task = await exploreRound({
+    persona, requestedResearch: { topic: title }, now: 100,
+    generate: async () => result({ action: 'start', topic: title, progress: '想到一个伏笔', next: '比较人物动机' }),
+  });
+  assert.equal(task.state.thread.pinnedOnce, undefined);
+});
+
+test('light exploration uses a target site and a clean topic on its first web search', async () => {
+  const collected = [];
+  const round = await exploreRound({
+    persona, interest: '在知乎看看《城市散步地图》', exploreMode: 'light',
+    media: { web: true, collect: async (kind, query, options) => {
+      collected.push({ kind, query, options });
+      return [];
+    } },
+    generate: async ({ prompt }) => prompt.includes('挑一件简单')
+      ? result({ kind: 'web', query: '城市散步地图 路线' })
+      : result({ action: 'light', topic: '步行路线', summary: '转角可以连成环线' }),
+  });
+  assert.equal(round.action, 'light');
+  assert.equal(collected.length, 1);
+  assert.equal(collected[0].kind, 'web');
+  assert.match(collected[0].query, /(?:^|\s)site:zhihu\.com(?:\s|$)/);
+  assert.match(collected[0].query, /城市散步地图/);
+  assert.doesNotMatch(collected[0].query, /《|》/);
+  assert.deepEqual(collected[0].options.preferredSites, ['zhihu.com']);
+  assert.equal(collected[0].options.light, true);
+  assert.match(collected[0].options.fallbackQuery, /城市散步地图/);
+  assert.doesNotMatch(collected[0].options.fallbackQuery, /site:/);
+  assert.equal(round.state.lastRun.query, collected[0].options.fallbackQuery);
+});
+
+test('an avoided exploration direction yields to a fresh subject without a replacement interest', async () => {
+  const old = await exploreRound({
+    persona, now: 100, generate: async () => result({
+      action: 'start', topic: '插排过载保护', progress: '记了一个断电条件', next: '查漏保型号',
+    }),
+  });
+  const calls = [];
+  const round = await exploreRound({
+    persona, now: 200, previous: old.state, topicFeedback: { avoid: ['插排过载保护'] },
+    media: { web: true, collect: async () => assert.fail('no web search expected') },
+    generate: async ({ prompt }) => {
+      const data = explorationRunData(prompt);
+      calls.push(data);
+      assert.deepEqual(data.avoidTopics, ['插排过载保护']);
+      assert.equal(data.thread, null);
+      assert.doesNotMatch(prompt, /查漏保型号/);
+      return calls.length === 1 ? result({ kind: 'none', mode: 'research' }) : result({
+        action: 'start', topic: '不可靠叙述者', progress: '想到一个读者故意被误导的例子', next: '对照漏叙的例子',
+      });
+    },
+  });
+  assert.equal(calls.length, 2);
+  assert.equal(round.state.thread.topic, '不可靠叙述者');
+});
+
+test('a short named interest can continue its study, but similar Latin spellings cannot', async () => {
+  for (const [topic, interest, continues] of [
+    ['插排过载保护', '最近想看看插排', true],
+    ['Java 泛型', '最近想了解 JavaScript 模块', false],
+  ]) {
+    const old = await exploreRound({
+      persona, now: 100, generate: async () => result({
+        action: 'start', topic, progress: '先列出一个问题', next: '再看两个具体例子',
+      }),
+    });
+    const round = await exploreRound({
+      persona, now: 200, previous: old.state, interest,
+      generate: async ({ prompt }) => {
+        assert.equal(explorationRunData(prompt).thread?.topic, continues ? topic : undefined);
+        return result({ action: 'skip' });
+      },
+    });
+    assert.equal(round.ok, true);
+  }
+});
+
+test('multi-source round preserves share via progressSourceIndex when sourceIndex is omitted', async () => {
+  const media = {
+    web: true,
+    collect: async () => [
+      { url: 'https://example.org/a', title: '结果A', evidence: '网页正文', content: 'A 正文' },
+      { url: 'https://example.org/b', title: '结果B', evidence: '搜索摘要', content: 'B 摘要' },
+    ],
+  };
+  const round = await exploreRound({
+    persona,
+    media,
+    generate: async ({ prompt }) => prompt.includes('替角色选')
+      ? result({ mode: 'research', kind: 'web', query: '测试题' })
+      : result({
+          action: 'start',
+          topic: '测试题',
+          progress: '读到了 A 正文',
+          next: '继续看',
+          share: '刚看到结果A里讲了一个有趣的细节。',
+          discovery: 'A 正文的关键设定',
+          progressSourceIndex: 0,
+          sourceIndex: null,
+        }),
+  });
+  assert.equal(round.ok, true);
+  assert.equal(round.state.candidate.source.url, 'https://example.org/a');
+  assert.match(round.state.candidate.line, /结果A/);
+});
+
+test('withholds sourceless web-text speculation thread once media.web is enabled and passes anchor options', async () => {
+  const priorSpeculation = {
+    personaKey: (await exploreRound({ persona, now: 50, generate: async () => result({ action: 'skip' }) })).state.personaKey,
+    lastAt: 100,
+    thread: {
+      topic: '哔哩哔哩漫画作品：《”哆哆嗦嗦“逃离你》',
+      progress: '标题的引号是突破口，像在试探第二人称的语气。',
+      next: '想一下以第二人称“你”作对象的标题通常怎么处理。',
+      at: 100,
+      progressSource: null,
+    },
+    candidate: null,
+  };
+  const collectCalls = [];
+  const prompts = [];
+  const media = {
+    web: true,
+    collect: async (kind, query, options) => {
+      collectCalls.push({ kind, query, options });
+      return [{ url: 'https://manga.bilibili.com/m/detail/mc38749', title: '“哆哆嗦嗦”逃离你', evidence: '网页正文', content: '简介：潮玩设计师艾栩与搭档之逸。' }];
+    },
+  };
+  const round = await exploreRound({
+    persona,
+    previous: priorSpeculation,
+    interest: '哔哩哔哩漫画：“哆哆嗦嗦”逃离你',
+    bias: 'leisure',
+    now: 200,
+    media,
+    generate: async ({ prompt }) => {
+      prompts.push(prompt);
+      if (prompt.includes('替角色选这一轮的方向')) {
+        assert.equal(explorationRunData(prompt).thread, null);
+        assert.doesNotMatch(prompt, /第二人称“你”/);
+        return result({ mode: 'leisure', kind: 'web', query: '哆哆嗦嗦逃离你 第二人称 叙事' });
+      }
+      assert.match(prompt, /绝不切换到搜索结果里顺带提到的其他作品/);
+      return result({
+        action: 'start',
+        topic: '“哆哆嗦嗦”逃离你',
+        progress: '看了漫画简介，主角是潮玩设计师艾栩与搭档之逸。',
+        next: '',
+        progressSourceIndex: 0,
+      });
+    },
+  });
+  assert.equal(round.ok, true);
+  assert.equal(prompts.length, 2);
+  assert.equal(collectCalls.length, 1);
+  assert.equal(collectCalls[0].options.anchorQuery, '哆哆嗦嗦逃离你 site:manga.bilibili.com');
+  assert.equal(collectCalls[0].options.anchorKeywords, '哆哆嗦嗦逃离你');
+  assert.equal(round.state.leisure.topic, '“哆哆嗦嗦”逃离你');
+  assert.equal(round.state.leisure.progressSource.evidence, '网页正文');
+});
+
+test('deep continuation with grounded progress (without explicit discovery field) generates a new discoveryId', async () => {
+  const media = {
+    web: true,
+    collect: async () => [{
+      url: 'https://manga.bilibili.com/mc38749/1950876',
+      title: '001 - “哆哆嗦嗦”逃离你',
+      evidence: '网页画面',
+      content: '画面观察：第一话分镜里有主角抱着潮玩盒子的特写。',
+    }],
+  };
+  const round = await exploreRound({
+    persona,
+    interest: '哔哩哔哩漫画：“哆哆嗦嗦”逃离你',
+    bias: 'leisure',
+    now: 300,
+    media,
+    generate: async ({ prompt }) => {
+      if (prompt.includes('替角色选这一轮的方向')) {
+        return result({ mode: 'leisure', kind: 'web', query: '哆哆嗦嗦逃离你' });
+      }
+      return result({
+        action: 'start',
+        topic: '《“哆哆嗦嗦”逃离你》',
+        progress: '翻到第一话画面，主角开会时全靠 PPT 躲社恐，反差挺逗。',
+        next: '',
+        share: '刚翻到第一话，社恐设计师拿 PPT 顶例会笑死我了。',
+        progressSourceIndex: 0,
+        sourceIndex: 0,
+      });
+    },
+  });
+  assert.equal(round.ok, true);
+  assert.ok(round.state.candidate?.discoveryId, '应由有依据的新 progress 生成 discoveryId，避免被同主题冷却误拦');
+  assert.match(round.state.candidate.discovery, /第一话画面/);
 });

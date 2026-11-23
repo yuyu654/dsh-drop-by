@@ -151,40 +151,40 @@ export function isHotChat(turns = [], cfg = {}) {
 export const SHARE_HOOKS = [
   {
     style: 'self_reveal',
-    label: '自曝',
-    guide: '用「自曝」角度：把看点落在角色自己身上（比如自己居然沉迷研究了一件小事或踩了个小误区），让对方一眼想吐槽或接一句。',
+    label: '随口感想',
+    guide: '用「随口感想」角度：用第一人称自然说一句刚看到的细节或自己的反应即可，不必刻意加问句。',
   },
   {
     style: 'take_side',
-    label: '站队',
-    guide: '用「站队」角度：抛一个轻松的二选一小分歧（比如某种习惯的两种派别），问对方站哪边。',
+    label: '直说偏好',
+    guide: '用「直说偏好」角度：直接表态自己偏向哪种做法或看点，自然收住，不要写“你站哪派”“你是…派还是…派”。',
   },
   {
     style: 'ask_expert',
-    label: '请对方当专家',
-    guide: '用「请对方当专家」角度：围绕对方更熟悉的生活或专业经验，轻问一个他随口就能答上来的细节。',
+    label: '顺口求证',
+    guide: '用「顺口求证」角度：真有拿不准的生活/专业小细节再顺口问一句，不要为了凑互动硬编问题。',
   },
   {
     style: 'user_life',
-    label: '接对方生活',
-    guide: '用「接对方生活」角度：顺口联想到对方平时用过、聊过或会遇到的日常小物件/场景，不要干巴巴科普。',
+    label: '日常联想',
+    guide: '用「日常联想」角度：只围绕你刚看到的东西本身说感受或反差，不要硬拐到问“你那个掉了没/堵了没”。',
   },
   {
     style: 'mini_proposal',
-    label: '小提议',
-    guide: '用「小提议」角度：提一个顺手就能试的小验证或小观察，让对方顺口问“什么猜想/怎么试”。',
+    label: '随口一提',
+    guide: '用「随口一提」角度：简短记一个想试试或刚发现的点子，像跟熟人随手甩一句话。',
   },
   {
     style: 'guess',
-    label: '你猜',
+    label: '抛反差',
     limited: true,
-    guide: '用「你猜」角度：抛一个反直觉的小现象让对方随便猜一个词就能接上（不要考专业知识）。',
+    guide: '用「抛反差」角度：说出最意外或反直觉的那一点就行，禁止用“你猜…随便猜一个”这类出题腔。',
   },
   {
     style: 'tease',
-    label: '卖关子',
+    label: '点睛一句',
     limited: true,
-    guide: '用「卖关子」角度：轻卖个无害的小关子（比如学到一个奇妙冷知识），引对方回一句“啥/怎么说”。',
+    guide: '用「点睛一句」角度：挑最荒诞、最好笑或最有味道的半句吐槽出来，不要卖关子让人追问。',
   },
 ];
 
@@ -196,7 +196,7 @@ export const LIGHT_NOTE_HOOK = {
 
 /**
  * 按近期历史轮换推荐一个开场接话点。
- * 偏晚/临睡直接用无压力轻分享；平时避开最近 2 次用过的类型，且「你猜/卖关子」7 天内各最多 1 次。
+ * 偏晚/临睡直接用无压力轻分享；平时避开最近 2 次用过的类型，且「抛反差/点睛一句」7 天内各最多 1 次。
  */
 export function pickShareHook(history = [], { now = Date.now(), night = false } = {}) {
   if (night) {
@@ -217,7 +217,7 @@ export function pickShareHook(history = [], { now = Date.now(), night = false } 
   const picked = pool[0];
   return {
     ...picked,
-    prompt: `本轮 share 优先${picked.guide} 避免每次都用“你那边是不是也这样”这类同质问法。${OPENING_SELF_CHECK}`,
+    prompt: `本轮 share ${picked.guide} 用正常熟人聊天口吻直接说完，禁止套用“你站哪派”“你是…派还是…派”“你猜…随便猜一个”“你那边是不是也这样”“你那个掉了没/堵了没”等机器话术。${OPENING_SELF_CHECK}`,
   };
 }
 

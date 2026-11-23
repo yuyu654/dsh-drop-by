@@ -220,4 +220,8 @@ test('探索开场接话点轮换避免重复，限制你猜与卖关子频次�
     prev = res.state;
   }
   assert.notEqual(prev.hookHistory[0].style, prev.hookHistory[1].style);
+
+  const freshHook = pickShareHook([], { now: BASE_TS, night: false });
+  assert.match(freshHook.prompt, /禁止套用.*你站哪派/);
+  assert.match(freshHook.prompt, /你猜…随便猜一个/);
 });

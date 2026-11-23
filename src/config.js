@@ -22,7 +22,7 @@ export const STATE_PATH = pathFromEnv('PG_STATE_PATH', path.join(ROOT, 'state.js
 export const LOG_DIR = pathFromEnv('PG_LOG_DIR', path.join(ROOT, 'logs'));
 
 export const CHARACTER_REST_DEFAULTS = Object.freeze({
-  bed: '22:00', wake: '06:30', jitterMin: 30, windDownMin: 30, adapt: false, adaptDays: 7, adaptMaxMin: 30,
+  bed: '22:00', wake: '06:30', jitterMin: 30, windDownMin: 30,
 });
 
 export const AGREEMENT_DEFAULTS = Object.freeze({
@@ -48,12 +48,13 @@ export function explorationBiasForUi(exploration) {
 const DEFAULTS = {
   enabled: true,
   dryRun: true,
+  debugMode: false,
   tickMinutes: 10,
 
   timezone: 'Asia/Shanghai',
   characterRest: { ...CHARACTER_REST_DEFAULTS },
   agreements: { ...AGREEMENT_DEFAULTS },
-  exploration: { feedback: { ...CURIOSITY_DEFAULTS }, auto: false, mode: 'deep', offerShare: false, mood: false, portrait: false, web: false, video: false, bias: 'balanced', interest: '', nextTopic: '', offPeakOnly: false, intervalMinutes: 180, recentDays: 3, moodHours: 2, portraitHours: 2, planTimeoutMs: 30000, roundTimeoutMs: 45000, toolTimeoutMs: 18000, storyboardTimeoutMs: 65000, storyboardSeconds: 60, moodReplyAgeMin: 30, moodDraftTimeoutMs: 15000, portraitTimeoutMs: 12000 },
+  exploration: { feedback: { ...CURIOSITY_DEFAULTS }, auto: false, mode: 'deep', model: '', offerShare: false, mood: false, portrait: false, moodSource: 'auto', web: false, video: false, extraTools: '', bias: 'balanced', browseMode: 'vision_light', browseMaxSteps: 40, interest: '', nextTopic: '', offPeakOnly: false, intervalMinutes: 180, recentDays: 3, moodHours: 2, portraitHours: 2, planTimeoutMs: 30000, roundTimeoutMs: 45000, toolTimeoutMs: 18000, extTimeoutMs: 12000, storyboardTimeoutMs: 65000, storyboardSeconds: 60, moodReplyAgeMin: 30, moodDraftTimeoutMs: 15000, portraitTimeoutMs: 12000 },
   // 全局静默：这一段里所有功能都不读不发（含邮箱不联网）。多段、可跨零点。
   quietHours: [['22:30', '07:30']],
   quietHoursNote: '全局静默，多段，空数组=不静默',
@@ -261,7 +262,7 @@ const DEFAULTS = {
       screenMaxAgeH: 14,
       wellnessCooldownHours: 96,
       screenFromHour: 21,
-      shareGapH: 24,
+      shareGapMin: 1440,
       shareMinChars: 40,
       catchupDays: 2,
       // —— 只看电脑的三个由头：不接手机 App 时睡眠/压力/步数/屏幕全哑，就靠这些撑着
@@ -362,6 +363,12 @@ export function loadConfig() {
   if (usesLegacyExplorationCadence(raw?.exploration)) delete cfg.exploration.bias;
   else if (!EXPLORATION_BIASES.has(cfg.exploration?.bias)) {
     cfg.exploration = { ...DEFAULTS.exploration, ...cfg.exploration, bias: DEFAULTS.exploration.bias };
+  }
+  if (Object.hasOwn(raw?.content?.topics || {}, 'shareGapH') && !Object.hasOwn(raw?.content?.topics || {}, 'shareGapMin')) {
+    const legacyH = Number(raw.content.topics.shareGapH);
+    if (Number.isFinite(legacyH) && legacyH >= 0) {
+      cfg.content = { ...cfg.content, topics: { ...cfg.content.topics, shareGapMin: Math.round(legacyH * 60) } };
+    }
   }
   // 老版本会钳制这两个门槛。第一次加载显示过去实际生效的数值。
   if (cfg.timingVersion !== 1) {

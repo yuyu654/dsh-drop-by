@@ -22,6 +22,8 @@ import { detectMemory } from './memorysource.js';
 import { parseAgenda, agendaSource, courseKey } from './agenda.js';
 import { parseExams, examsSource } from './exams.js';
 import { characterRestStatus } from './character-rest.js';
+import { listRegisteredMemorySources, listRegisteredMoodSources } from './extensions.js';
+import { getHostModelCatalog } from './hostllm.js';
 
 /** 存凭据的位置（和 fishmail 用同一份）。读的时候永远只给「已设置/未设置」。 */
 function secretFor(path) {
@@ -56,6 +58,102 @@ function detectHint(specPath, cfg, detCache) {
   if (!d) return '';
   const ver = d.version ? `（v${d.version}）` : '';
   return `｜检测：${d.note}${ver}`;
+}
+
+/** 设置页全局搜索用的 9 个场景关键词（跨分组聚合，不照抄折叠分组名）。 */
+export const SEARCH_TAGS = [
+  { id: 'channel', label: '主通道与续聊' },
+  { id: 'pace', label: '频率与克制' },
+  { id: 'rest', label: '角色作息' },
+  { id: 'exploration', label: '自主探索' },
+  { id: 'tasks', label: '任务与约定' },
+  { id: 'schedule', label: '课表与节假日' },
+  { id: 'memory', label: '记忆与心情' },
+  { id: 'sensing', label: '手机与桌面感知' },
+  { id: 'media', label: '视频与超时' },
+];
+
+const TIME_UNITS = new Set(['秒', '毫秒', '分钟', '小时', '天', '点', '时:分', '毫秒/字', '分钟（从 0 点算）']);
+
+function ensureTimeUnitHint(spec, rawHint) {
+  const hint = String(rawHint || '').trim();
+  if (TIME_UNITS.has(spec.unit)) {
+    const core = spec.unit === '分钟（从 0 点算）' ? '分钟' : spec.unit;
+    if (!hint.includes(core)) {
+      const prefix = `单位：${spec.unit}。`;
+      return hint ? `${prefix}${hint}` : prefix;
+    }
+  } else if (spec.type === 'windows' && !hint) {
+    return '单位：时段（HH:mm-HH:mm，多段用逗号隔开，可跨零点），留空 = 全天允许。';
+  } else if (spec.type === 'hm' && !hint.includes('时:分') && !hint.includes('HH:mm')) {
+    const prefix = '单位：时:分（00:00–23:59）。';
+    return hint ? `${prefix}${hint}` : prefix;
+  }
+  return hint;
+}
+
+export function tagsForSpec(spec) {
+  const p = String(spec?.path || '');
+  const tags = [];
+  const add = (id) => { if (!tags.includes(id)) tags.push(id); };
+
+  if (p.startsWith('channels.') || p.startsWith('rules.qqRollover.') ||
+      p.startsWith('sources.qq') || p.startsWith('sources.douyin') ||
+      p === 'rules.qqTiming.debounceMs' || p === 'rules.qqTiming.inFlightSec') add('channel');
+
+  if (p.startsWith('characterRest.') || p.startsWith('content.topics.characterRest')) add('rest');
+
+  if ((p.startsWith('exploration.') && p !== 'exploration.portrait' && p !== 'exploration.portraitHours') ||
+      p.startsWith('content.topics.share') || p.startsWith('rules.actionGate.')) add('exploration');
+
+  if (p.startsWith('rules.qqCommands.') || p.startsWith('agreements.') ||
+      p.startsWith('content.topics.noReply') || p === 'content.topics.followCasualSilence' ||
+      p === 'rules.askProjectOnce' || p.startsWith('rules.projectTiming.') ||
+      p === 'rules.qqTiming.pollSec') add('tasks');
+
+  if (p.startsWith('content.agenda.') || p.startsWith('content.exams.') ||
+      p.startsWith('content.topics.agenda') || p.startsWith('content.topics.exam') ||
+      p === 'content.holidays' || p === 'content.workdays' || p.startsWith('content.calendar.') ||
+      p.startsWith('rules.naturalTriggers.course')) add('schedule');
+
+  if (p.startsWith('sources.memory.') || p.startsWith('exploration.mood') ||
+      p.startsWith('exploration.portrait') || p === 'content.enabled' || p === 'content.mode' ||
+      p === 'content.maxChars' || p.startsWith('content.prompt.') || p === 'content.llm.attempts' ||
+      p.startsWith('rules.chitchat.seed') || p.startsWith('rules.feedback.')) add('memory');
+
+  if (p.startsWith('sources.phone.') || p.startsWith('mail.') || p.startsWith('idle.') ||
+      p.startsWith('perception.') || p.startsWith('content.topics.sleep') ||
+      p.startsWith('content.topics.stress') || p.startsWith('content.topics.steps') ||
+      p.startsWith('content.topics.screen') || p.startsWith('content.topics.late') ||
+      p.startsWith('content.topics.longSit') || p.startsWith('content.topics.back') ||
+      p.startsWith('content.topics.wellness')) add('sensing');
+
+  if (p.startsWith('content.forward.') || p === 'content.topics.forward' ||
+      p.startsWith('exploration.storyboard') || p === 'exploration.video' ||
+      p.startsWith('logging.') || p === 'send.timeoutMs' || p === 'rules.stateWriteWaitMs' ||
+      /(?:TimeoutMs|TimeoutSec|WaitMs|PollMs|ConnectMs|LookupMs|StopMs|AudioMs|CacheMs|CacheMin)$/i.test(p)) add('media');
+
+  if (['enabled', 'dryRun', 'send.enabled', 'tickMinutes', 'startupDelaySec', 'tickJitterSec',
+      'quietHours', 'busyHours', 'rules.proactive', 'rules.autoReply', 'rules.replyCooldownMin',
+      'rules.replyGuard', 'rules.backfill', 'rules.backfillWindowMin', 'rules.dailyCap',
+      'rules.minGapMin', 'rules.closingCooldownMin', 'rules.adaptiveGap', 'rules.qqContinuation',
+      'rules.requirePcOnline', 'rules.presenceSignal.enabled', 'content.topics.reply',
+      'content.topics.replyMaxAgeMin', 'content.topics.catchup', 'content.topics.catchupDays',
+      'content.topics.shareGapMin'].includes(p) ||
+      p.startsWith('send.split.') || p.startsWith('rules.qqTiming.') ||
+      p.startsWith('rules.judge.') || p.startsWith('rules.chitchat.') ||
+      p.startsWith('rules.gapByTier.') || p.startsWith('rules.naturalTriggers.') ||
+      p.startsWith('rules.presenceSignal.')) add('pace');
+
+  if (!tags.length) {
+    const fallback = {
+      日常: 'pace', 角色作息: 'rest', 决定TA粘不粘人: 'pace', 节奏: 'pace',
+      说什么: 'memory', 数据从哪来: 'sensing', 课表与考试: 'schedule',
+      自主探索: 'exploration', 聊天接口: 'channel', 时间间隔: 'media', 高级: 'pace',
+    };
+    add(fallback[spec?.group] || 'pace');
+  }
+  return tags;
 }
 
 /** 分组顺序 = 设置页从上到下的顺序：先日常、粘人程度，再具体，最后是平时别动的。 */
@@ -135,7 +233,7 @@ export const SCHEMA = [
   { group: '高级', path: 'rules.qqRollover.thresholdPercent', label: '预建续聊的上下文占用率', type: 'int', min: 10, max: 95, unit: '%', dep: dep('rules.qqRollover.enabled', true), hint: '默认 80%。只在绑定会话完成一轮时检查，每个旧会话只预建一次。' },
   { group: '高级', path: 'rules.qqRollover.carryMessages', label: '新会话携带最近消息', type: 'int', min: 0, max: 50, unit: '条', dep: dep('rules.qqRollover.enabled', true), hint: '默认 10 条，用户和助手各自的一条都计数。填 0 只建立续聊会话。' },
   { group: '高级', path: 'rules.qqRollover.prepareBindingFile', label: '预备重启后自动切到续聊会话', type: 'bool', dep: dep('rules.qqRollover.enabled', true), hint: '预备当前主通道的磁盘绑定。当前聊天照常继续，重启 DSH 后启用。关闭后可手动切绑。' },
-  { group: '说什么', path: 'rules.qqCommands.enabled', label: '接收私聊任务指令', type: 'bool', hint: '只接收主通道配置联系人的私聊。允许搜索公开网页、推进研究、整理探索笔记或跑插件快速测试。回传不受日常静默和配额限制。' },
+  { group: '说什么', path: 'rules.qqCommands.enabled', label: '接收私聊任务指令', type: 'bool', hint: '只接收主通道配置联系人的私聊。可以暂停探索方向、指定下轮题目、搜索公开网页、推进研究、整理笔记或跑插件快速测试。后台任务回传不受日常静默和配额限制。' },
   { group: '时间间隔', path: 'rules.qqCommands.intentTimeoutSec', label: '意图识别最多等多久', type: 'int', min: 1, max: 20, unit: '秒', dep: ON_QQ_CMD, hint: '默认 5 秒。模型超时或未给出可校验的任务时，直接走普通聊天。' },
   { group: '时间间隔', path: 'rules.qqCommands.timeoutSec', label: '任务多久先反馈超时', type: 'int', min: 5, max: 120, unit: '秒', dep: ON_QQ_CMD, hint: '默认 90 秒。任务到时限仍没结束会回一条状态。' },
   { group: '时间间隔', path: 'rules.qqCommands.freshSec', label: '任务指令最多多旧', type: 'int', min: 5, max: 900, unit: '秒', dep: ON_QQ_CMD, hint: '默认 120 秒。超过这个时间的补发消息不能启动后台任务。' },
@@ -180,6 +278,7 @@ export const SCHEMA = [
   { group: '时间间隔', path: 'exploration.planTimeoutMs', label: '探索选题生成超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒' },
   { group: '时间间隔', path: 'exploration.roundTimeoutMs', label: '探索进展生成超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒' },
   { group: '时间间隔', path: 'exploration.toolTimeoutMs', label: '探索搜索和读网页超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒', dep: ON_EXP_WEB },
+  { group: '时间间隔', path: 'exploration.extTimeoutMs', label: '外部探索源与扩展工具超时', type: 'int', min: 1, max: 120, scale: 1000, unit: '秒', hint: '单位：秒（默认 12 秒）。控制第三方探索扩展与额外只读宿主工具的单次调用超时。' },
   { group: '时间间隔', path: 'exploration.storyboardTimeoutMs', label: '探索视频分镜超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒', dep: ON_EXP_VIDEO },
   { group: '时间间隔', path: 'exploration.moodDraftTimeoutMs', label: '探索心情润色超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒', dep: ON_EXP_MOOD },
   { group: '时间间隔', path: 'exploration.portraitTimeoutMs', label: '心情判断超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒', dep: ON_EXP_PORTRAIT },
@@ -199,7 +298,6 @@ export const SCHEMA = [
   { group: '时间间隔', path: 'rules.qqTiming.pauseSec', label: '热聊补话先等多久', type: 'int', min: 0, max: 300, unit: '秒', dep: ON_QQ_CONT, hint: '从正常回复发送完成开始计时。' },
   { group: '时间间隔', path: 'rules.qqTiming.expireSec', label: '热聊补话超过多久作废', type: 'int', min: 1, max: 600, unit: '秒', dep: ON_QQ_CONT, hint: '从正常回复发送完成开始计时，须大于补话等待时间，并留出一次检查和生成的时间。' },
   { group: '时间间隔', path: 'rules.qqTiming.hotMinChars', label: '热聊补话最少回复字数', type: 'int', min: 0, max: 40, unit: '字', dep: ON_QQ_CONT, hint: '默认 6 字。对方最近回复过短或只是敷衍回应时不触发补话；填 0 不限字数。' },
-  { group: '时间间隔', path: 'rules.closingCooldownMin', label: '对方收尾后暂停主动多久', type: 'int', min: 0, max: 720, unit: '分钟', hint: '默认 120 分钟。检测到对方说去忙、晚安或连续简短收尾后，这段时间内不主动开口（对方先说话照常回）；填 0 关闭。' },
   { group: '时间间隔', path: 'rules.qqTiming.inFlightSec', label: 'QQ 另一边正在回复时等多久', type: 'int', min: 1, max: 1800, unit: '秒', hint: '用于避免和 QQ 桥同时回复。' },
   { group: '时间间隔', path: 'rules.projectTiming.memoryDays', label: '项目回答保留为聊天背景多久', type: 'int', min: 0, max: 365, unit: '天', dep: ON_PROJECT, hint: '到期后不再带入聊天。' },
   { group: '时间间隔', path: 'rules.projectTiming.updateMin', label: '项目新进展多久内算刚提到', type: 'int', min: 0, max: 1440, unit: '分钟', dep: ON_PROJECT, hint: '跟进项目问题时只参考这个时间内的用户原话。' },
@@ -239,7 +337,6 @@ export const SCHEMA = [
   { group: '时间间隔', path: 'logging.keepDays', label: '日志保留多久', type: 'int', min: 1, max: 365, unit: '天' },
   { group: '时间间隔', path: 'logging.dayStartHour', label: '日志换日时间', type: 'int', min: 0, max: 23, unit: '点' },
   { group: '时间间隔', path: 'content.topics.replyMaxAgeMin', label: '消息超过多久不自动补回', type: 'int', min: 0, max: 10080, unit: '分钟', dep: dep('rules.autoReply', true) },
-  { group: '时间间隔', path: 'content.topics.shareGapH', label: '两条主动分享至少隔多久', type: 'int', min: 0, max: 720, unit: '小时', dep: onTopic('share') },
   { group: '时间间隔', path: 'content.topics.sleepFromHour', label: '睡眠提醒最早几点', type: 'num', min: 0, max: 23.99, unit: '点', dep: [ON_PHONE, onTopic('sleep')], hint: '支持小数，7.5 表示 07:30。' },
   { group: '时间间隔', path: 'content.topics.sleepToHour', label: '睡眠提醒最晚几点', type: 'num', min: 0, max: 23.99, unit: '点', dep: [ON_PHONE, onTopic('sleep')], hint: '支持小数，10.5 表示 10:30。' },
   { group: '时间间隔', path: 'content.topics.sleepDayStartHour', label: '睡眠、压力和步数从几点起算新一天', type: 'int', min: 0, max: 23, unit: '点', dep: [ON_PHONE, { any: [onTopic('sleep'), onTopic('stress'), onTopic('steps')] }] },
@@ -272,27 +369,28 @@ export const SCHEMA = [
   // ================================================================ 自主探索（设置页显示在「自主探索」卡片底部）
   { group: '自主探索', path: 'exploration.auto', label: '自动自主探索', type: 'bool', hint: '默认关闭。角色按人设选择探索内容，探索结束保存收获和可选的分享候选。' },
   { group: '自主探索', path: 'exploration.mode', label: '探索方式', type: 'select', options: [['deep', '深度推进（保留研究线与下一步）'], ['light', '轻量化探索（单次简单小事，不推进长任务）']], hint: '深度推进会持续跟进研究线和下一步；轻量化探索每次只挑一件简单小事做一次浅显了解，不建长线任务、省 Token。' },
+  { group: '自主探索', path: 'exploration.model', label: '探索使用的模型', type: 'select', options: [['', '跟随绑定会话（默认）']], hint: '默认跟随当前绑定的陪伴会话所使用的模型；也可切换当前账号下任意 API 供应商的模型。' },
   { group: '自主探索', path: 'exploration.bias', label: '探索倾向', type: 'select', options: [['leisure', '偏休闲'], ['balanced', '均衡'], ['research', '偏研究']], hint: '深度推进和轻量化都适用。默认均衡。常规自选轮中偏休闲约四分之三是休闲，偏研究约四分之三是研究；均衡各半。题材仍参考「最近对什么好奇」。' },
+  { group: '自主探索', path: 'exploration.browseMode', label: '网页与看图方式', type: 'select', options: [['vision_light', '轻量看图'], ['browser_agent', '调网站浏览（会消耗更多 token）']], hint: '轻量看图：保持低开销，搜到漫画或图文页面后提取页面图片或截取公开画面，直接交给已配置的识图模型看图写感受，不跑多轮浏览器循环。' },
+  { group: '自主探索', path: 'exploration.browseMaxSteps', label: '调网站浏览每轮步数上限', type: 'int', min: 5, max: 80, unit: '步', dep: dep('exploration.browseMode', 'vision_light', 'browser_agent'), hint: '默认 40 步（沿用旧版自主探索上限），到达上限自动收尾，避免在网站里反复翻页卡死或消耗过多 token。' },
   { group: '自主探索', path: 'exploration.intervalMinutes', label: '探索间隔', type: 'int', min: 30, max: 1440, unit: '分钟', dep: ON_EXP_AUTO, hint: '默认 180 分钟；静默、忙碌和角色睡眠时段不自动探索（若开启下方「只在谷时自动探索」，还会避开 DeepSeek API 高峰时段）。' },
   { group: '自主探索', path: 'exploration.offPeakOnly', label: '只在谷时自动探索', type: 'bool', dep: ON_EXP_AUTO, hint: '开：自动探索仅在 DeepSeek 谷时（5折空闲时段）运行——按北京时间结合日历判定，工作日非高峰时段（00:00–09:00、12:00–14:00、18:00–24:00）、周中法定节假日全天及周末（含调休上班周末）全天均为谷时；工作日 09:00–12:00 / 14:00–18:00 跳过。手动点「试跑一轮」不受限制。' },
-  { group: '自主探索', path: 'exploration.nextTopic', label: '近一轮探索主题', type: 'str', max: 120, hint: '单独指定下一轮要探索的具体题目（优先于下方「最近对什么好奇」）；成功跑完一轮后会自动清空恢复日常自选。' },
-  { group: '自主探索', path: 'exploration.interest', label: '最近对什么好奇', type: 'text', max: 160, rows: 2, hint: '可写想长期追的作品、网站或主题，也可补充待确认事实。研究和休闲都参考，留空按人设选。' },
+  { group: '自主探索', path: 'exploration.nextTopic', label: '近一轮探索主题', type: 'str', max: 120, hint: '建议一次只填一个主题。单独指定下一轮要探索的具体题目（优先于下方「最近对什么好奇」）；成功跑完一轮后会自动清空恢复日常自选。' },
+  { group: '自主探索', path: 'exploration.interest', label: '最近对什么好奇', type: 'text', max: 160, rows: 2, hint: '可写想长期追的作品、网站或主题，多个主题可用换行、顿号或逗号分隔，每轮会自动挑其中一个探索；研究和休闲都参考，留空按人设选。' },
   { group: '自主探索', path: 'exploration.offerShare', label: '让探索进展参与主动分享', type: 'bool', hint: '默认关闭。开启后，进展只是主动消息候选，仍走原有时段、额度和发送开关。' },
   // ================================================================ 日常
   { group: '日常', path: 'enabled', label: '总开关', type: 'bool', hint: '关掉就一拍都不跑（插件还在，只是不动）' },
   { group: '日常', path: 'dryRun', label: '演练模式', type: 'bool', hint: '开：只判定、只记日志，不真的发。关：判定通过就发（还要下面那条也开着）' },
+  { group: '日常', path: 'debugMode', label: '调试模式', type: 'bool', hint: '默认关闭。开启后，即使最近两条属于同一类由头，也允许这类继续参与选题。发送开关、间隔和每日上限照常生效。' },
   { group: '日常', path: 'send.enabled', label: '允许真的发送', type: 'bool', hint: '和「演练模式」两个都放行才会发出去；只开这一个不会发' },
   { group: '日常', path: 'tickMinutes', label: '每拍间隔', type: 'int', min: 1, max: 120, unit: '分钟', hint: '多久醒一次看你在不在。改小不会更黏人，只是判定更及时' },
-  { group: '角色作息', path: 'characterRest.bed', label: '角色入睡基准', type: 'hm', unit: '时:分', hint: '按时:分填写（00:00–23:59），默认 22:00。角色睡着时暂停主动开口和自动探索，私聊照常回复。修改后会立即按新基准重算今日作息，并重置已积累的早晚微调记录。' },
-  { group: '角色作息', path: 'characterRest.wake', label: '角色醒来基准', type: 'hm', unit: '时:分', hint: '按时:分填写（00:00–23:59），默认 06:30；早于入睡时间表示次日醒来。修改后会立即按新基准重算今日作息，并重置已积累的早晚微调记录。' },
+  { group: '角色作息', path: 'characterRest.bed', label: '角色入睡基准', type: 'hm', unit: '时:分', hint: '按时:分填写（00:00–23:59），默认 22:00。角色睡着时暂停主动开口和自动探索，私聊照常回复。修改后会立即按新基准重算今日作息。' },
+  { group: '角色作息', path: 'characterRest.wake', label: '角色醒来基准', type: 'hm', unit: '时:分', hint: '按时:分填写（00:00–23:59），默认 06:30；早于入睡时间表示次日醒来。修改后会立即按新基准重算今日作息。' },
   { group: '角色作息', path: 'characterRest.jitterMin', label: '角色作息每日浮动', type: 'int', min: 0, max: 120, unit: '分钟', hint: '默认 30 分钟，入睡和醒来各自前后浮动，同一晚固定。填 0 取消随机浮动。' },
   { group: '角色作息', path: 'characterRest.windDownMin', label: '角色临睡前多久轻声说话', type: 'int', min: 0, max: 180, unit: '分钟', hint: '默认 30 分钟。主动消息变成一条更轻、更短的话。填 0 关闭临睡口吻。' },
   { group: '角色作息', path: 'content.topics.characterRestBeforeBedMin', label: '入睡前多久触发作息由头', type: 'int', min: 0, max: 120, unit: '分钟', dep: onTopic('characterRest'), hint: '默认 10 分钟。角色实际入睡前这段时间内可顺口道一声准备睡了；填 0 关闭睡前由头。' },
   { group: '角色作息', path: 'content.topics.characterRestAfterWakeMin', label: '醒来后多久触发作息由头', type: 'int', min: 0, max: 120, unit: '分钟', dep: onTopic('characterRest'), hint: '默认 10 分钟。角色实际醒来后这段时间内可顺口打个早安招呼；填 0 关闭醒后由头。' },
   { group: '角色作息', path: 'content.topics.characterRestGreetSkipMin', label: '刚互道早晚安多久内不重复', type: 'int', min: 0, max: 360, unit: '分钟', dep: onTopic('characterRest'), hint: '默认 120 分钟。这段时间内若刚互相说过对应的晚安或早安，就跳过本次作息由头；填 0 关闭此去重。' },
-  { group: '角色作息', path: 'characterRest.adapt', label: '按我的早晚聊天微调作息', type: 'bool', hint: '默认关闭。开启后在本机记录早晚的分钟偏差，使用过去至少 3 天的样本温和微调。' },
-  { group: '角色作息', path: 'characterRest.adaptDays', label: '作息微调回看几天', type: 'int', min: 3, max: 30, unit: '天', dep: dep('characterRest.adapt', true), hint: '默认 7 天。按日取晚间最后一句和早晨第一句，采用中位数的一半。' },
-  { group: '角色作息', path: 'characterRest.adaptMaxMin', label: '作息最多微调多少', type: 'int', min: 0, max: 60, unit: '分钟', dep: dep('characterRest.adapt', true), hint: '默认 30 分钟。仅采纳入睡、醒来基准各自前后该值 4 倍范围内的来信；填 0 停止微调。修改后会重置已积累的早晚微调记录并重新统计。' },
   { group: '日常', path: 'quietHours', label: '全局静默', type: 'windows', hint: '这几段里什么都不读不发；多段用逗号隔开（支持全角逗号/冒号），留空 = 全天不限' },
   { group: '日常', path: 'busyHours', label: '忙碌时段', type: 'windows', hint: 'TA上课/上班/开会的那几段，这几段里我不主动开口（TA先说话还是照常回）。和静默不一样：静默连数据都不读，这里只是我先不打扰。多段、可跨零点，留空 = 不忙' },
   { group: '日常', path: 'content.holidays', label: '额外放假的日子', type: 'text', max: 200, rows: 2, hint: '法定节假日（2026 全年）已经内置，节假日整天不按忙碌时段算，静默照旧。这里只补表里没有的，逗号分隔，如 2027-01-01,2027-01-02' },
@@ -302,6 +400,8 @@ export const SCHEMA = [
   // ================================================================ 决定TA粘不粘人
   { group: '决定TA粘不粘人', path: 'rules.dailyCap', label: '每天最多几条', type: 'int', min: 0, max: 20, unit: '条', hint: '0 = 今天一条都不主动发。默认 3 条' },
   { group: '决定TA粘不粘人', path: 'rules.minGapMin', label: '两条之间至少隔', type: 'int', min: 0, max: 1440, unit: '分钟', hint: '默认 240 分钟（四小时）。改小会明显变黏；下面开了「间隔按由头分档」后，这条只在分档关着时用' },
+  { group: '决定TA粘不粘人', path: 'content.topics.shareGapMin', label: '两条主动分享至少隔多久', type: 'int', min: 0, max: 43200, unit: '分钟', dep: onTopic('share'), hint: '单位：分钟（默认 1440 分钟，即 24 小时）。控制自主探索与个人判断类主动分享的最短间隔；填 0 不单独冷却。' },
+  { group: '决定TA粘不粘人', path: 'rules.closingCooldownMin', label: '对方收尾后暂停主动多久', type: 'int', min: 0, max: 720, unit: '分钟', hint: '默认 120 分钟。检测到对方说去忙、晚安或连续简短收尾后，这段时间内不主动开口（对方先说话照常回）；填 0 关闭。' },
   { group: '决定TA粘不粘人', path: 'rules.adaptiveGap', label: '没人应时自己少说点', type: 'bool', hint: '开（默认）：连着两条没回，之后两条之间自动多等一会儿（最多拖成三倍）；关：永远按上面那个固定间隔' },
   { group: '决定TA粘不粘人', path: 'rules.qqContinuation', label: '热聊补一句', type: 'bool', hint: '刚来回聊了几轮，普通回复发完并等待设定时长后，可以顺着话题再补一句。有新消息就取消；没内容或没回应就停。遵守静默、忙碌时段和每日上限。' },
   { group: '决定TA粘不粘人', path: 'rules.feedback.enabled', label: '按TA的反应调由头', type: 'bool', hint: '开（默认）：记下哪一类发出去TA接住了、哪一类老没人应，老不接的先压几天；关：所有由头一视同仁' },
@@ -368,6 +468,7 @@ export const SCHEMA = [
   { group: '数据从哪来', path: 'sources.memory.plugin', label: '用哪个记忆插件', type: 'select', options: [['fish-memory', '鱼的记忆（dsh-fish-memory）'], ['soul-md', 'Soul.md 记忆（dsh-soul-md）'], ['auto', '自动识别（兼容外部记忆插件）'], ['json-generic', '通用 JSON / JSONL 记忆'], ['markdown', 'Markdown 笔记目录']], dep: ON_MEMORY, hint: '支持鱼的记忆（session-*.json / ws_*.json）、dsh-soul-md（soul-md/memory）、自动识别以及通用 JSON/JSONL/Markdown 记忆目录；有特殊结构也能让大肥鱼在 src/memorysource.js 里加一条适配' },
   { group: '数据从哪来', path: 'sources.memory.dir', label: '外部记忆目录或文件', type: 'str', max: 260, dep: ON_MEMORY, hint: '留空按所选记忆插件的默认路径读取；接入其他记忆插件时可填它的目录或单个 .json / .jsonl / .md 文件路径' },
   { group: '数据从哪来', path: 'exploration.portrait', label: '延续聊天的心情（情绪插件）', type: 'bool', hint: '需要安装 emotion-state-portrait。打开后会按每条私聊实时打分即时心情，同时把私聊、指令与回复自动写入 emotion/inbox.jsonl 并在主动/被动对话里延续情绪画像' },
+  { group: '数据从哪来', path: 'exploration.moodSource', label: '用哪个心情插件（防冲突）', type: 'select', options: [['auto', '自动防冲突（有第三方心情扩展时优先用它，否则用内置情绪插件）'], ['builtin', '只用内置情绪插件（emotion-state-portrait）'], ['external', '只用第三方心情扩展（插件或 data/extensions/mood.json）'], ['merge', '两者合并（适合「即时心情 + 好感度/羁绊」互补）']], hint: '避免同时装了内置情绪插件和第三方心情扩展时话风打架；默认自动防冲突，需要两边叠加时可切到「两者合并」。' },
   { group: '数据从哪来', path: 'mail.enabled', label: '读邮箱', type: 'bool', hint: '开：才会连 IMAP 把手机 App 发来的 FISH 邮件取回来；关着完全不联网。账号和授权码在「高级」里' },
   { group: '数据从哪来', path: 'channels.main.read', label: '读主会话', type: 'bool', hint: '开：把 DSH 主对话也当成一个通道读（TA在这儿说的话也算）。默认关，免得主对话被当成聊天记录反复读' },
   { group: '数据从哪来', path: 'content.topics.noReplyDouyin', label: '抖音分享也算没回', type: 'bool', dep: [ON_FOLLOW_CASUAL, ON_DOUYIN], hint: '还需启用「检查闲聊或分享中的提醒约定」才生效。没装抖音插件或关闭抖音来源时跳过。' },
@@ -418,6 +519,7 @@ export const SCHEMA = [
   { group: '高级', path: 'content.topics.followCasualSilence', label: '检查闲聊或分享中的提醒约定', type: 'bool', hint: '默认关闭。开启后这几类消息也可检查是否含明确约定。单凭未回复不会追问。' },
   { group: '高级', path: 'exploration.web', label: '探索时搜索网页', type: 'bool', hint: '优先用 dsh-free-search，找不到结果时用 DSH 的 web_search。再用 web_fetch 读最多两页正文；仅搜到摘要时会标明。' },
   { group: '高级', path: 'exploration.video', label: '探索时找视频', type: 'bool', hint: '每轮最多看一条。画面需要 dsh-video-storyboard 和支持图片的模型；抖音还需要取流配置。有字幕或转写时可退回文字，只有标题会标明。' },
+  { group: '高级', path: 'exploration.extraTools', label: '探索可调用的额外只读工具', type: 'str', max: 240, hint: '逗号分隔的宿主只读工具名（如 bilibili_hot, bilibili_search），让自主探索直接调用已装插件或 MCP 的查询工具；留空关闭。请仅填写只读查询工具，系统会自动拦截写/执行/发送类工具名。' },
   { group: '高级', path: 'perception.l3.everyMin', label: '看屏幕隔多久', type: 'int', min: 5, max: 720, unit: '分钟', dep: ON_L3, hint: '默认 30 分钟。上一次看屏幕不到这么久就跳过，免得同一张桌面反复截' },
   { group: '高级', path: 'perception.signals.enabled', label: '看窗口和网页（不截屏）', type: 'bool', hint: '只读前台窗口标题、进程名和浏览器当前标签页，不截屏、不 OCR、不联网。比 L3 准，默认开' },
   { group: '高级', path: 'perception.signals.browser', label: '读浏览器当前标签页', type: 'bool', dep: ON_SIGNALS, hint: '借桌面 Edge 的调试口（默认 9223）问它在看哪个页面；端口没开就跳过，不影响别的。默认开' },
@@ -459,6 +561,33 @@ const ALL_WORDS = /^(全天|不限|all|any)$/i;
 function ok(v) {
   const n = Number(v);
   return Number.isFinite(n);
+}
+
+const EXPLORATION_MODEL_RE = /^[a-zA-Z0-9_.-]{1,48}:[a-zA-Z0-9_./:-]{1,120}$/;
+
+function buildExplorationModelOptions(cfg) {
+  const cat = getHostModelCatalog();
+  const follow = cat.boundModel || cat.defaultModel;
+  const followLabel = cat.boundModel
+    ? `跟随绑定会话（当前：${cat.boundModel.provider} / ${cat.boundModel.model}）`
+    : follow
+      ? `跟随绑定会话（未检出会话模型，暂用默认：${follow.provider} / ${follow.model}）`
+      : '跟随绑定会话（默认）';
+  const opts = [['', followLabel]];
+  const seen = new Set(['']);
+  for (const item of cat.models) {
+    const key = `${item.provider}:${item.model}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const pLabel = item.providerName && item.providerName !== item.provider ? `${item.providerName} (${item.provider})` : item.provider;
+    const mLabel = item.modelName && item.modelName !== item.model ? `${item.modelName} (${item.model})` : item.model;
+    opts.push([key, `${pLabel} / ${mLabel}`]);
+  }
+  const cur = String(cfg?.exploration?.model || '').trim();
+  if (cur && !seen.has(cur)) {
+    opts.push([cur, `${cur}（当前已选）`]);
+  }
+  return opts;
 }
 
 /** "7:5" / "07:05" / "7：05" → "07:05"；不可解析返回 null。 */
@@ -557,12 +686,22 @@ export function coerce(path, raw) {
       return { ok: true, path: spec.path, value: s, secret: true };
     }
     case 'select': {
-      const s = String(raw);
-      if (!(spec.options || []).some(([k]) => k === s)) return bad(`只能是 ${(spec.options || []).map(([k]) => k).join(' / ')}`);
-      if (spec.path === 'channels.douyin.peerSecUid' || spec.path === 'channels.douyin.peerName' || spec.path === 'sources.memory.dir') {
-        return { ok: true, path: spec.path, value: s.trim() };
+      const s = String(raw).trim();
+      if (spec.path === 'exploration.model') {
+        const opts = buildExplorationModelOptions();
+        if (opts.some(([k]) => k === s) || EXPLORATION_MODEL_RE.test(s)) {
+          return { ok: true, path: spec.path, value: s };
+        }
+        return bad('请选择列表中的模型，或使用 provider:model 格式');
       }
-      return { ok: true, path: spec.path, value: s };
+      const rawStr = String(raw);
+      const opts = spec.path === 'sources.memory.plugin'
+        ? [...(spec.options || []), ...listRegisteredMemorySources().map((m) => [m.id, `${m.label}（扩展）`])]
+        : spec.path === 'exploration.moodSource'
+          ? [...(spec.options || []), ...listRegisteredMoodSources().map((m) => [m.id, `${m.label}（仅此扩展）`])]
+          : (spec.options || []);
+      if (!opts.some(([k]) => k === rawStr)) return bad(`只能是 ${opts.map(([k]) => k).join(' / ')}`);
+      return { ok: true, path: spec.path, value: rawStr };
     }
     case 'hm': {
       const v = normalizeHm(raw);
@@ -644,6 +783,11 @@ function groupItemsForUi(cfg, name, detCache = { value: null }) {
     if (s.path === 'exploration.bias' && usesLegacyExplorationCadence(cfg.exploration)) {
       hint += ' 旧设置仍按原规则运行，改选后应用新倾向。';
     }
+    if (s.path === 'exploration.browseMode') {
+      hint = shown === 'browser_agent'
+        ? '调网站浏览（会消耗更多 token）：用本机浏览器真正打开目标站点，支持多步搜索、点击进入章节/详情页、滚动翻页并结合识图模型阅读画面，达到下方步数上限自动收尾。'
+        : '轻量看图：保持低开销，搜到漫画或图文页面后提取页面图片或截取公开画面，直接交给已配置的识图模型看图写感受，不跑多轮浏览器循环。';
+    }
     const extra = {};
     // 课程勾选列表：课表里有什么就列什么（读不出来的行已经跳过了）
     if (s.type === 'courses') {
@@ -676,14 +820,24 @@ function groupItemsForUi(cfg, name, detCache = { value: null }) {
         hint = `${hint || ''}｜注意：当前填的值不像 sec_uid（通常以 MS4w 开头），清空留空即可自动从抖音插件获取`;
       }
     }
+    const options = s.path === 'sources.memory.plugin'
+      ? [...(s.options || []), ...listRegisteredMemorySources().map((m) => [m.id, `${m.label}（扩展）`])]
+      : s.path === 'exploration.moodSource'
+        ? [...(s.options || []), ...listRegisteredMoodSources().map((m) => [m.id, `${m.label}（仅此扩展）`])]
+        : s.path === 'exploration.model'
+          ? buildExplorationModelOptions(cfg)
+          : s.options;
+    hint = ensureTimeUnitHint(s, hint);
     return {
       path: s.path,
       label: s.label,
+      group: s.group,
+      tags: tagsForSpec(s),
       type: s.type,
       ...(s.min !== undefined ? { min: s.min } : {}),
       ...(s.max !== undefined ? { max: s.max } : {}),
       ...(s.unit ? { unit: s.unit } : {}),
-      ...(s.options ? { options: s.options } : {}),
+      ...(options ? { options } : {}),
       ...(s.rows ? { rows: s.rows } : {}),
       ...(hint ? { hint } : {}),
       ...(secret ? { secret: true, set: Boolean(secretFor(s.path)) } : {}),
@@ -695,6 +849,32 @@ function groupItemsForUi(cfg, name, detCache = { value: null }) {
           : display(s, s.type === 'windows' ? value : shown),
     };
   });
+}
+
+function depLabelsOf(d) {
+  if (!d) return [];
+  const items = Array.isArray(d) ? d : Array.isArray(d.any) ? d.any : [d];
+  const labels = [];
+  for (const item of items) {
+    if (!item?.path) continue;
+    const spec = BY_PATH.get(item.path);
+    const label = spec?.label || item.path;
+    if (!labels.includes(label)) labels.push(label);
+  }
+  return labels;
+}
+
+/** 当前被父开关隐藏、但可供全局搜索提示的设置清单。 */
+export function hiddenItemsForSearch(cfg) {
+  return SCHEMA.filter((s) => !s.hidden && !depVisible(cfg, s.dep)).map((s) => ({
+    path: s.path,
+    label: s.label,
+    group: s.group,
+    tags: tagsForSpec(s),
+    ...(s.unit ? { unit: s.unit } : {}),
+    hint: ensureTimeUnitHint(s, s.hint),
+    depLabels: depLabelsOf(s.dep),
+  }));
 }
 
 /** 自主探索卡片底部的直出配置项。 */
@@ -743,38 +923,20 @@ function depVisible(cfg, d) {
   return getPath(cfg, d.path, d.default) === d.on;
 }
 
-function signedMin(n) {
-  const v = Number(n) || 0;
-  return `${v > 0 ? `+${v}` : v} 分钟`;
-}
-
 function groupInnerNote(cfg, name) {
   if (name !== '角色作息') return '';
   const st = characterRestStatus(cfg);
   const stateTag = st.asleep ? '（当前休息中）' : st.windDown ? '（当前临睡轻声期）' : '';
   const actual = `今日实际作息：${st.bedHm} 入睡 – ${st.wakeHm} 醒来${stateTag}`;
-  if (!st.adaptEnabled) {
-    const jitter = st.jitterMin ? `，含每日浮动 ±${st.jitterMin} 分钟` : '';
-    return `${actual}；早晚微调未开启（预设基准 ${st.baseBedHm}–${st.baseWakeHm}${jitter}）。`;
-  }
-  const pending = (st.bedSamples < 3 || st.wakeSamples < 3)
-    ? `（样本进度：入睡 ${st.bedSamples}/3 天，醒来 ${st.wakeSamples}/3 天，满 3 天生效）`
-    : '';
-  return `${actual}；当前微调：入睡 ${signedMin(st.adaptBedMin)} / 醒来 ${signedMin(st.adaptWakeMin)}${pending}。`;
+  const jitter = st.jitterMin ? `，含每日浮动 ±${st.jitterMin} 分钟` : '';
+  return `${actual}（预设基准 ${st.baseBedHm}–${st.baseWakeHm}${jitter}）。`;
 }
 
 /** 折起来的标题旁边那一句概括人话：节奏、由头、数据源、课表与考试、高级。 */
 function groupSummary(cfg, name, items = []) {
   if (name === '角色作息') {
     const st = characterRestStatus(cfg);
-    if (!st.adaptEnabled) {
-      return `今日实际 ${st.bedHm}–${st.wakeHm} · 基准 ${st.baseBedHm}–${st.baseWakeHm}`;
-    }
-    const ready = st.bedSamples >= 3 || st.wakeSamples >= 3;
-    const adapt = ready
-      ? `微调 入睡 ${st.adaptBedMin > 0 ? `+${st.adaptBedMin}` : st.adaptBedMin} / 醒来 ${st.adaptWakeMin > 0 ? `+${st.adaptWakeMin}` : st.adaptWakeMin} 分钟`
-      : '微调 0 分钟（积累中）';
-    return `今日实际 ${st.bedHm}–${st.wakeHm} · ${adapt}`;
+    return `今日实际 ${st.bedHm}–${st.wakeHm} · 基准 ${st.baseBedHm}–${st.baseWakeHm}`;
   }
   if (name === '高级') {
     return `${items.length} 项 · 平时不用动`;
@@ -868,6 +1030,7 @@ export function applyChange(cfg, path, raw) {
   }
   cur[parts[parts.length - 1]] = r.value;
   if (r.path === 'exploration.bias') delete next.exploration.leisureEvery;
+  if (r.path === 'content.topics.shareGapMin') delete next.content.topics.shareGapH;
   if (r.path === 'characterRest.bed' || r.path === 'characterRest.wake') {
     const { bed, wake } = { ...CHARACTER_REST_DEFAULTS, ...next.characterRest };
     if (bed === '24:00' || wake === '24:00') return { ok: false, error: '请填写 00:00–23:59 之间的时间' };

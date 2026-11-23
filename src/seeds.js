@@ -42,10 +42,11 @@ export function seedId(kind, text) {
 }
 
 const MEMORY_META = /(?:[A-Za-z]:\\|\/Users\/|\/home\/|\.(?:json|jsonl|mjs|js|py|md|txt)\b|规则[:：]|参考图|官方形象|自主探索每|配置项|prompt|AGENT\.md|persona\.md)/iu;
+const MEMORY_PROJECT_RE = /(?:CCF|SCI|论文|投稿|毕设|毕业设计|开题|拆一个功能点|赛道太挤)/iu;
 
 /**
  * 记忆种子池。返回 { pool, why }。
- * 过滤顺序：太老（seedDays）→ 我自己标了不给她看的 → 路径/规则/设定等元信息 → 空文本。
+ * 过滤顺序：太老（seedDays）→ 我自己标了不给她看的 → 路径/规则/设定等元信息 → 项目/论文压力 → 空文本。
  */
 export function memoryPool({ cfg, now = Date.now(), seedDays = 30 } = {}) {
   const c = cfg?.rules?.chitchat || {};
@@ -60,7 +61,7 @@ export function memoryPool({ cfg, now = Date.now(), seedDays = 30 } = {}) {
     if (!text) continue;
     if (it.at && it.at < horizon) continue;
     if (skipPrivate && PRIVATE.test(text)) continue;
-    if (MEMORY_META.test(text)) continue;
+    if (MEMORY_META.test(text) || MEMORY_PROJECT_RE.test(text)) continue;
     pool.push({ id: seedId('m', text), kind: 'memory', text: text.slice(0, 80), day: it.day || '', entities: seedEntities(text, cfg) });
   }
   return { pool, why: pool.length ? null : 'MEMORY_SEED_EMPTY' };
@@ -124,14 +125,24 @@ export function personaPool({ persona, cfg } = {}) {
  *   · 两者都有新鲜种子时按「上次类型轮替 + 随机」抽取，避免记忆条数多就把角色自己淹没；
  *   · 池子被用空 → 返回 null（这一拍没有种子，不硬凑）。
  */
+function personaSeedUsedRecently(seed, recentSends = []) {
+  const recentText = recentSends.join('\n');
+  if (!recentText) return false;
+  const s = String(seed?.text || '');
+  if (/(?:带一杯|饮料|喝冰)/u.test(s) && /(?:奶茶|饮料|带一杯|少冰)/u.test(recentText)) return true;
+  if (/胃不好/u.test(s) && /胃/u.test(recentText)) return true;
+  return false;
+}
+
 export function pickSeed({ cfg, persona = null, now = Date.now(), st = {}, tz = 'Asia/Shanghai', seedDays = null, rnd = Math.random } = {}) {
   const c = cfg?.rules?.chitchat || {};
   const days = seedDays ?? Number(c.seedDays ?? 30);
   const { pool: memPool, why } = memoryPool({ cfg, now, seedDays: days });
   const pPool = personaPool({ persona, cfg });
   const ring = Array.isArray(st?.chitchat?.recentSeeds) ? st.chitchat.recentSeeds.slice(-3).map(String) : [];
+  const recentSends = Array.isArray(st?.content?.recentSends) ? st.content.recentSends : [];
   const memFresh = memPool.filter((s) => !ring.includes(s.id));
-  const personaFresh = pPool.filter((s) => !ring.includes(s.id));
+  const personaFresh = pPool.filter((s) => !ring.includes(s.id) && !personaSeedUsedRecently(s, recentSends));
 
   let chosenPool = [];
   if (personaFresh.length && memFresh.length) {

@@ -12,6 +12,7 @@ import { examsSource, parseExams, reviewDue, soonDue, dayDiff } from './exams.js
 import { noReplyDue } from './noreply.js';
 import { wellnessCooldown } from './decide.js';
 import { characterRestCue, characterRestGreeted } from './character-rest.js';
+import { collectExternalTopics, getTopicProviderMeta } from './extensions.js';
 
 // tier：阶段 1 的间隔分档（显式常量，不在运行时猜）。
 //   reply = 回她/接转发/追问（默认 5 分钟）
@@ -42,7 +43,7 @@ export const SLOTS = {
 
 /** 阶段 1：由头 → 间隔档。没登记的 slot 一律按 chat（最保守）。 */
 export function tierOfSlot(slot) {
-  return SLOTS[slot]?.tier || 'chat';
+  return SLOTS[slot]?.tier || getTopicProviderMeta(slot)?.tier || 'chat';
 }
 
 /**
@@ -691,13 +692,19 @@ function* topicOptions(ctx, cfg, now, st = {}, misses) {
 /** 她 2026-11-10："话题都太集中在我看电脑这件事上"。同一类由头别连着来，
  *  「屏幕/久坐/硬撑」这类一天也别连着占四条。 */
 function shareTopic(ctx, t, used, now, when) {
+  if (!ctx.self) {
+    if (ctx.selfMiss) when('share', false, ctx.selfMiss);
+    return null;
+  }
   // 已分享的探索候选由上下文过滤，其他分享仍沿用冷却。
-  const shareGapH = Number(t.shareGapH ?? 24);
+  const shareGapMin = t.shareGapMin != null
+    ? Number(t.shareGapMin)
+    : (t.shareGapH != null ? Number(t.shareGapH) * 60 : 1440);
   if (
     ctx.self &&
     String(ctx.self.line || '').length >= (ctx.self.exploration ? 8 : Number(t.shareMinChars ?? 40)) &&
-    when('share', !used.lastShareAt || now - used.lastShareAt >= shareGapH * 3_600_000, 'cooldown') &&
-    when('share', ctx.self.actionRetry ? used.lastRetryProposalAt !== ctx.self.at : (!used.lastShareLine || used.lastShareLine !== ctx.self.line.slice(0, 80)), 'already_used')
+    when('share', !used.lastShareAt || now - used.lastShareAt >= shareGapMin * 60_000, 'cooldown') &&
+    when('share', ctx.self.actionRetry ? used.lastRetryProposalAt !== ctx.self.at : (!used.lastShareLine || used.lastShareLine !== ctx.self.line.slice(0, 80)) && !used.recentShareLines?.includes(ctx.self.line.slice(0, 80)), 'already_used')
   ) {
     return {
       slot: 'share',
@@ -741,7 +748,11 @@ export function* topicCandidates(ctx, cfg, now, st = {}, onRepeat = () => {}, mi
   const screenHits = recent.slice(-4).filter((x) => SCREEN_WORDS.test(String(x))).length;
   const seen = new Set(Array.isArray(st.skipSlots) ? st.skipSlots : []);
   const cold = coldSlots(st, cfg, now);
-  for (const topic of topicOptions(ctx, cfg, now, st, misses)) {
+  const allOptions = [
+    ...topicOptions(ctx, cfg, now, st, misses),
+    ...collectExternalTopics({ ctx, cfg, now, st }),
+  ];
+  for (const topic of allOptions) {
     const { slot } = topic;
     if (seen.has(slot)) continue;
     const mode = topicPreferenceMode(st, topic, now);
@@ -755,7 +766,7 @@ export function* topicCandidates(ctx, cfg, now, st = {}, onRepeat = () => {}, mi
     }
     seen.add(slot);
     if ((screenHits >= 2 && ['screen', 'longSit', 'lateUp', 'backHome'].includes(slot)) ||
-        (lastTwo.length === 2 && lastTwo.every((name) => name === slot))) {
+        (cfg?.debugMode !== true && lastTwo.length === 2 && lastTwo.every((name) => name === slot))) {
       misses?.set(slot, 'repeated');
       onRepeat(slot);
       continue;
@@ -794,7 +805,7 @@ export function explainNoTopic(ctx, cfg, now, st = {}) {
     const sleepDay = healthDay(now, tz, dayStart);
     const c = classifySleep(fish, cfg);
     if (fish.sleepMin == null) reasons.push('鱼鱼摘要里没读到睡眠时长（要看含「夜间睡眠：」的睡眠详情行）');
-    if (mins < Number(t.sleepFromHour ?? 7) || mins > Number(t.sleepToHour ?? 10.5)) {
+    if (mins < Number(t.sleepFromHour ?? 7) * H || mins > Number(t.sleepToHour ?? 10.5) * H) {
       reasons.push('现在不在早上那一档，睡眠话题过期');
     } else if (st?.content?.lastSleepFor === sleepDay) {
       reasons.push(`这个健康日（${sleepDay} 07:00 起算）已经说过睡眠了，一天只发一次`);
@@ -820,7 +831,7 @@ export function explainNoTopic(ctx, cfg, now, st = {}) {
     if (t.stress === false) reasons.push('压力由头已关闭（content.topics.stress=false）');
     else if (stressVal == null) reasons.push('鱼鱼摘要里没读到压力值');
     else if (!(stressVal > high)) reasons.push(`压力 ${stressVal} 没超过阈值 ${high}`);
-    else if (mins < Number(t.stressFromHour ?? 9) || mins > Number(t.stressToHour ?? 22)) {
+    else if (mins < Number(t.stressFromHour ?? 9) * H || mins > Number(t.stressToHour ?? 22) * H) {
       reasons.push('现在不在压力时段内');
     } else if (sentToday >= max) reasons.push(`今天的压力已经说过 ${sentToday} 次（上限 ${max}）`);
     else if (st?.content?.lastStressAt && now - Number(st.content.lastStressAt) < Number(t.stressMinGapMin ?? 180) * 60000) {

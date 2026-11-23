@@ -1,6 +1,7 @@
 // Pure presentation of decisions and diagnostic codes.
 import { normalizeWindows, inWindows } from './schedule.js';
 import { SLOTS } from './topics.js';
+import { getTopicProviderMeta } from './extensions.js';
 import { REASONS } from './decide.js';
 
 const DAILY = '陪伴 → 日常';
@@ -23,7 +24,7 @@ const shortLabels = {
 };
 
 export function topicLabel(slot) {
-  return shortLabels[slot] || SLOTS[slot]?.label || '其他话题';
+  return shortLabels[slot] || SLOTS[slot]?.label || getTopicProviderMeta(slot)?.label || '其他话题';
 }
 
 export function phonePauseText(info) {
@@ -56,6 +57,9 @@ const misses = {
   chitchat_no_judge: ['随口话需要开启模型判断', PACE],
   chitchat_judge_no: ['模型判断这次适合保持安静', PACE],
   chitchat_reply_pending: ['随口话让这轮聊天先结束', '等这轮聊天结束后再试。'],
+  share_offer_off: ['已产出探索分享，但「让探索进展参与主动分享」开关关着', '陪伴 → 自主探索 → 让探索进展参与主动分享'],
+  share_topic_cooldown: ['同一探索主题 6 小时内刚分享过（且本轮未产出新发现），暂不重复推送', '等探索出新进展/新主题，或过一段时间再试。'],
+  share_avoided: ['该探索主题已标记「换个方向」或「先放着」，已避开', '可在自主探索卡片中再次点击对应按钮取消标记。'],
 };
 
 export function isSpecificTopicMiss(reason) {
@@ -72,7 +76,7 @@ const reasons = {
   PLUGIN_DISABLED: ['陪伴的总开关关着。', `${DAILY} → 总开关`],
   DATA_UNAVAILABLE: ['这一拍没读到可用的聊天数据。', `${CHECK} → 连通测试`],
   CHARACTER_ASLEEP: ['角色现在在休息，这一拍暂停主动开口。', '陪伴 → 角色作息'],
-  USER_WINDING_DOWN: ['对方刚才在收尾或要去忙，先留出安静时间。', `${TIMING} → 对方收尾后暂停主动多久`],
+  USER_WINDING_DOWN: ['对方刚才在收尾或要去忙，先留出安静时间。', `${PACE} → 对方收尾后暂停主动多久`],
   GLOBAL_QUIET: ['现在是全局静默时段，这一拍跳过。', `${DAILY} → 全局静默`],
   QUIET_HOURS: ['现在是全局静默时段，这一拍跳过。', `${DAILY} → 全局静默`],
   BUSY_HOURS: ['现在是忙碌时段，先等你有空。', `${DAILY} → 忙碌时段`],

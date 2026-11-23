@@ -381,3 +381,314 @@ test('小本本划掉和原探索卡片的轻互动向对应路由提交', async
     ['/exploration/feedback', { id: 'candidate-id', action: 'delete' }],
   ]);
 });
+
+test('设置页全局搜索支持按字匹配、关键词限定范围以及父开关隐藏项提示', async () => {
+  const { loaded, sandbox } = load();
+  sandbox.setInterval = () => 1;
+  sandbox.fetch = async (url) => {
+    const endpoint = url.replace('/api/dsh-drop-by', '');
+    const bodies = {
+      '/state': { enabled: true, dryRun: true, tickMinutes: 10, today: {}, send: {} },
+      '/diagnostics': { guideRecommended: false, items: [], alerts: [], reports: [], slots: [] },
+      '/config': {
+        searchTags: [
+          { id: 'exploration', label: '自主探索' },
+          { id: 'rest', label: '角色作息' },
+        ],
+        channelItems: [],
+        explorationItems: [
+          { path: 'exploration.auto', label: '自动自主探索', group: '自主探索', tags: ['exploration'], type: 'bool', value: false, hint: '自动探索开关' },
+        ],
+        groups: [
+          {
+            name: '决定TA粘不粘人',
+            foldable: true,
+            items: [
+              { path: 'content.topics.shareGapMin', label: '两条主动分享至少隔多久', group: '决定TA粘不粘人', tags: ['exploration', 'pace'], type: 'int', unit: '分钟', value: 1440, hint: '单位：分钟（默认 1440 分钟）。' },
+            ],
+          },
+          {
+            name: '角色作息',
+            foldable: true,
+            items: [
+              { path: 'characterRest.bed', label: '角色入睡基准', group: '角色作息', tags: ['rest'], type: 'hm', unit: '时:分', value: '22:00', hint: '单位：时:分。' },
+            ],
+          },
+        ],
+        hiddenItems: [
+          { path: 'exploration.intervalMinutes', label: '探索间隔', group: '自主探索', tags: ['exploration'], unit: '分钟', hint: '默认 180 分钟。', depLabels: ['自动自主探索'] },
+        ],
+      },
+    };
+    return { ok: true, text: async () => JSON.stringify(bodies[endpoint]) };
+  };
+  const draw = mountPanel(loaded);
+  const flush = () => new Promise(setImmediate);
+  const button = (tree, label) => elements(tree, el => el.type === 'button' && textOf(el) === label)[0];
+  const searchInput = (tree) => elements(tree, el => el.type === 'input' && el.props['aria-label'] === '全局搜索设置项')[0];
+
+  draw();
+  await flush();
+  draw();
+  await flush();
+  let tree = draw();
+  assert.ok(searchInput(tree));
+
+  // 选中「自主探索」关键词后，只显示探索相关设置，不显示角色作息，并提示被父开关隐藏的「探索间隔」
+  button(tree, '自主探索').props.onClick();
+  tree = draw();
+  const expText = textOf(tree);
+  assert.match(expText, /关键词「自主探索」/);
+  assert.match(expText, /两条主动分享至少隔多久/);
+  assert.match(expText, /探索间隔（需先开启「自动自主探索」）/);
+  assert.doesNotMatch(expText, /角色入睡基准/);
+
+  // 在选中「自主探索」的前提下按字搜「入睡」→ 搜不到角色作息的项
+  searchInput(tree).props.onChange({ target: { value: '入睡' } });
+  tree = draw();
+  assert.match(textOf(tree), /找到 0 项/);
+
+  // 切回「全部」后按字搜「入睡」→ 立刻命中「角色入睡基准」
+  button(tree, '全部').props.onClick();
+  tree = draw();
+  assert.match(textOf(tree), /找到 1 项.*角色入睡基准/);
+
+  // 清空后恢复完整分组视图
+  button(tree, '清空').props.onClick();
+  tree = draw();
+  assert.match(textOf(tree), /参数设置/);
+});
+
+test('「已接入的第三方扩展」卡片常驻展示，并分成记忆、心情（防冲突）和探索只读工具三类清晰入口', async () => {
+  const { loaded, sandbox } = load();
+  let extPayload = { exploreSources: [], moodSources: [], memorySources: [], topicProviders: [] };
+  const configGroups = [
+    {
+      name: '数据从哪来',
+      foldable: true,
+      items: [
+        { path: 'sources.memory.plugin', label: '用哪个记忆插件', group: '数据从哪来', type: 'select', value: 'fish-memory', options: [['fish-memory', '鱼的记忆（dsh-fish-memory）']], hint: '单选互斥。' },
+        { path: 'exploration.moodSource', label: '用哪个心情插件（防冲突）', group: '数据从哪来', type: 'select', value: 'auto', options: [['auto', '自动防冲突']], hint: '默认自动防冲突。' },
+      ],
+    },
+    {
+      name: '高级',
+      foldable: true,
+      items: [
+        { path: 'exploration.extraTools', label: '探索可调用的额外只读工具', group: '高级', type: 'str', value: 'bilibili_hot', hint: '逗号分隔的宿主只读工具名。' },
+      ],
+    },
+    {
+      name: '时间间隔',
+      foldable: true,
+      items: [
+        { path: 'exploration.extTimeoutMs', label: '外部探索源与扩展工具超时', group: '时间间隔', type: 'int', unit: '秒', value: 12, hint: '单位：秒（默认 12 秒）。' },
+      ],
+    },
+  ];
+  sandbox.setInterval = () => 1;
+  sandbox.fetch = async (url) => {
+    const endpoint = url.replace('/api/dsh-drop-by', '');
+    const bodies = {
+      '/state': { enabled: true, dryRun: true, tickMinutes: 10, today: {}, send: {}, extensions: extPayload },
+      '/config': { groups: configGroups },
+      '/diagnostics': { guideRecommended: false, slots: [] },
+    };
+    return { ok: true, text: async () => JSON.stringify(bodies[endpoint]) };
+  };
+  const draw = mountPanel(loaded);
+  const flush = () => new Promise(setImmediate);
+
+  draw();
+  await flush();
+  draw();
+  await flush();
+  const emptyTree = draw();
+  const extFold = elements(emptyTree, el => el.type === 'details' && textOf(el).includes('已接入的第三方扩展'))[0];
+  assert.ok(extFold, '第三方扩展卡片应渲染为 details 折叠容器');
+  assert.equal(extFold.props.open, undefined, '第三方扩展卡片默认应处于折叠状态');
+  const emptyTxt = textOf(emptyTree);
+  assert.match(emptyTxt, /已接入的第三方扩展/);
+  assert.match(emptyTxt, /接口已就绪（0 个已注册）/);
+  assert.match(emptyTxt, /支持接入刷 B 站、心情\/好感度、长期记忆与自定义主动由头/);
+  assert.match(emptyTxt, /用哪个记忆插件/);
+  assert.match(emptyTxt, /用哪个心情插件（防冲突）/);
+  assert.match(emptyTxt, /探索可调用的额外只读工具/);
+  assert.match(emptyTxt, /外部探索源与扩展工具超时/);
+  const inputs = elements(emptyTree, el => el.type === 'input' && el.props.value === 'bilibili_hot');
+  assert.ok(inputs.length >= 1, '卡片内应可直接看到并编辑 extraTools');
+
+  // 切到包含四类扩展的 state，重新挂载应展示已注册数量与明细
+  extPayload = {
+    exploreSources: [{ id: 'bili-hot', label: 'B站热门', mode: 'leisure' }],
+    moodSources: [{ id: 'my-mood', label: '好感度插件', syncChat: true }],
+    memorySources: [{ id: 'neo-graph', label: '图谱记忆' }],
+    topicProviders: [{ slot: 'biliLive', label: '主播开播', tier: 'event' }],
+  };
+  const draw2 = mountPanel(loaded);
+  draw2();
+  await flush();
+  draw2();
+  await flush();
+  const txt = textOf(draw2());
+  assert.match(txt, /已接入的第三方扩展/);
+  assert.match(txt, /4 个已注册/);
+  assert.match(txt, /B站热门（bili-hot）/);
+  assert.match(txt, /好感度插件（my-mood）/);
+  assert.match(txt, /图谱记忆（neo-graph）/);
+  assert.match(txt, /主播开播（biliLive）/);
+});
+
+test('「情绪状态」与「长期记忆」卡片标题括号和内容跟随所选插件实时变化', async () => {
+  const { loaded, sandbox } = load();
+  let statePayload = {
+    enabled: true,
+    dryRun: true,
+    tickMinutes: 10,
+    today: {},
+    send: {},
+    emotion: {
+      installed: true,
+      version: '1.0.0',
+      activeKind: 'external',
+      activePluginLabel: '好感度插件 · my-mood',
+      externalLive: '心情很好',
+      externalReady: true,
+    },
+    memory: {
+      enabled: true,
+      plugin: 'neo-graph',
+      resolvedPlugin: 'neo-graph',
+      label: '图谱记忆插件（neo-graph）',
+      supportsMerge: false,
+      files: [{ id: 'neo-graph', name: 'graph.db', kind: 'extension', count: 5 }],
+      active: { ok: true, files: ['graph.db'], count: 2 },
+    },
+  };
+  sandbox.setInterval = () => 1;
+  sandbox.fetch = async (url) => {
+    const endpoint = url.replace('/api/dsh-drop-by', '');
+    const bodies = {
+      '/state': statePayload,
+      '/config': { groups: [] },
+      '/diagnostics': { guideRecommended: false, slots: [] },
+    };
+    return { ok: true, text: async () => JSON.stringify(bodies[endpoint]) };
+  };
+  const draw = mountPanel(loaded);
+  const flush = () => new Promise(setImmediate);
+
+  draw();
+  await flush();
+  draw();
+  await flush();
+  const txt1 = textOf(draw());
+  assert.match(txt1, /情绪状态（好感度插件 · my-mood）/);
+  assert.match(txt1, /第三方扩展生效中/);
+  assert.match(txt1, /当前外部心情：心情很好/);
+  assert.match(txt1, /长期记忆（图谱记忆插件（neo-graph） · 共 1 份）/);
+
+  // 切回内置情绪 + Soul.md 记忆时，括号内容一起变化
+  statePayload = {
+    enabled: true,
+    dryRun: true,
+    tickMinutes: 10,
+    today: {},
+    send: {},
+    emotion: {
+      installed: true,
+      version: '1.0.0',
+      activeKind: 'builtin',
+      activePluginLabel: 'emotion-state-portrait v1.0.0',
+      live: { mood: ['平静'], spirit: 85, portraitCount: 1 },
+    },
+    memory: {
+      enabled: true,
+      plugin: 'soul-md',
+      resolvedPlugin: 'soul-md',
+      label: 'Soul.md 记忆（dsh-soul-md）',
+      supportsMerge: false,
+      files: [],
+      active: { ok: false, files: [], count: 0 },
+    },
+  };
+  const draw2 = mountPanel(loaded);
+  draw2();
+  await flush();
+  draw2();
+  await flush();
+  const txt2 = textOf(draw2());
+  assert.match(txt2, /情绪状态（emotion-state-portrait v1\.0\.0）/);
+  assert.match(txt2, /长期记忆（Soul\.md 记忆（dsh-soul-md） · 共 0 份）/);
+});
+
+test('最近的探索进展按模式过滤并优先展示最新一条，再次点击已选中反馈按钮可取消并提示', async () => {
+  const { loaded, sandbox } = load();
+  let action = '';
+  const calls = [];
+  sandbox.setInterval = () => 1;
+  const state = () => ({
+    enabled: true,
+    today: {},
+    exploration: {
+      mode: 'deep',
+      lastRun: { mode: 'leisure', outcome: '网页画面', calls: ['browser:search', 'browser:open', 'vision:look'] },
+      thread: { topic: '旧研究题', progress: '之前看过一点', at: 1000 },
+      leisure: { topic: '最新休闲漫画', progress: '刚翻了第一话', at: 2000 },
+      light: { topic: '过期的随手看看', summary: '不该在深度模式里堆叠显示', at: 3000 },
+      feedback: {
+        enabled: true,
+        entries: [
+          { kind: 'thread', id: 'thread-id', topic: '旧研究题', action: '' },
+          { kind: 'leisure', id: 'leisure-id', topic: '最新休闲漫画', action },
+          { kind: 'light', id: 'light-id', topic: '过期的随手看看', action: '' },
+        ],
+        candidates: [],
+      },
+    },
+  });
+  sandbox.fetch = async (url, options) => {
+    const endpoint = url.replace('/api/dsh-drop-by', '');
+    let body = endpoint === '/state' ? state() : { groups: [] };
+    if (options?.body) {
+      const value = JSON.parse(options.body);
+      calls.push([endpoint, value]);
+      action = value.action === 'clear' ? '' : value.action;
+      body = {
+        ok: true,
+        note: value.action === 'clear' ? '已取消该反馈标记' : '已标记「换个方向」，下轮探索将避开这个主题',
+        state: state(),
+      };
+    }
+    return { ok: true, text: async () => JSON.stringify(body) };
+  };
+  const draw = mountPanel(loaded);
+  const flush = () => new Promise(setImmediate);
+  const button = (tree, label) => elements(tree, el => el.type === 'button' && textOf(el) === label)[0];
+  draw();
+  await flush();
+  draw();
+  await flush();
+  let tree = draw();
+  const txt = textOf(tree);
+  assert.match(txt, /最近路径（共 3 步）/);
+  const pathDetails = elements(tree, el => el.type === 'details' && /最近路径（共 3 步）/.test(textOf(el)))[0];
+  assert.ok(pathDetails && !pathDetails.props.open, '最近路径默认应折叠');
+  assert.match(txt, /休闲 · 最新休闲漫画：刚翻了第一话/);
+  assert.match(txt, /查看较早的另一条记录（研究）/);
+  assert.doesNotMatch(txt, /过期的随手看看/);
+  button(tree, '换个方向').props.onClick();
+  await flush();
+  tree = draw();
+  assert.equal(button(tree, '换个方向').props['aria-pressed'], true);
+  assert.match(textOf(tree), /已标记「换个方向」/);
+  button(tree, '换个方向').props.onClick();
+  await flush();
+  tree = draw();
+  assert.equal(button(tree, '换个方向').props['aria-pressed'], false);
+  assert.match(textOf(tree), /已取消该反馈标记/);
+  assert.deepEqual(calls, [
+    ['/exploration/feedback', { id: 'leisure-id', action: 'change' }],
+    ['/exploration/feedback', { id: 'leisure-id', action: 'clear' }],
+  ]);
+});

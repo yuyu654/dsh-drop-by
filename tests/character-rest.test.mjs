@@ -12,7 +12,7 @@ process.env.PG_DSH_HOME = tmp;
 process.env.PG_FISH_LATEST_PATH = path.join(tmp, 'fish-latest.json');
 test.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
-const { characterRestAt, characterRestStatus, characterRestCue, recordCharacterChat, WIND_DOWN_HINT } = await import('../src/character-rest.js');
+const { characterRestAt, characterRestStatus, characterRestCue, WIND_DOWN_HINT } = await import('../src/character-rest.js');
 const { loadConfig, saveConfig } = await import('../src/config.js');
 const { applyChange, listForUi, explorationItemsForUi } = await import('../src/settings.js');
 const { decide } = await import('../src/decide.js');
@@ -61,18 +61,14 @@ test('每日浮动有界，跨午夜看的是同一晚', () => {
   assert.ok(times.size > 1);
 });
 
-test('适配按每天早晚边界聚合，用过去多天取中位数并封顶', async () => {
-  const enabled = { ...cfg, characterRest: { ...cfg.characterRest, adapt: true, adaptDays: 7, adaptMaxMin: 20 } };
-  for (const day of ['2026-11-18', '2026-11-19', '2026-11-20']) {
-    await recordCharacterChat(enabled, [at(day, '06:10'), at(day, '06:25'), at(day, '22:04'), at(day, '23:10')], at('2026-11-22', '12:00'));
+test('旧配置里的 adapt 字段被忽略，设置页不再暴露作息微调项', () => {
+  const legacy = { ...cfg, characterRest: { ...cfg.characterRest, adapt: true, adaptDays: 7, adaptMaxMin: 20 } };
+  const status = characterRestAt(legacy, at('2026-11-22', '23:10'));
+  assert.equal(status.bedMin, 22 * 60);
+  assert.equal(status.wakeMin, 6 * 60 + 30);
+  for (const field of ['characterRest.adapt', 'characterRest.adaptDays', 'characterRest.adaptMaxMin']) {
+    assert.equal(applyChange(legacy, field, true).ok, false);
   }
-  await recordCharacterChat(enabled, ['02:15', '07:40', '14:00', '21:00'].map(hm => at('2026-11-21', hm)), at('2026-11-22', '12:00'));
-  const status = characterRestAt(enabled, at('2026-11-22', '23:10'));
-  assert.equal(status.bedMin, 22 * 60 + 20);
-  assert.equal(status.wakeMin, 6 * 60 + 20);
-  await recordCharacterChat(enabled, [at('2026-11-22', '21:00')], at('2026-11-22', '23:10'));
-  assert.deepEqual(characterRestAt(enabled, at('2026-11-22', '23:10')), status);
-  assert.equal(characterRestAt(cfg, at('2026-11-22', '23:10')).bedMin, 22 * 60);
 });
 
 test('睡着只拦主动，QQ 和抖音私聊照常注入困意口吻', async () => {
@@ -140,69 +136,31 @@ test('旧频率原样沿用，选择新三档后保存回显', () => {
   assert.ok(!listForUi(loadConfig()).flatMap(group => group.items).some(field => field.path === 'exploration.leisureEvery'));
 });
 
-test('跨午夜的早晚聊天归属到正确的日期，不会记成未来日期', async () => {
-  const lateBed = {
-    timezone: 'Asia/Shanghai',
-    characterRest: { bed: '23:00', wake: '07:00', jitterMin: 0, adapt: true, adaptDays: 7, adaptMaxMin: 30 },
-  };
-  // 11-19/20/21 凌晨 00:30 属于 11-18/19/20 晚间（相对 23:00 偏晚 +90 分钟，折半 +45 封顶 +30）
-  await recordCharacterChat(
-    lateBed,
-    [at('2026-11-19', '00:30'), at('2026-11-20', '00:30'), at('2026-11-21', '00:30')],
-    at('2026-11-21', '12:00'),
-  );
-  const status = characterRestStatus(lateBed, at('2026-11-21', '12:00'));
-  assert.equal(status.bedSamples, 3);
-  assert.equal(status.adaptBedMin, 30);
-  assert.equal(status.bedHm, '23:30');
-  const saved = JSON.parse(fs.readFileSync(path.join(tmp, 'data', 'character-rest.json'), 'utf8'));
-  assert.deepEqual(Object.keys(saved.days).sort(), ['2026-11-18', '2026-11-19', '2026-11-20']);
-
-  // 醒来基准在零点后（00:30），前一天 23:50 发信（-40 分钟）应归属次日早晨而非前一天
-  const earlyWake = {
-    timezone: 'Asia/Shanghai',
-    characterRest: { bed: '16:00', wake: '00:30', jitterMin: 0, adapt: true, adaptDays: 7, adaptMaxMin: 30 },
-  };
-  await recordCharacterChat(
-    earlyWake,
-    [at('2026-11-17', '23:50'), at('2026-11-18', '23:50'), at('2026-11-19', '23:50')],
-    at('2026-11-21', '12:00'),
-  );
-  const wakeStatus = characterRestStatus(earlyWake, at('2026-11-21', '12:00'));
-  assert.equal(wakeStatus.wakeSamples, 3);
-  assert.equal(wakeStatus.adaptWakeMin, -20);
-  assert.equal(wakeStatus.wakeHm, '00:10');
-});
-
-test('设置页角色作息展示今日实际作息与当前微调分钟，预设项附重置提醒', async (t) => {
+test('设置页角色作息展示今日实际作息与基准，不显示早晚微调项', (t) => {
   const noon = at('2026-11-22', '12:00');
   t.mock.method(Date, 'now', () => noon);
   const restCfg = {
     timezone: 'Asia/Shanghai',
-    characterRest: { bed: '22:00', wake: '06:30', jitterMin: 0, adapt: true, adaptDays: 7, adaptMaxMin: 30 },
+    characterRest: { bed: '22:00', wake: '06:30', jitterMin: 0 },
   };
-  for (const day of ['2026-11-19', '2026-11-20', '2026-11-21']) {
-    await recordCharacterChat(restCfg, [at(day, '22:16'), at(day, '06:20')], noon);
-  }
   const group = listForUi(restCfg).find(g => g.name === '角色作息');
-  assert.match(group.summary, /今日实际 22:08–06:25/);
-  assert.match(group.summary, /微调 入睡 \+8 \/ 醒来 -5 分钟/);
-  assert.match(group.innerNote, /今日实际作息：22:08 入睡 – 06:25 醒来/);
-  assert.match(group.innerNote, /当前微调：入睡 \+8 分钟 \/ 醒来 -5 分钟/);
+  assert.match(group.summary, /今日实际 22:00–06:30 · 基准 22:00–06:30/);
+  assert.match(group.innerNote, /今日实际作息：22:00 入睡 – 06:30 醒来（预设基准 22:00–06:30）。/);
+  assert.doesNotMatch(group.summary + group.innerNote, /微调/);
+  assert.equal(group.items.some(i => i.path.startsWith('characterRest.adapt')), false);
   const bedItem = group.items.find(i => i.path === 'characterRest.bed');
   const wakeItem = group.items.find(i => i.path === 'characterRest.wake');
-  const maxItem = group.items.find(i => i.path === 'characterRest.adaptMaxMin');
-  assert.match(bedItem.hint, /重算今日作息.*重置.*微调记录/);
-  assert.match(wakeItem.hint, /重算今日作息.*重置.*微调记录/);
-  assert.match(maxItem.hint, /重置.*微调记录/);
+  assert.match(bedItem.hint, /重算今日作息/);
+  assert.match(wakeItem.hint, /重算今日作息/);
+  assert.doesNotMatch(bedItem.hint + wakeItem.hint, /微调/);
 
-  // 改预设基准后，旧微调立即失效归零
   const changed = applyChange(restCfg, 'characterRest.bed', '22:30');
   assert.ok(changed.ok);
-  const resetGroup = listForUi(changed.cfg).find(g => g.name === '角色作息');
-  assert.match(resetGroup.summary, /今日实际 22:30–06:30/);
-  assert.match(resetGroup.summary, /微调 0 分钟（积累中）/);
-  assert.match(resetGroup.innerNote, /入睡 0 分钟 \/ 醒来 0 分钟/);
+  const nextGroup = listForUi(changed.cfg).find(g => g.name === '角色作息');
+  assert.match(nextGroup.summary, /今日实际 22:30–06:30 · 基准 22:30–06:30/);
+  const status = characterRestStatus(changed.cfg, noon);
+  assert.equal(status.bedHm, '22:30');
+  assert.equal('adaptEnabled' in status, false);
 });
 
 test('角色睡前 10 分钟与醒来后 10 分钟可作为由头触发、去重，且设置项修改真实生效', () => {

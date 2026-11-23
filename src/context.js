@@ -10,7 +10,7 @@ import { bridgeLastIn, bridgeLastOut, recentTurns } from './outbound.js';
 import { chatPeer } from './channels/external.js';
 import { douyinPrimary, douyinPeer, readDouyinState } from './channels/douyin-im.js';
 import { internalPrimary, internalSessionId, readInternalState } from './channels/internal.js';
-import { agoSec } from './time.js';
+import { agoSec, dayKey } from './time.js';
 import { loadPersona } from './persona.js';
 import { actionProposalCandidate } from './action-proposal.js';
 import { explorationProgress, explorationShare, explorationStatus, loadExploration } from './explore.js';
@@ -138,7 +138,15 @@ export function lastHerMessage(cfg) {
  */
 import { PRIVATE_MARK } from './private.js';
 
-function readSelfMemory(tz, limit = 8) {
+function isRecentSelfEntry(mmdd, now = Date.now(), tz = 'Asia/Shanghai', maxDays = 3) {
+  if (!/^\d{2}-\d{2}$/.test(String(mmdd || ''))) return false;
+  for (let d = 0; d <= maxDays; d += 1) {
+    if (dayKey(now - d * 86_400_000, tz).slice(5) === mmdd) return true;
+  }
+  return false;
+}
+
+function readSelfMemory(tz, limit = 8, now = Date.now(), maxDays = 3) {
   let raw = '';
   try {
     const size = fs.statSync(SELF_MD).size;
@@ -162,6 +170,7 @@ function readSelfMemory(tz, limit = 8) {
     }
     const m = /^-\s*\[(\d{2}-\d{2})\]\s*(.+)$/.exec(t);
     if (!m) continue;
+    if (!isRecentSelfEntry(m[1], now, tz, maxDays)) continue;
     const line = m[2].replace(/（来源：[^）]*）\s*$/, '').trim();
     if (line.length < 12) continue;
     items.push({
@@ -270,21 +279,48 @@ export function buildContext({ cfg, now, st, ch, sys, tz }) {
     fish,
     myExploration: explorationProgress(exploration, persona, now, cfg?.exploration),
     ...(() => {
-      const mem = readSelfMemory(tz);
-      const candidate = cfg?.exploration?.offerShare === true
-        ? actionProposalCandidate({ cfg, peer: chatPeer(cfg), now, state: exploration, persona }) ||
-          explorationShare(exploration, persona, now, cfg?.exploration)
-        : null;
-      const loginSent = candidate?.loginSite && st?.content?.explorationLoginNotices?.includes(candidate.loginSite);
-      const discoverySent = candidate?.discoveryId && st?.content?.sharedExplorationIds?.includes(candidate.discoveryId);
-      const avoided = candidate && !candidate.actionRetry && !candidate.loginSite && topicInExplorationFeedback(candidate.section,
-        explorationFeedbackHints(cfg, explorationStatus(exploration, persona), now).avoid);
-      const usable = candidate && !avoided && !loginSent && !discoverySent && (candidate.actionRetry
-        ? candidate.at !== st?.content?.lastRetryProposalAt
-        : candidate.line.slice(0, 80) !== st?.content?.lastShareLine)
-        ? { ...candidate, exploration: true }
-        : mem?.items.find((x) => !x.private) || null;
-      return { self: usable, selfItems: mem?.items || [], selfPath: mem?.path || null };
+      const mem = readSelfMemory(tz, 8, now);
+      const avoid = explorationFeedbackHints(cfg, explorationStatus(exploration, persona), now).avoid;
+      const recentShareLines = new Set([
+        ...(st?.content?.lastShareLine ? [st.content.lastShareLine] : []),
+        ...(Array.isArray(st?.content?.recentShareLines) ? st.content.recentShareLines : []),
+      ].filter(Boolean));
+      const recentTopicCooldown = (section) => {
+        if (!section || !Array.isArray(st?.content?.recentShareTopics)) return false;
+        return st.content.recentShareTopics.some(
+          (entry) => entry?.topic === section && Number.isFinite(entry.at) && now >= entry.at && now - entry.at < 6 * 3_600_000,
+        );
+      };
+      let selfMiss = null;
+      const inspectCandidate = (candidate) => {
+        if (!candidate) return null;
+        const loginSent = candidate.loginSite && st?.content?.explorationLoginNotices?.includes(candidate.loginSite);
+        const discoverySent = candidate.discoveryId && st?.content?.sharedExplorationIds?.includes(candidate.discoveryId);
+        const avoided = !candidate.actionRetry && !candidate.loginSite && topicInExplorationFeedback(candidate.section, avoid);
+        const topicCool = !candidate.actionRetry && !candidate.loginSite && !candidate.discoveryId && recentTopicCooldown(candidate.section);
+        const head = String(candidate.line || '').slice(0, 80);
+        const usedAlready = candidate.actionRetry
+          ? candidate.at === st?.content?.lastRetryProposalAt
+          : recentShareLines.has(head);
+        if (avoided) { selfMiss ||= 'share_avoided'; return null; }
+        if (topicCool) { selfMiss ||= 'share_topic_cooldown'; return null; }
+        if (loginSent || discoverySent || usedAlready) { selfMiss ||= 'already_used'; return null; }
+        return { ...candidate, exploration: true };
+      };
+      const usableMemItem = mem?.items.find((x) => !x.private && !recentShareLines.has(String(x.line || '').slice(0, 80))) || null;
+      const rawExploreShare = explorationShare(exploration, persona, now, cfg?.exploration);
+      if (cfg?.exploration?.offerShare !== true && rawExploreShare) selfMiss = 'share_offer_off';
+      const usable = cfg?.exploration?.offerShare === true
+        ? inspectCandidate(actionProposalCandidate({ cfg, peer: chatPeer(cfg), now, state: exploration, persona })) ||
+          inspectCandidate(rawExploreShare) ||
+          usableMemItem
+        : usableMemItem;
+      return {
+        self: usable,
+        ...(usable ? {} : selfMiss ? { selfMiss } : {}),
+        selfItems: mem?.items || [],
+        selfPath: mem?.path || null,
+      };
     })(),
     send: { lastTs: lastSendTs, lastAgoSec: lastSendTs ? agoSec(now, lastSendTs) : null },
     // 最近真发出去的那几句：给 compose 做「别重复同一个句式」用

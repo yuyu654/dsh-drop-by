@@ -139,18 +139,21 @@ async function waitForOrdinaryReply({ peer, consumedAt, cfg, handler }) {
   }
 }
 
-export function incomingMatches({ peer, kind, text, bridgeText = text, at, incoming, cfg }) {
+export function incomingMatches({ peer, kind, text, bridgeText = text, at, incoming, cfg, internalSession }) {
   const value = (activeChatChannel(cfg) === 'qq' ? String(bridgeText || '').slice(0, 80) : String(bridgeText || '')).trim();
+  if (activeChatChannel(cfg) === 'internal') {
+    return kind === 'private' && Boolean(peer) && internalSession === String(peer) && Boolean(value);
+  }
   return incoming.peer === String(peer) && incoming.kind === kind &&
     incoming.ts === at && Boolean(incoming.observedAt) && String(incoming.text || '').trim() === value;
 }
 
-function readPendingForMessage({ peer, kind, text, bridgeText, at, cfg, now }) {
+function readPendingForMessage({ peer, kind, text, bridgeText, at, cfg, internalSession, now }) {
   const state = read();
   const pending = state.content?.pendingAction;
   if (!pending || (pending.channel || 'qq') !== activeChatChannel(cfg) || pending.peer !== String(peer) || kind !== 'private') return null;
   const { incoming, outgoing } = chatDialogue(cfg);
-  if (!incomingMatches({ peer, kind, text, bridgeText, at, incoming, cfg })) return null;
+  if (!incomingMatches({ peer, kind, text, bridgeText, at, incoming, cfg, internalSession })) return null;
   const window = proposalWindow({ pending, peer, kind, at, now, outgoing });
   if (window === 'ignore') return null;
   if (window === 'cancel' || !executor || !eligible(cfg, peer, now) || !callbackTransportReady(cfg)) {
@@ -167,9 +170,9 @@ export function pendingQqProposal(input) {
 }
 
 /** Refresh the marker and proposal after the model call. Claim before starting any work. */
-export function consumeQqAction({ peer, kind, text, bridgeText, at, cfg = loadConfig(), now = Date.now(), proposalId, route }) {
+export function consumeQqAction({ peer, kind, text, bridgeText, at, cfg = loadConfig(), internalSession, now = Date.now(), proposalId, route }) {
   if (!proposalId) return null;
-  const entry = readPendingForMessage({ peer, kind, text, bridgeText, at, cfg, now });
+  const entry = readPendingForMessage({ peer, kind, text, bridgeText, at, cfg, internalSession, now });
   if (!entry || entry.pending.id !== proposalId) return null;
   const { state, pending } = entry;
   const content = state.content;
@@ -224,12 +227,12 @@ function startQqTask({ peer, cfg, now, handler, run, canReport, command = false 
 let runningCommand = false;
 
 /** Recheck after model classification as a newer QQ message may have replaced the marker. */
-export function qqCommandPreflight({ peer, kind, text, bridgeText, at, cfg, now = Date.now() }) {
+export function qqCommandPreflight({ peer, kind, text, bridgeText, at, cfg, internalSession, now = Date.now() }) {
   if (cfg.rules?.qqCommands?.enabled !== true || kind !== 'private' || !qqTaskPeerEnabled(cfg, peer)) return 'disabled';
   if (!executor?.command || !callbackTransportReady(cfg)) return 'unavailable';
   const { incoming } = chatDialogue(cfg);
   const age = now - Number(at);
-  if (!incomingMatches({ peer, kind, text, bridgeText, at, incoming, cfg }) ||
+  if (!incomingMatches({ peer, kind, text, bridgeText, at, incoming, cfg, internalSession }) ||
       !(age >= 0 && age <= Number(cfg.rules?.qqCommands?.freshSec ?? 120) * 1000)) return 'unverified';
   const value = String(text || '').trim();
   const key = createHash('sha256').update(value).digest('hex');
@@ -238,8 +241,8 @@ export function qqCommandPreflight({ peer, kind, text, bridgeText, at, cfg, now 
 }
 
 /** The bridge provides a timestamp but no message id. Claim the same text and timestamp once on disk. */
-export function queueQqCommand({ cmd, peer, kind, text, bridgeText, at, cfg, now = Date.now() }) {
-  const status = qqCommandPreflight({ peer, kind, text, bridgeText, at, cfg, now });
+export function queueQqCommand({ cmd, peer, kind, text, bridgeText, at, cfg, internalSession, now = Date.now() }) {
+  const status = qqCommandPreflight({ peer, kind, text, bridgeText, at, cfg, internalSession, now });
   if (status !== 'ready') return status;
   const handler = executor;
   const state = read();

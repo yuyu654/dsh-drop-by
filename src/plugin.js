@@ -26,7 +26,7 @@ import path from 'node:path';
 import { loadConfig, saveConfig, loadState, CONFIG_PATH, LOG_DIR } from './config.js';
 import { tick, tickDueAgreement, tickQqContinuation, qqContinuationEnabled } from './engine.js';
 import { listAgreements, dueAgreement, dismissAgreement, flushAgreementIntake, pruneAgreements } from './agreements.js';
-import { applyExplorationFeedback, explorationFeedbackForUi, explorationFeedbackHints, consumeExplorationFeedback } from './exploration-feedback.js';
+import { applyExplorationFeedback, explorationFeedbackForUi, explorationFeedbackHints, consumeExplorationFeedback, topicInExplorationFeedback } from './exploration-feedback.js';
 import { createQqContinuation } from './qq-continuation.js';
 import { characterRestAt } from './character-rest.js';
 import { minutesOfDayOf } from './time.js';
@@ -35,8 +35,8 @@ import { busyNow, builtinYears, deepseekPeakStatus, offPeakNow } from './holiday
 import { calendarStatus, refreshCalendar } from './calendar.js';
 import { loadPersona } from './persona.js';
 import { exploreRound, explorationStatus, explorationMood, loadExploration, saveExploration } from './explore.js';
-import { makeHostLlm } from './hostllm.js';
-import { listForUi, explorationItemsForUi, channelItemsForUi, applyChange, saveSecret } from './settings.js';
+import { makeHostLlm, setHostLlmContext, refreshHostModelCatalog } from './hostllm.js';
+import { listForUi, explorationItemsForUi, channelItemsForUi, hiddenItemsForSearch, SEARCH_TAGS, applyChange, saveSecret } from './settings.js';
 import { detectSources, detectEmotionPortrait } from './detect.js';
 import { inspectEmotionPlugin, repairEmotionConfig, appendEmotionInbox, recordExplorationEmotion } from './emotion-sync.js';
 import { inspectMemory, mergeMemorySessions, restoreMemoryBackup } from './memorysource.js';
@@ -50,13 +50,17 @@ import { qqRolloverAdapter } from './qq-rollover-adapter.js';
 import { installQqPromptMerge, isBridgeManagedMessage } from './qq-debounce.js';
 import { executeQqCommand } from './qq-command.js';
 import { createExplorationMedia } from './explore-media.js';
+import {
+  registerExploreSource, registerMoodSource, registerMemorySource, registerTopicProvider,
+  listExtensions, listExploreSources, notifyExternalMoodMessage, shouldUseBuiltinEmotion, inspectActiveMood,
+} from './extensions.js';
 import { bridgeLastIn, bridgeLastOut } from './outbound.js';
 import { chatBinding, chatChanging, changePrimaryChannel, bindSharedSession, localApiOrigin, localChatApi, markChatBoot, readyDouyinBinding, switchState } from './channels/chat-switch.js';
 import { douyinPeer, douyinPeerName, douyinPrimary, pollDelayMs, readDouyinState, sendDouyinText, writeChatData } from './channels/douyin-im.js';
 import {
   bindInternalDispatcher, dispatchToHostSession, internalPrimary, internalSessionId,
-  isProactiveInternalText, listHostSessions, observeInternalEvent, readInternalState,
-  sendInternalMessage, sharedSessionId, syncInternalHistory, textFromContent,
+  isProactiveInternalText, listHostSessions, observeBoundSessionModel, observeInternalEvent, readInternalState,
+  sendInternalMessage, sharedSessionId, syncBoundSessionModel, syncInternalHistory, textFromContent,
 } from './channels/internal.js';
 import { createDouyinSession } from './channels/douyin-session.js';
 import { activeChatChannel, canReadChat, chatDialogue, chatPeer, emotionPeer } from './channels/external.js';
@@ -323,6 +327,7 @@ function summaryLine(r, ms) {
  */
 export function apply(ctx, config = {}) {
   const opt = { ...DEFAULTS, ...(config && typeof config === 'object' ? config : {}) };
+  setHostLlmContext(ctx);
   const log = makeLog(ctx);
   let controllerService, projectionsService, registryService, sessionsService, persistenceService;
   const sessionController = () => controllerService || serviceOf(ctx, 'sessionController');
@@ -337,6 +342,7 @@ export function apply(ctx, config = {}) {
   let continuationTimer = null;
   let exploring = false;
   let explorationToolsCtx = null;
+  let explorationWebCtx = null;
   let lastExploreAttempt = 0;
   const continuation = createQqContinuation();
   const rolloverFile = path.join(path.dirname(CONFIG_PATH), 'data', 'session-handoff.json');
@@ -390,7 +396,7 @@ export function apply(ctx, config = {}) {
     },
     async prepare({ cfg, peer, text, at, items }) {
       const context = await buildReplyContext(ctx, { cfg, peer, kind: 'private', text, at, bridgeText: items.at(-1)?.text,
-        messageTimes: items.map(item => item.ts), observed: true });
+        messageTimes: items.map(item => item.ts), directionTurns: items.slice(0, -1), observed: true });
       const clip = items.findLast(item => item.item);
       let video = '';
       if (clip && cfg.content?.forward?.enabled !== false) {
@@ -407,7 +413,8 @@ export function apply(ctx, config = {}) {
         '</external_reply_context>'].filter(Boolean).join('\n');
     },
     onSent: ({ cfg, peer, text, at }) => {
-      if (cfg.exploration?.portrait === true) appendEmotionInbox({ user: emotionPeer(cfg), role: 'ai', text, t: at });
+      if (shouldUseBuiltinEmotion(cfg, at)) appendEmotionInbox({ user: emotionPeer(cfg), role: 'ai', text, t: at });
+      notifyExternalMoodMessage({ peer: emotionPeer(cfg), role: 'ai', text, at, channel: 'douyin', cfg });
     },
   });
   let ticks = 0;
@@ -421,9 +428,9 @@ export function apply(ctx, config = {}) {
   };
 
   /** 现在的生成器：优先宿主模型，不可用就返回 null（让 compose 走 llm.js 那条老路）。 */
-  function llmNow(cfg, { quiet = false } = {}) {
+  function llmNow(cfg, { quiet = false, forExploration = false } = {}) {
     if (opt.hostLlm === false) return { ready: false, reason: 'HOST_LLM_OFF' };
-    const h = makeHostLlm(ctx, { cfg, log: quiet ? undefined : log.warn });
+    const h = makeHostLlm(ctx, { cfg, log: quiet ? undefined : log.warn, forExploration });
     if (!h.ready) return h;
     return h;
   }
@@ -525,18 +532,29 @@ export function apply(ctx, config = {}) {
         cfg.rules?.actionGate?.enabled !== true || cfg.exploration.web !== true)) return { ok: false, reason: 'STALE_RETRY' };
     const interval = Math.max(30, Number(cfg.exploration.intervalMinutes) || 180) * 60_000;
     if (!manual && now - Math.max(lastExploreAttempt, status.lastAt || 0) < interval) return { ok: false, reason: 'NOT_DUE' };
-    const host = llmNow(cfg);
+    const host = llmNow(cfg, { forExploration: true });
     if (!host.ready) return { ok: false, reason: host.reason || 'HOST_LLM_MISSING' };
     const explicitTopic = String(manualTopic || '').trim();
     const configuredTopic = String(cfg.exploration?.nextTopic || '').trim();
     const focusTopic = requestedResearch ? '' : (explicitTopic || (!retry ? configuredTopic : ''));
-    const feedback = focusTopic || retry || requestedResearch ? null : explorationFeedbackHints(cfg, status, now);
+    const initialFeedback = retry || requestedResearch ? null : explorationFeedbackHints(cfg, status, now);
+    const feedback = focusTopic ? null : initialFeedback;
     exploring = true;
     lastExploreAttempt = now;
     try {
       const media = createExplorationMedia({ timing: cfg.exploration,
-        tools: serviceOf(explorationToolsCtx || ctx, 'tools'), web: cfg.exploration.web === true, video: cfg.exploration.video === true,
+        tools: serviceOf(explorationToolsCtx || ctx, 'tools'),
+        webService: serviceOf(explorationWebCtx || explorationToolsCtx || ctx, 'web'),
+        web: cfg.exploration.web === true, video: cfg.exploration.video === true,
+        extraTools: cfg.exploration.extraTools || '',
+        exploreSources: listExploreSources(),
         observeVideo: host.observeVideo,
+        saveImage: host.saveImage,
+        browseMode: cfg.exploration?.browseMode || 'vision_light',
+        browseMaxSteps: cfg.exploration?.browseMaxSteps ?? 40,
+        edgePort: cfg.content?.forward?.edgePort ?? 9223,
+        edgeAutostart: cfg.content?.forward?.edgeAutostart !== false,
+        edgeScript: cfg.content?.forward?.edgeScript || '',
         watchDouyin: (id) => watchVideo(id, { cfg, host, llm: host.generate, ctx: explorationToolsCtx || ctx }),
       });
       const minuteNow = minutesOfDayOf(now, cfg.timezone);
@@ -553,15 +571,24 @@ export function apply(ctx, config = {}) {
         log.warn(`自主探索未完成：${r.reason || 'UNKNOWN'}${r.note ? `（${r.note}）` : ''}`);
         return r;
       }
+      const freshTopic = String(fresh.exploration?.nextTopic || '').trim();
+      if (focusTopic && !explicitTopic && freshTopic !== configuredTopic) return { ok: false, reason: 'CANCELLED' };
+      if (initialFeedback && r.action !== 'skip') {
+        const completed = [r.state.thread, r.state.leisure, r.state.light].find(entry => entry?.at === now);
+        if (completed && !topicInExplorationFeedback(completed.topic, initialFeedback.avoid) &&
+            topicInExplorationFeedback(completed.topic, explorationFeedbackHints(fresh, status).avoid)) {
+          return { ok: false, reason: 'CANCELLED' };
+        }
+      }
       saveExploration(r.state);
       if (r.action !== 'skip') consumeExplorationFeedback(fresh, feedback);
       // 仅在「近一轮探索主题」确实在本轮产生非跳过结果后自动消费清空，避免用户误卡死未来探索。
-      if (focusTopic && r.action !== 'skip' && String(fresh.exploration?.nextTopic || '').trim() === focusTopic) {
+      if (focusTopic && r.action !== 'skip' && freshTopic === focusTopic) {
         saveConfig({ ...fresh, exploration: { ...fresh.exploration, nextTopic: '' } });
       }
       if (r.action !== 'skip') {
         const explorationText = recordExplorationEmotion({ state: r.state, cfg: fresh });
-        if (explorationText && fresh.exploration?.portrait === true && emotionPeer(fresh) && host.ready) {
+        if (explorationText && shouldUseBuiltinEmotion(fresh, now) && emotionPeer(fresh) && host.ready) {
           await updatePortraitMood({
             cfg: fresh,
             persona,
@@ -589,7 +616,9 @@ export function apply(ctx, config = {}) {
     command: (cmd, cfg) => executeQqCommand({
       cmd, cfg,
       media: cmd.type === 'explore_query' ? createExplorationMedia({
-        tools: serviceOf(explorationToolsCtx || ctx, 'tools'), web: cfg.exploration.web === true, timing: cfg.exploration,
+        tools: serviceOf(explorationToolsCtx || ctx, 'tools'),
+        webService: serviceOf(explorationWebCtx || explorationToolsCtx || ctx, 'web'),
+        web: cfg.exploration.web === true, timing: cfg.exploration,
       }) : null,
       explore: (request) => runExploration(true, null, null, request),
       state: loadExploration, persona: () => loadPersona({ cfg }),
@@ -797,8 +826,9 @@ export function apply(ctx, config = {}) {
         },
         detect: detectSources(cfg),
       },
-      emotion: { ...detectEmotionPortrait(), ...inspectEmotionPlugin({ cfg }) },
+      emotion: inspectActiveMood({ cfg, peer: emotionPeer(cfg), baseEmotion: { ...detectEmotionPortrait(), ...inspectEmotionPlugin({ cfg }) } }),
       memory: inspectMemory({ cfg }),
+      extensions: listExtensions(),
       rollovers: pendingRollovers(rolloverFile, rolloverAdapter),
     };
   }
@@ -854,15 +884,18 @@ export function apply(ctx, config = {}) {
     if (r.secret) {
       const s = saveSecret(r.path, r.value);
       if (!s.ok) return { ok: false, error: s.error };
+      const secCfg = loadConfig();
       return {
         ok: true,
         path: r.path,
         value: '',
         secret: true,
         notes: ['授权码已存进 credentials.json（界面上只显示「已设置」，不会再显示出来）'],
-        groups: listForUi(loadConfig()),
-        explorationItems: explorationItemsForUi(loadConfig()),
-        channelItems: channelItemsForUi(loadConfig()),
+        groups: listForUi(secCfg),
+        explorationItems: explorationItemsForUi(secCfg),
+        channelItems: channelItemsForUi(secCfg),
+        hiddenItems: hiddenItemsForSearch(secCfg),
+        searchTags: SEARCH_TAGS,
         state: snapshot(),
       };
     }
@@ -943,7 +976,18 @@ export function apply(ctx, config = {}) {
       schedule(intervalMs());
     }
     const latestCfg = loadConfig();
-    return { ok: true, path: r.path, value: r.value, notes, groups: listForUi(latestCfg), explorationItems: explorationItemsForUi(latestCfg), channelItems: channelItemsForUi(latestCfg), state: snapshot() };
+    return {
+      ok: true,
+      path: r.path,
+      value: r.value,
+      notes,
+      groups: listForUi(latestCfg),
+      explorationItems: explorationItemsForUi(latestCfg),
+      channelItems: channelItemsForUi(latestCfg),
+      hiddenItems: hiddenItemsForSearch(latestCfg),
+      searchTags: SEARCH_TAGS,
+      state: snapshot(),
+    };
   }
 
   // ---------------------------------------------------------------- 可选：状态接口
@@ -980,8 +1024,22 @@ export function apply(ctx, config = {}) {
               try {
                 if (route === '/state' && (req.method || 'GET') === 'GET') return json(200, snapshot());
                 if (route === '/config' && (req.method || 'GET') === 'GET') {
+                  await refreshHostModelCatalog(ctx).catch(() => {});
+                  if (sharedSessionId()) {
+                    await syncBoundSessionModel({
+                      sessionId: sharedSessionId(), sessions: sessionsHost(), controller: sessionController(), persistence: sessionPersistence(),
+                    }).catch(() => {});
+                  }
                   const curCfg = loadConfig();
-                  return json(200, { ok: true, path: CONFIG_PATH, groups: listForUi(curCfg), explorationItems: explorationItemsForUi(curCfg), channelItems: channelItemsForUi(curCfg) });
+                  return json(200, {
+                    ok: true,
+                    path: CONFIG_PATH,
+                    groups: listForUi(curCfg),
+                    explorationItems: explorationItemsForUi(curCfg),
+                    channelItems: channelItemsForUi(curCfg),
+                    hiddenItems: hiddenItemsForSearch(curCfg),
+                    searchTags: SEARCH_TAGS,
+                  });
                 }
                 if (route === '/config' && req.method === 'POST') {
                   return json(200, await saveFromBody(req));
@@ -1042,14 +1100,37 @@ export function apply(ctx, config = {}) {
                     return json(400, { ok: false, error: '缺少有效的条目标识' });
                   }
                   const cfg = loadConfig();
-                  if (route === '/exploration/feedback' && !['more', 'change', 'pause', 'delete'].includes(body.action)) {
+                  if (route === '/exploration/feedback' && !['more', 'change', 'pause', 'clear', 'delete'].includes(body.action)) {
                     return json(400, { ok: false, error: '未知的探索反馈操作' });
                   }
                   const changed = route === '/agreements/dismiss' ? dismissAgreement(body.id, cfg)
                     : applyExplorationFeedback({ id: body.id, action: body.action, cfg,
                       status: explorationStatus(loadExploration(), loadPersona({ cfg })) });
                   if (!changed) return json(409, { ok: false, error: '条目已变化，请刷新后再试。' });
-                  return json(200, { ok: true, state: snapshot() });
+                  if (route === '/exploration/feedback' && ['change', 'pause'].includes(body.action)) {
+                    const avoid = explorationFeedbackHints(cfg, explorationStatus(loadExploration(), loadPersona({ cfg }))).avoid;
+                    const clearNext = Boolean(cfg.exploration?.nextTopic && topicInExplorationFeedback(cfg.exploration.nextTopic, avoid));
+                    const clearInterest = Boolean(cfg.exploration?.interest && topicInExplorationFeedback(cfg.exploration.interest, avoid));
+                    if (clearNext || clearInterest) {
+                      saveConfig({
+                        ...cfg,
+                        exploration: {
+                          ...cfg.exploration,
+                          ...(clearNext ? { nextTopic: '' } : {}),
+                          ...(clearInterest ? { interest: '' } : {}),
+                        },
+                      });
+                    }
+                  }
+                  const notes = {
+                    more: '已标记「想多听听」，后续会优先关注这个方向',
+                    change: '已标记「换个方向」，下轮探索将避开这个主题',
+                    pause: '已标记「先放着」，近期不再主动展开这个主题',
+                    clear: '已取消该反馈标记',
+                    delete: '已移除该好奇候选',
+                  };
+                  const note = route === '/agreements/dismiss' ? '已忽略该约定' : (notes[body.action] || '已更新');
+                  return json(200, { ok: true, note, state: snapshot() });
                 }
                 if (route === '/explore' && req.method === 'POST') {
                   let body = {};
@@ -1220,12 +1301,19 @@ export function apply(ctx, config = {}) {
     whenService(ctx, 'webServer', mountApi, log);
   }
 
-  // The scheduler and settings route also need the optional tools service.
+  // The scheduler and settings route also need the optional tools and web services.
   if (opt.enabled !== false) whenService(ctx, 'tools', (c) => {
     if (!serviceOf(c, 'tools')) return;
     explorationToolsCtx = c;
     if (typeof c?.effect === 'function') c.effect(() => () => {
       if (explorationToolsCtx === c) explorationToolsCtx = null;
+    });
+  }, log);
+  if (opt.enabled !== false) whenService(ctx, 'web', (c) => {
+    if (!serviceOf(c, 'web')) return;
+    explorationWebCtx = c;
+    if (typeof c?.effect === 'function') c.effect(() => () => {
+      if (explorationWebCtx === c) explorationWebCtx = null;
     });
   }, log);
 
@@ -1395,15 +1483,36 @@ export function apply(ctx, config = {}) {
   }
 
   const releases = new Map();
+  let releaseModelObserver = null;
+  let releaseAdaptersObserver = null;
+  if (opt.enabled !== false && typeof ctx.on === 'function') {
+    try {
+      releaseModelObserver = ctx.on('session/event', (session, event) => {
+        if (!disposed && session?.id) observeBoundSessionModel(session, event);
+      });
+    } catch { /* host may not emit session/event */ }
+    try {
+      releaseAdaptersObserver = ctx.on('llm/adapters-updated', () => {
+        if (!disposed) void refreshHostModelCatalog(ctx).catch(() => {});
+      });
+    } catch { /* host may not emit llm/adapters-updated */ }
+  }
   if (opt.enabled !== false) {
+    whenService(ctx, 'llm', (c) => { void refreshHostModelCatalog(c || ctx).catch(() => {}); }, log);
     whenService(ctx, 'sessionProjections', (c) => { projectionsService = serviceOf(c, 'sessionProjections'); }, log);
     whenService(ctx, 'workspaceRegistry', (c) => { registryService = serviceOf(c, 'workspaceRegistry'); }, log);
     whenService(ctx, 'sessions', (c) => {
       sessionsService = serviceOf(c, 'sessions');
-      if (internalPrimary(loadConfig()) && sharedSessionId()) {
-        void syncInternalHistory({
-          sessionId: sharedSessionId(), sessions: sessionsService, controller: sessionController(), persistence: sessionPersistence(),
-        }).catch(() => {});
+      if (sharedSessionId()) {
+        if (internalPrimary(loadConfig())) {
+          void syncInternalHistory({
+            sessionId: sharedSessionId(), sessions: sessionsService, controller: sessionController(), persistence: sessionPersistence(),
+          }).catch(() => {});
+        } else {
+          void syncBoundSessionModel({
+            sessionId: sharedSessionId(), sessions: sessionsService, controller: sessionController(), persistence: sessionPersistence(),
+          }).catch(() => {});
+        }
       }
     }, log);
     whenService(ctx, 'sessionPersistence', (c) => {
@@ -1459,9 +1568,10 @@ export function apply(ctx, config = {}) {
             const rawText = idx >= 0 ? payload.content[idx].text : textFromContent(payload.content);
             const trimmed = String(rawText || '').trim();
             if (trimmed && !isProactiveInternalText(trimmed) &&
+                payload.source?.plugin !== name && payload.source?.proactive !== true &&
                 !trimmed.startsWith('<qq_reply_context>') && !trimmed.startsWith('<external_reply_context>')) {
               const context = await buildReplyContext(ctx, {
-                cfg, peer: sid, kind: 'private', text: trimmed, at: Date.now(), observed: false,
+                cfg, peer: sid, internalSession: sid, kind: 'private', text: trimmed, at: Date.now(), observed: false,
               });
               if (context) {
                 const content = payload.content.slice();
@@ -1540,6 +1650,11 @@ export function apply(ctx, config = {}) {
     snapshot,
     runOnce,
     runExploration: () => runExploration(false),
+    registerExploreSource,
+    registerMoodSource,
+    registerMemorySource,
+    registerTopicProvider,
+    listExtensions,
     stop() {
       disposed = true;
       releaseActionExecutor();
@@ -1547,6 +1662,10 @@ export function apply(ctx, config = {}) {
       douyin.stop();
       for (const release of releases.values()) release();
       releases.clear();
+      if (typeof releaseModelObserver === 'function') releaseModelObserver();
+      releaseModelObserver = null;
+      if (typeof releaseAdaptersObserver === 'function') releaseAdaptersObserver();
+      releaseAdaptersObserver = null;
       if (timer) clearTimeout(timer);
       if (continuationTimer) clearTimeout(continuationTimer);
       timer = null;

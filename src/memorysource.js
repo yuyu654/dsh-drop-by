@@ -8,6 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { dshHome } from './detect.js';
+import { getRegisteredMemorySource, listRegisteredMemorySources, readRegisteredMemorySource } from './extensions.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 const SKIP_JSON_FILES = new Set(['package.json', 'package-lock.json', 'tsconfig.json', 'config.json', 'state.json']);
@@ -610,12 +611,24 @@ export function readMemory({ cfg, now = Date.now() } = {}) {
   const c = memoryCfg(cfg);
   const plugin = String(c.plugin || 'fish-memory');
   if (c.enabled === false) return { ok: false, plugin, reason: 'MEMORY_OFF', items: [] };
+  const max = Math.min(8, Math.max(1, Number(c.max) || 3));
+  if (getRegisteredMemorySource(plugin)) {
+    return readRegisteredMemorySource(plugin, { cfg, now, limit: max });
+  }
   const resolved = resolveMemoryAdapter(cfg);
   if (!resolved) return { ok: false, plugin, reason: 'MEMORY_PLUGIN_UNKNOWN', items: [] };
 
   const { adapter, resolved: resolvedPlugin, dir } = resolved;
   const sessions = adapter.list(dir, cfg);
-  if (!sessions.length) return { ok: false, plugin, resolvedPlugin, dir, reason: 'MEMORY_EMPTY', items: [] };
+  if (!sessions.length) {
+    if (plugin === 'auto') {
+      for (const ext of listRegisteredMemorySources()) {
+        const res = readRegisteredMemorySource(ext.id, { cfg, now, limit: max });
+        if (res?.ok) return { ...res, plugin: 'auto' };
+      }
+    }
+    return { ok: false, plugin, resolvedPlugin, dir, reason: 'MEMORY_EMPTY', items: [] };
+  }
 
   const parsedCache = new Map();
   const loadOne = (file) => {
@@ -629,7 +642,6 @@ export function readMemory({ cfg, now = Date.now() } = {}) {
   const picked = sel.picked;
   const mode = sel.mode;
 
-  const max = Math.min(8, Math.max(1, Number(c.max) || 3));
   const maxAgeDays = Math.min(3650, Math.max(1, Number(c.maxAgeDays) || 120));
   const horizon = now - maxAgeDays * DAY;
 
@@ -696,12 +708,61 @@ export function memoryLine(mem) {
 export function inspectMemory({ cfg, now = Date.now() } = {}) {
   const c = memoryCfg(cfg);
   const plugin = String(c.plugin || 'fish-memory');
-  const resolved = resolveMemoryAdapter(cfg);
+  const directExt = getRegisteredMemorySource(plugin);
+  const mem = readMemory({ cfg, now });
+  const resolved = directExt ? null : resolveMemoryAdapter(cfg);
   const adapter = resolved?.adapter || null;
-  const resolvedPlugin = resolved?.resolved || plugin;
+  const resolvedPlugin = directExt ? plugin : (mem.resolvedPlugin || resolved?.resolved || plugin);
   const dir = resolved?.dir || '';
   const supportsMerge = Boolean(adapter?.supportsMerge);
   const sessions = adapter ? adapter.list(dir, cfg) : [];
+  const autoExt = !directExt && plugin === 'auto' && !sessions.length
+    ? getRegisteredMemorySource(mem.resolvedPlugin || listRegisteredMemorySources()[0]?.id)
+    : null;
+  const activeExt = directExt || autoExt;
+
+  if (activeExt) {
+    const rawNames = Array.isArray(mem.files) && mem.files.length ? mem.files : [activeExt.label || activeExt.id];
+    const items = Array.isArray(mem.items) ? mem.items : [];
+    const extFiles = rawNames.map((fname, idx) => ({
+      id: idx === 0 ? activeExt.id : `${activeExt.id}:${idx}`,
+      name: String(fname),
+      kind: 'extension',
+      session: activeExt.id,
+      mtime: now,
+      bytes: 0,
+      count: items.length,
+      stableCount: items.filter((m) => m.category === 'stable_profile').length,
+      sample: items.slice(0, 2).map((m) => String(m.text).replace(/\s+/g, ' ').trim().slice(0, 38)).filter(Boolean),
+      hasBackup: false,
+    }));
+    const extLabel = plugin === 'auto'
+      ? `自动识别 → ${activeExt.label}（${activeExt.id}）`
+      : `${activeExt.label}（${activeExt.id}）`;
+    return {
+      ok: true,
+      enabled: c.enabled !== false,
+      plugin,
+      resolvedPlugin: activeExt.id,
+      label: extLabel,
+      supportsMerge: false,
+      dir: '',
+      sessionSetting: String(c.session || '').trim(),
+      active: {
+        ok: Boolean(mem.ok),
+        mode: mem.mode || 'extension',
+        files: Array.isArray(mem.files) ? mem.files : [],
+        count: items.length,
+        reason: mem.reason || '',
+      },
+      files: extFiles,
+      defaultTarget: '',
+      mergeTarget: '',
+      mergeableSessions: 0,
+      mergePreview: null,
+    };
+  }
+
   const files = sessions.map((s) => {
     const entries = adapter.readItems(s.file) || [];
     return {
@@ -717,7 +778,6 @@ export function inspectMemory({ cfg, now = Date.now() } = {}) {
       hasBackup: supportsMerge && s.kind === 'workspace' && fs.existsSync(`${s.file}.bak-before-merge`),
     };
   });
-  const mem = readMemory({ cfg, now });
   const wsFiles = supportsMerge ? files.filter((f) => f.kind === 'workspace') : [];
   const defaultTarget = (wsFiles.find((f) => f.count > 0) || wsFiles[0] || null)?.name || '';
   const selectedWs = wsFiles.find((f) => f.name === c.session || f.id === c.session) || null;
@@ -726,12 +786,15 @@ export function inspectMemory({ cfg, now = Date.now() } = {}) {
   const preview = supportsMerge && mergeTarget && mergeableSessions > 0
     ? mergeMemorySessions({ cfg, targetFile: mergeTarget, dryRun: true })
     : null;
+  const label = plugin === 'auto' && adapter?.label
+    ? `自动识别 → ${adapter.label}`
+    : (adapter?.label || plugin);
   return {
     ok: true,
     enabled: c.enabled !== false,
     plugin,
     resolvedPlugin,
-    label: adapter?.label || plugin,
+    label,
     supportsMerge,
     dir: dir || '',
     sessionSetting: String(c.session || '').trim(),
@@ -754,11 +817,24 @@ export function detectMemory(cfg) {
   const c = memoryCfg(cfg);
   const plugin = String(c.plugin || 'fish-memory');
   if (c.enabled === false) return { ready: false, plugin, note: '记忆读取已关' };
+  const ext = getRegisteredMemorySource(plugin);
+  if (ext) {
+    const res = readRegisteredMemorySource(plugin, { cfg, limit: Math.min(8, Math.max(1, Number(c.max) || 3)) });
+    return res?.ok
+      ? { ready: true, plugin, resolvedPlugin: plugin, count: res.items.length, note: `${ext.label}（扩展 · ${res.items.length} 条）` }
+      : { ready: false, plugin, resolvedPlugin: plugin, note: `${ext.label}（扩展 · 暂无记忆）` };
+  }
   const resolved = resolveMemoryAdapter(cfg);
   if (!resolved) return { ready: false, plugin, note: `未识别的记忆插件「${plugin}」` };
   const { adapter, resolved: resolvedPlugin, dir } = resolved;
   const files = adapter.list(dir, cfg);
   if (!files.length) {
+    if (plugin === 'auto') {
+      for (const item of listRegisteredMemorySources()) {
+        const res = readRegisteredMemorySource(item.id, { cfg, limit: 3 });
+        if (res?.ok) return { ready: true, plugin, resolvedPlugin: item.id, count: res.items.length, note: `自动命中 ${item.label}（扩展 · ${res.items.length} 条）` };
+      }
+    }
     return { ready: false, plugin, resolvedPlugin, note: `${adapter.label}（未找到记忆文件）` };
   }
   const tag = plugin === 'auto' ? `自动命中 ${adapter.label}` : adapter.label;

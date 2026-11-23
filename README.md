@@ -10,7 +10,7 @@
 
 TA 会沿用你设定的人设、拥有自己的作息与自主探索兴趣，在合适的时机主动聊两句，也懂得在你忙碌或想结束话题时安静收尾。
 
-[快速开始](#quick-start) · [三通道共用会话](#chat-channels) · [自主探索](#exploration) · [角色作息与节奏](#persona-memory) · [鱼鱼状态](./docs/fish-condition.md) · [更新日志](./CHANGELOG.md) · [常见问题](#faq) · [Releases](https://github.com/yuyu654/dsh-drop-by/releases)
+[快速开始](#quick-start) · [三通道共用会话](#chat-channels) · [自主探索](#exploration) · [角色作息与节奏](#persona-memory) · [扩展接入](./docs/EXTENSIONS.md) · [鱼鱼状态](./docs/fish-condition.md) · [更新日志](./CHANGELOG.md) · [常见问题](#faq) · [Releases](https://github.com/yuyu654/dsh-drop-by/releases)
 
 > 早期测试版本：内部会话可零前置开箱使用；QQ（本机验证组合 `dsh-plugin-qq-bridge` + `snowluma`）、抖音私信、网页/视频探索、记忆、情绪和手机感知均可按需开启。
 

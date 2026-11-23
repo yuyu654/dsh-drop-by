@@ -34,21 +34,36 @@ test('首屏日常组保持精简清爽（其余组分类折叠）', () => {
     assert.ok(g.summary, `${name} 应该带概括人话摘要`);
   }
   const stickyPaths = groups.find((x) => x.name === '决定TA粘不粘人').items.map((i) => i.path);
-  for (const p of ['rules.dailyCap', 'rules.minGapMin', 'rules.adaptiveGap', 'rules.qqContinuation', 'rules.feedback.enabled', 'rules.judge.enabled', 'rules.chitchat.enabled', 'rules.gapByTier.enabled', 'rules.naturalTriggers.enabled']) {
+  for (const p of ['rules.dailyCap', 'rules.minGapMin', 'content.topics.shareGapMin', 'rules.closingCooldownMin', 'rules.adaptiveGap', 'rules.qqContinuation', 'rules.feedback.enabled', 'rules.judge.enabled', 'rules.chitchat.enabled', 'rules.gapByTier.enabled', 'rules.naturalTriggers.enabled']) {
     assert.ok(stickyPaths.includes(p), `决定TA粘不粘人组里要有 ${p}`);
   }
   const offExp = cfg();
-  offExp.exploration = { ...offExp.exploration, auto: false };
+  offExp.exploration = { ...offExp.exploration, auto: false, browseMode: 'vision_light' };
   assert.deepEqual(
     explorationItemsForUi(offExp).map((i) => i.path),
-    ['exploration.auto', 'exploration.mode', 'exploration.bias', 'exploration.nextTopic', 'exploration.interest', 'exploration.offerShare']
+    ['exploration.auto', 'exploration.mode', 'exploration.model', 'exploration.bias', 'exploration.browseMode', 'exploration.nextTopic', 'exploration.interest', 'exploration.offerShare']
   );
   const autoExp = cfg();
-  autoExp.exploration = { ...autoExp.exploration, auto: true };
+  autoExp.exploration = { ...autoExp.exploration, auto: true, browseMode: 'vision_light' };
   assert.deepEqual(
     explorationItemsForUi(autoExp).map((i) => i.path),
-    ['exploration.auto', 'exploration.mode', 'exploration.bias', 'exploration.intervalMinutes', 'exploration.offPeakOnly', 'exploration.nextTopic', 'exploration.interest', 'exploration.offerShare']
+    ['exploration.auto', 'exploration.mode', 'exploration.model', 'exploration.bias', 'exploration.browseMode', 'exploration.intervalMinutes', 'exploration.offPeakOnly', 'exploration.nextTopic', 'exploration.interest', 'exploration.offerShare']
   );
+  const browserExp = cfg();
+  browserExp.exploration = { ...browserExp.exploration, auto: false, browseMode: 'browser_agent' };
+  const browserItems = explorationItemsForUi(browserExp);
+  const biasIdx = browserItems.findIndex((i) => i.path === 'exploration.bias');
+  assert.equal(browserItems[biasIdx + 1].path, 'exploration.browseMode');
+  assert.equal(browserItems[biasIdx + 2].path, 'exploration.browseMaxSteps');
+  assert.equal(browserItems[biasIdx + 2].value, 40);
+  assert.match(browserItems[biasIdx + 1].hint, /调网站浏览（会消耗更多 token）/);
+  const lightBrowseItem = explorationItemsForUi(offExp).find((i) => i.path === 'exploration.browseMode');
+  assert.match(lightBrowseItem.hint, /轻量看图/);
+  assert.equal(explorationItemsForUi(offExp).some((i) => i.path === 'exploration.browseMaxSteps'), false);
+  const nextTopicItem = explorationItemsForUi(offExp).find((i) => i.path === 'exploration.nextTopic');
+  const interestItem = explorationItemsForUi(offExp).find((i) => i.path === 'exploration.interest');
+  assert.match(nextTopicItem.hint, /建议一次只填一个主题/);
+  assert.match(interestItem.hint, /多个主题可用换行、顿号或逗号分隔/);
   for (const p of explorationItemsForUi(autoExp).map((i) => i.path)) {
     assert.ok(!daily.items.some((i) => i.path === p), `日常里不再重复出现 ${p}`);
   }
@@ -179,9 +194,9 @@ test('所有从属子项跟随对应主功能开关显隐（日常、内容、�
   assert.equal(has(noMailOrPhone, 'mail.user'), true);
 
   const restCfg = cfg();
+  assert.equal(has(restCfg, 'characterRest.adapt'), false);
   assert.equal(has(restCfg, 'characterRest.adaptDays'), false);
-  restCfg.characterRest = { ...restCfg.characterRest, adapt: true };
-  assert.equal(has(restCfg, 'characterRest.adaptDays'), true);
+  assert.equal(has(restCfg, 'characterRest.adaptMaxMin'), false);
   for (const mode of ['light', 'deep']) {
     const config = cfg();
     config.exploration = { ...config.exploration, mode };

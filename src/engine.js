@@ -54,6 +54,7 @@ import { runQqContinuation } from "./qq-continuation.js";
 import { explorationMood, loadExploration, styleApprovedDraft, toneOf } from "./explore.js";
 import { portraitMood } from "./emotion-portrait.js";
 import { readPortraitMoodMap } from "./emotion-sync.js";
+import { resolveCombinedMood, notifyExternalMoodMessage, shouldUseBuiltinEmotion } from "./extensions.js";
 import { isBridgeManagedMessage } from './qq-debounce.js';
 import { isHandledActionMessage, prepareActionProposal, RETRY_QUESTION } from './action-proposal.js';
 import { publicExplorationUrl } from "./explore-media.js";
@@ -104,9 +105,10 @@ function resolveMoodState({ cfg, persona, now }) {
   const portraitFull = cfg.exploration?.portrait === true
     ? readPortraitMoodMap({ peer: emotionPeer(cfg), now })
     : '';
-  const portrait = portraitFull
+  const basePortrait = portraitFull
     ? (portraitShort && !portraitFull.includes(portraitShort) ? `${portraitFull}；即时心情：${portraitShort}` : portraitFull)
     : portraitShort;
+  const portrait = resolveCombinedMood({ basePortrait, peer: emotionPeer(cfg), now, cfg });
   return { explored, portrait };
 }
 
@@ -850,7 +852,10 @@ export async function tick({
         d.decision = 'skip';
         d.reason = r.dryRun ? 'SEND_DISABLED' : deliveryReason || 'SEND_FAILED';
       }
-      if (delivered) st.lastRealSendAt = now;
+      if (delivered) {
+        st.lastRealSendAt = now;
+        notifyExternalMoodMessage({ peer: emotionPeer(cfg), role: 'ai', text: content.text, at: r.sentAt || now, channel, cfg });
+      }
       if (!r.dryRun && (delivered || r.parts > 0) && d.track === 'proactive') {
         noteProactive(st, topic, { channel, peer: to, at: r.sentAt || Date.now() });
       }
@@ -860,7 +865,7 @@ export async function tick({
       }
       if (delivered && (channel === 'douyin' || channel === 'internal')) {
         recordActionOutbound({ peer, proposal: actionProposal, firstAt: r.firstAt, sentAt: r.sentAt, cfg });
-        if (cfg.exploration?.portrait === true) appendEmotionInbox({ user: emotionPeer(cfg), role: 'ai', text: content.text, t: r.sentAt });
+        if (shouldUseBuiltinEmotion(cfg, r.sentAt || now)) appendEmotionInbox({ user: emotionPeer(cfg), role: 'ai', text: content.text, t: r.sentAt });
       }
       // 真发出去了才记待回：dryRun 与失败都不算，否则反馈会被假数据污染
       if (delivered && topic?.slot === 'projectCheckIn') recordProjectQuestion(cfg, st, Date.now());
@@ -881,6 +886,10 @@ export async function tick({
         if (topic.slot === 'examReview') st.content.lastExamReview = topic.evidence?.key;
         // 追问：同一条（同一条消息 / 同一个视频）只问一次
         if (topic.slot === 'noReply') st.content.lastNoReplyFor = topic.evidence?.key;
+        // 外部扩展由头：按 dedupKey 去重
+        if (topic.evidence?.external && topic.evidence?.dedupKey) {
+          st.content.extTopicDedup = { ...(st.content.extTopicDedup || {}), [topic.slot]: topic.evidence.dedupKey };
+        }
       }
     }
   }
@@ -1072,7 +1081,17 @@ export async function tick({
     }
     if (topic?.slot === 'share') {
       st.content.lastShareAt = now;
-      st.content.lastShareLine = String(ctx?.self?.line || '').slice(0, 80);
+      const shareHead = String(ctx?.self?.line || '').slice(0, 80);
+      st.content.lastShareLine = shareHead;
+      if (shareHead) {
+        st.content.recentShareLines = [...new Set([...(st.content.recentShareLines || []), shareHead])].slice(-24);
+      }
+      if (!useSim && ctx?.self?.section && !topic.evidence?.actionRetry && !topic.evidence?.loginSite) {
+        st.content.recentShareTopics = [
+          ...(st.content.recentShareTopics || []).filter((x) => x?.topic && x.topic !== ctx.self.section),
+          { topic: ctx.self.section, at: now },
+        ].slice(-16);
+      }
       if (!useSim && delivery?.ok && actionProposal) st.content.lastRetryProposalAt = topic.evidence?.at;
       if (!useSim && delivery?.ok && topic.evidence?.discoveryId) {
         st.content.sharedExplorationIds = [...new Set([

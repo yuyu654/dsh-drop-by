@@ -181,3 +181,12 @@ test('pendingRollovers exposes binding metadata and dismissRollover hides dismis
   assert.equal(dismissRollover(f.base.file, old.id), true);
   assert.equal(dismissRollover(f.base.file, 'missing-session'), false);
 });
+
+test('effective window cap triggers rollover around 96k tokens even when a 1M-context plugin inflates contextWindow', async (t) => {
+  const f = fixture(t);
+  f.setPressure({ projectedTokens: 96_000, contextWindow: 1_000_000 });
+  const rollover = createSessionRollover(f.base);
+  await rollover.handleEvent(old, end);
+  assert.deepEqual(f.calls.create, [{ workspaceId: 'ws-1' }]);
+  assert.equal(f.state().newSessionId, nextId);
+});

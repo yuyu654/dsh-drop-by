@@ -102,15 +102,18 @@ test('设置口：读、写、拒绝、以及不碰真配置', async (t) => {
   assert.equal(got.json.ok, true);
   const groups = got.json.groups;
   assert.equal(groups.length, 9);
+  const daily = groups.find(group => group.name === '日常').items;
+  const debugMode = daily[daily.findIndex(item => item.path === 'dryRun') + 1];
+  assert.deepEqual([debugMode.path, debugMode.label, debugMode.type, debugMode.value], ['debugMode', '调试模式', 'bool', false]);
   assert.deepEqual(
     got.json.explorationItems.map((i) => i.path),
-    ['exploration.auto', 'exploration.mode', 'exploration.bias', 'exploration.nextTopic', 'exploration.interest', 'exploration.offerShare']
+    ['exploration.auto', 'exploration.mode', 'exploration.model', 'exploration.bias', 'exploration.browseMode', 'exploration.nextTopic', 'exploration.interest', 'exploration.offerShare']
   );
   assert.deepEqual(
     got.json.channelItems.map((i) => i.path),
     ['channels.primary', 'channels.douyin.peerSecUid', 'channels.qq.peerId', 'channels.qq.send', 'channels.qq.read']
   );
-  for (const [path, value] of [['characterRest.jitterMin', 12], ['exploration.bias', 'leisure']]) {
+  for (const [path, value] of [['debugMode', true], ['characterRest.jitterMin', 12], ['exploration.bias', 'leisure']]) {
     const response = await call(route, { method: 'POST', url: '/api/dsh-drop-by/config', body: { path, value } });
     assert.equal(response.json.ok, true);
     const reread = (await call(route, { url: '/api/dsh-drop-by/config' })).json;

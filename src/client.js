@@ -318,11 +318,39 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           h(
             'div',
             { className: 'pg-row-text' },
-            h('div', { className: 'pg-row-label' }, item.label),
+            h(
+              'div',
+              { className: 'pg-row-label' },
+              item.label,
+              props.showGroup && item.group ? h('span', { className: 'pg-row-group' }, item.group) : null
+            ),
             item.hint ? h('div', { className: 'pg-row-hint' }, item.hint) : null
           ),
           h('div', { className: 'pg-row-ctl' }, h(Control, props))
         );
+      }
+
+      function matchesSettingSearch(item, tokens, tagId) {
+        if (!item) return false;
+        if (tagId) {
+          if (!Array.isArray(item.tags) || item.tags.indexOf(tagId) < 0) return false;
+        }
+        if (!tokens.length) return true;
+        var optText = Array.isArray(item.options)
+          ? item.options.map(function (o) { return Array.isArray(o) ? o.join(' ') : String(o || ''); }).join(' ')
+          : '';
+        var hay = [
+          item.label || '',
+          item.hint || '',
+          item.path || '',
+          item.group || '',
+          item.unit || '',
+          optText,
+        ].join(' ').toLowerCase();
+        for (var i = 0; i < tokens.length; i++) {
+          if (hay.indexOf(tokens[i]) < 0) return false;
+        }
+        return true;
       }
 
       function Group(props) {
@@ -675,6 +703,10 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         var [groups, setGroups] = useState([]);
         var [explorationItems, setExplorationItems] = useState([]);
         var [channelItems, setChannelItems] = useState([]);
+        var [hiddenItems, setHiddenItems] = useState([]);
+        var [searchTags, setSearchTags] = useState([]);
+        var [searchQuery, setSearchQuery] = useState('');
+        var [searchTag, setSearchTag] = useState('');
         var [error, setError] = useState('');
         var [toast, setToast] = useState(null);
         var [busy, setBusy] = useState(false);
@@ -725,6 +757,8 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
                 setGroups(r[1].groups || []);
                 setExplorationItems(r[1].explorationItems || []);
                 setChannelItems(r[1].channelItems || []);
+                setHiddenItems(r[1].hiddenItems || []);
+                if (Array.isArray(r[1].searchTags)) setSearchTags(r[1].searchTags);
                 setError('');
               })
               .catch(function (e) {
@@ -833,6 +867,8 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
                 setGroups(r.groups || []);
                 if (Array.isArray(r.explorationItems)) setExplorationItems(r.explorationItems);
                 if (Array.isArray(r.channelItems)) setChannelItems(r.channelItems);
+                if (Array.isArray(r.hiddenItems)) setHiddenItems(r.hiddenItems);
+                if (Array.isArray(r.searchTags)) setSearchTags(r.searchTags);
                 setError('');
                 var note = r.notes && r.notes.length ? r.notes[0] : '已保存，下一拍生效';
                 flash(note, 'ok');
@@ -886,6 +922,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           apiPost(endpoint, body).then(function (result) {
             if (!mounted.current) return;
             setState(result.state);
+            flash((result && result.note) || '已更新', 'ok');
             load(true);
           }).catch(function (error) {
             if (mounted.current) flash(error.message || '暂时无法保存，请重试。', 'err');
@@ -1169,9 +1206,12 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           if (!entry) return null;
           return h('div', { className: 'pg-exp-actions', 'aria-label': entry.topic + '的探索反馈' },
             [['more', '想多听听'], ['change', '换个方向'], ['pause', '先放着']].map(function (option) {
-              return h('button', { key: option[0], type: 'button', className: 'pg-btn' + (entry.action === option[0] ? ' pg-btn-primary' : ''),
-                disabled: smallActionPending, 'aria-pressed': entry.action === option[0], onClick: function () {
-                  applySmallAction('/exploration/feedback', { id: entry.id, action: option[0] });
+              var selected = entry.action === option[0];
+              return h('button', { key: option[0], type: 'button', className: 'pg-btn' + (selected ? ' pg-btn-primary' : ''),
+                disabled: smallActionPending, 'aria-pressed': selected,
+                title: selected ? '已选中，再次点击可取消' : '',
+                onClick: function () {
+                  applySmallAction('/exploration/feedback', { id: entry.id, action: selected ? 'clear' : option[0] });
                 } }, option[1]);
             }));
         }
@@ -1180,6 +1220,36 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
             return h('div', { className: 'pg-exp-item', key: s.url },
               s.evidence + ' · ', h('a', { className: 'pg-link', href: s.url, target: '_blank', rel: 'noopener noreferrer' }, s.title));
           });
+        }
+        function activeExplorationEntries() {
+          var list = [];
+          var mode = exploration && exploration.mode;
+          if (mode === 'light') {
+            if (lightExp) list.push({ kind: 'light', label: '随手看看', entry: lightExp });
+          } else {
+            if (thread) list.push({ kind: 'thread', label: '研究', entry: thread });
+            if (leisure) list.push({ kind: 'leisure', label: '休闲', entry: leisure });
+            if (!list.length && lightExp && mode !== 'deep') {
+              list.push({ kind: 'light', label: '随手看看', entry: lightExp });
+            }
+          }
+          list.sort(function (a, b) { return (Number(b.entry && b.entry.at) || 0) - (Number(a.entry && a.entry.at) || 0); });
+          return list;
+        }
+        function renderExplorationEntry(item) {
+          var entry = item.entry;
+          var meta = [['进度', entry.checkpoint], ['新发现', entry.discovery], ['待确认', entry.waitingFor]]
+            .filter(function (pair) { return pair[1]; }).map(function (pair) {
+              return h('div', { key: item.kind + '-' + pair[0], className: 'pg-exp-item' }, item.label + ' · ' + pair[0] + '：' + pair[1]);
+            });
+          var bodyText = entry.summary || entry.progress || '';
+          return h('div', { key: item.kind, className: 'pg-exp-list' },
+            meta,
+            h('div', { className: 'pg-exp-highlight' }, item.label + ' · ' + entry.topic + '：' + bodyText),
+            entry.next ? h('div', { className: 'pg-exp-item' }, '下一步：' + entry.next) : null,
+            sourceLinks(entry),
+            feedbackButtons(item.kind)
+          );
         }
         function shortId(s) {
           var str = String(s || '');
@@ -1213,7 +1283,45 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           }
           return shortId(s);
         }
-        var hasModules = Boolean((emotion && emotion.installed) || (memory && memory.enabled && memory.files && memory.files.length) || rollovers.length || exploration);
+        var extInfo = (state && state.extensions) || {};
+        var extCount = (extInfo.exploreSources ? extInfo.exploreSources.length : 0) +
+          (extInfo.moodSources ? extInfo.moodSources.length : 0) +
+          (extInfo.memorySources ? extInfo.memorySources.length : 0) +
+          (extInfo.topicProviders ? extInfo.topicProviders.length : 0);
+        var hasModules = Boolean(state || (emotion && emotion.installed) || (memory && memory.enabled && memory.files && memory.files.length) || rollovers.length || exploration || extCount > 0);
+        var trimmedSearch = searchQuery.trim().toLowerCase();
+        var searchTokens = trimmedSearch ? trimmedSearch.split(/\s+/).filter(Boolean) : [];
+        var searchActive = Boolean(searchTokens.length || searchTag);
+        var allVisibleItems = [];
+        var seenSearchPaths = {};
+        [channelItems, explorationItems].forEach(function (arr) {
+          (arr || []).forEach(function (item) {
+            if (item && item.path && !seenSearchPaths[item.path]) {
+              seenSearchPaths[item.path] = true;
+              allVisibleItems.push(item);
+            }
+          });
+        });
+        (groups || []).forEach(function (g) {
+          (g && g.items || []).forEach(function (item) {
+            if (item && item.path && !seenSearchPaths[item.path]) {
+              seenSearchPaths[item.path] = true;
+              allVisibleItems.push(item);
+            }
+          });
+        });
+        var memPluginItem = allVisibleItems.find(function (i) { return i.path === 'sources.memory.plugin'; }) ||
+          allVisibleItems.find(function (i) { return i.path === 'sources.memory.enabled'; }) || null;
+        var moodSourceItem = allVisibleItems.find(function (i) { return i.path === 'exploration.moodSource'; }) || null;
+        var extraToolsItem = allVisibleItems.find(function (i) { return i.path === 'exploration.extraTools'; }) || null;
+        var extTimeoutItem = allVisibleItems.find(function (i) { return i.path === 'exploration.extTimeoutMs'; }) || null;
+        var matchedSettings = searchActive ? allVisibleItems.filter(function (item) {
+          return matchesSettingSearch(item, searchTokens, searchTag);
+        }) : [];
+        var matchedHidden = searchActive ? (hiddenItems || []).filter(function (item) {
+          return matchesSettingSearch(item, searchTokens, searchTag);
+        }) : [];
+        var activeTagObj = searchTag ? (searchTags || []).find(function (t) { return t.id === searchTag; }) : null;
 
         return h(
           'div',
@@ -1247,51 +1355,177 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
             applySmallAction('/agreements/dismiss', { id: id });
           } }) : null,
           state ? h(RecentReports, { data: diagnostic, error: diagnosticError, onReceiptChange: changeReceipt }) : null,
+          allVisibleItems.length ? h('section', { className: 'pg-card pg-search-card', 'aria-label': '全局设置搜索' },
+            h('div', { className: 'pg-search-bar' },
+              h('input', {
+                className: 'pg-input pg-search-input',
+                type: 'search',
+                'aria-label': '全局搜索设置项',
+                placeholder: activeTagObj
+                  ? '在「' + activeTagObj.label + '」内按字搜索（名称、说明或配置键）…'
+                  : '全局搜索设置项（按字匹配，如 分享、冷却、作息、OCR、邮箱）…',
+                value: searchQuery,
+                onChange: function (e) { setSearchQuery(e.target.value); },
+              }),
+              searchActive ? h('button', {
+                type: 'button',
+                className: 'pg-btn',
+                onClick: function () { setSearchQuery(''); setSearchTag(''); },
+              }, '清空') : null
+            ),
+            searchTags.length ? h('div', { className: 'pg-chips', role: 'group', 'aria-label': '按关键词筛选设置' },
+              h('button', {
+                type: 'button',
+                className: 'pg-chip' + (!searchTag ? ' pg-chip-on' : ''),
+                'aria-pressed': !searchTag,
+                onClick: function () { setSearchTag(''); },
+              }, '全部'),
+              searchTags.map(function (tag) {
+                var on = searchTag === tag.id;
+                return h('button', {
+                  key: tag.id,
+                  type: 'button',
+                  className: 'pg-chip' + (on ? ' pg-chip-on' : ''),
+                  'aria-pressed': on,
+                  onClick: function () { setSearchTag(on ? '' : tag.id); },
+                }, tag.label);
+              })
+            ) : null,
+            searchActive ? h('div', { className: 'pg-search-results' },
+              h('div', { className: 'pg-search-meta' },
+                h('span', null,
+                  (activeTagObj ? '关键词「' + activeTagObj.label + '」' : '全局搜索') +
+                  (trimmedSearch ? ' · “' + searchQuery.trim() + '”' : '') +
+                  ' · 找到 ' + matchedSettings.length + ' 项'
+                )
+              ),
+              matchedSettings.length
+                ? h('div', { className: 'pg-rows' }, matchedSettings.map(function (item) {
+                    return h(Row, { key: item.path, item: item, busy: busy, onSave: onSave, showGroup: true });
+                  }))
+                : h('div', { className: 'pg-row-hint', style: { padding: '8px 0' } }, '没有匹配的当前可用设置项。'),
+              matchedHidden.length ? h('div', { className: 'pg-row-hint pg-search-hidden-note' },
+                '另有 ' + matchedHidden.length + ' 项相关设置因父开关关闭而隐藏：' +
+                matchedHidden.slice(0, 6).map(function (item) {
+                  var deps = item.depLabels && item.depLabels.length ? '（需先开启「' + item.depLabels.join('」「') + '」）' : '';
+                  return item.label + deps;
+                }).join('、') +
+                (matchedHidden.length > 6 ? ' 等。' : '。')
+              ) : null
+            ) : null
+          ) : null,
+          !searchActive ? h(React.Fragment, null,
           hasModules ? h('div', { className: 'pg-sec-label' }, '联动模块与状态') : null,
-          emotion && emotion.installed ? h('div', { className: 'pg-card' },
-            h('div', { className: 'pg-card-head' },
-              h('div', { className: 'pg-card-title' }, '情绪状态（emotion-state-portrait' + (emotion.version ? ' v' + emotion.version : '') + '）'),
-              emotion.needsRepair
-                ? h('span', { className: 'pg-badge pg-badge-dry' }, '需对齐本机')
-                : h('span', { className: 'pg-badge pg-badge-live' }, '已对齐本机')
+          state ? h('details', { className: 'pg-card pg-card-fold' },
+            h('summary', { className: 'pg-card-title pg-card-sum' },
+              h('span', { className: 'pg-card-sum-name' }, '已接入的第三方扩展'),
+              h('span', { className: 'pg-card-sub' }, '刷 B 站 / 心情 / 记忆 / 自定义由头'),
+              extCount > 0
+                ? h('span', { className: 'pg-badge pg-badge-live' }, extCount + ' 个已注册')
+                : h('span', { className: 'pg-badge' }, '接口已就绪（0 个已注册）')
             ),
             h('div', { className: 'pg-rows' },
-              h('div', { className: 'pg-row' },
-                h('div', { className: 'pg-row-text' },
-                  h('div', { className: 'pg-row-label' },
-                    emotion.live
-                      ? ('心情 ' + (emotion.live.mood && emotion.live.mood.length ? emotion.live.mood.join(' · ') : '平静') +
-                          ' · 精神 ' + emotion.live.spirit + '/100' +
-                          (emotion.live.statusWord ? '（' + emotion.live.statusWord + '）' : '') +
-                          (emotion.live.transition ? ' · 跃迁 ' + emotion.live.transition : '') +
-                          ' · 画像 ' + emotion.live.portraitCount + ' 人')
-                      : (emotion.stateExists === false
-                          ? '已安装情绪插件 · 暂无 state.json（等待首轮打分或发条 QQ 私聊后自动生成）'
-                          : (emotion.note || '已安装'))
-                  ),
-                  h('div', { className: 'pg-row-hint' },
-                    emotion.needsRepair && emotion.issues && emotion.issues.length
-                      ? '检测到遗留或无效配置：' + emotion.issues.join('；')
-                      : ('自动随 QQ 私聊、指令与探索更新 inbox.jsonl' +
-                          (emotion.live && emotion.live.updatedAt ? ' · 最近更新 ' + clockOf(new Date(emotion.live.updatedAt).toISOString()) : '') +
-                          (emotion.inboxBytes ? ' · inbox ' + Math.max(1, Math.round(emotion.inboxBytes / 1024)) + ' KB' : ''))
+              extCount > 0 ? h(React.Fragment, null,
+                extInfo.exploreSources && extInfo.exploreSources.length ? h('div', { className: 'pg-row' },
+                  h('div', { className: 'pg-row-text' },
+                    h('div', { className: 'pg-row-label' }, '探索源扩展'),
+                    h('div', { className: 'pg-row-hint' }, extInfo.exploreSources.map(function (s) { return s.label + '（' + s.id + '）'; }).join('、'))
                   )
-                ),
-                h('div', { className: 'pg-row-ctl' },
-                  h('button', {
-                    className: 'pg-btn' + (emotion.needsRepair ? ' pg-btn-primary' : ''),
-                    type: 'button',
-                    disabled: busy,
-                    onClick: onRepairEmotion,
-                  }, emotion.needsRepair ? '一键修复本机配置' : '重新对齐配置')
+                ) : null,
+                extInfo.moodSources && extInfo.moodSources.length ? h('div', { className: 'pg-row' },
+                  h('div', { className: 'pg-row-text' },
+                    h('div', { className: 'pg-row-label' }, '心情扩展'),
+                    h('div', { className: 'pg-row-hint' }, extInfo.moodSources.map(function (s) { return s.label + '（' + s.id + '）'; }).join('、'))
+                  )
+                ) : null,
+                extInfo.memorySources && extInfo.memorySources.length ? h('div', { className: 'pg-row' },
+                  h('div', { className: 'pg-row-text' },
+                    h('div', { className: 'pg-row-label' }, '记忆扩展'),
+                    h('div', { className: 'pg-row-hint' }, extInfo.memorySources.map(function (s) { return s.label + '（' + s.id + '）'; }).join('、'))
+                  )
+                ) : null,
+                extInfo.topicProviders && extInfo.topicProviders.length ? h('div', { className: 'pg-row' },
+                  h('div', { className: 'pg-row-text' },
+                    h('div', { className: 'pg-row-label' }, '自定义主动由头'),
+                    h('div', { className: 'pg-row-hint' }, extInfo.topicProviders.map(function (s) { return s.label + '（' + s.slot + '）'; }).join('、'))
+                  )
+                ) : null
+              ) : h('div', { className: 'pg-row' },
+                h('div', { className: 'pg-row-text' },
+                  h('div', { className: 'pg-row-label' }, '支持接入刷 B 站、心情/好感度、长期记忆与自定义主动由头'),
+                  h('div', { className: 'pg-row-hint' }, '插件代码可通过 ctx.presenceGate.registerExploreSource / registerMoodSource / registerMemorySource / registerTopicProvider 注册；免代码可在下方填写宿主只读工具名，或往 data/extensions/{mood,topics}.json 投递 JSON（详见 docs/EXTENSIONS.md）。')
                 )
-              )
+              ),
+              memPluginItem ? h(Row, { key: 'ext-card-' + memPluginItem.path, item: memPluginItem, busy: busy, onSave: onSave }) : null,
+              moodSourceItem ? h(Row, { key: 'ext-card-' + moodSourceItem.path, item: moodSourceItem, busy: busy, onSave: onSave }) : null,
+              extraToolsItem ? h(Row, { key: 'ext-card-' + extraToolsItem.path, item: extraToolsItem, busy: busy, onSave: onSave }) : null,
+              extTimeoutItem ? h(Row, { key: 'ext-card-' + extTimeoutItem.path, item: extTimeoutItem, busy: busy, onSave: onSave }) : null
             )
           ) : null,
-          memory && memory.enabled && memory.files && memory.files.length ? (function () {
+          emotion && (emotion.installed || emotion.activeKind === 'external' || emotion.activeKind === 'merge') ? (function () {
+            var emTitle = emotion.activePluginLabel || ('emotion-state-portrait' + (emotion.version ? ' v' + emotion.version : ''));
+            var emKind = emotion.activeKind || 'builtin';
+            return h('div', { className: 'pg-card' },
+              h('div', { className: 'pg-card-head' },
+                h('div', { className: 'pg-card-title' }, '情绪状态（' + emTitle + '）'),
+                emKind === 'external'
+                  ? h('span', { className: 'pg-badge ' + (emotion.externalReady ? 'pg-badge-live' : 'pg-badge-dry') },
+                      emotion.externalReady ? '第三方扩展生效中' : '等待扩展接入')
+                  : emKind === 'merge'
+                    ? h('span', { className: 'pg-badge pg-badge-live' }, '内置 + 扩展合并')
+                    : (emotion.needsRepair
+                        ? h('span', { className: 'pg-badge pg-badge-dry' }, '需对齐本机')
+                        : h('span', { className: 'pg-badge pg-badge-live' }, '已对齐本机'))
+              ),
+              h('div', { className: 'pg-rows' },
+                emKind === 'external' ? h('div', { className: 'pg-row' },
+                  h('div', { className: 'pg-row-text' },
+                    h('div', { className: 'pg-row-label' },
+                      emotion.externalLive
+                        ? ('当前外部心情：' + emotion.externalLive)
+                        : '已切换到第三方心情扩展（当前暂无实时心情文本）'
+                    ),
+                    h('div', { className: 'pg-row-hint' }, '当前已对接所选的第三方心情扩展，内置 emotion-state-portrait 已暂停写入与打分。')
+                  )
+                ) : h('div', { className: 'pg-row' },
+                  h('div', { className: 'pg-row-text' },
+                    h('div', { className: 'pg-row-label' },
+                      (emotion.live
+                        ? ('心情 ' + (emotion.live.mood && emotion.live.mood.length ? emotion.live.mood.join(' · ') : '平静') +
+                            ' · 精神 ' + emotion.live.spirit + '/100' +
+                            (emotion.live.statusWord ? '（' + emotion.live.statusWord + '）' : '') +
+                            (emotion.live.transition ? ' · 跃迁 ' + emotion.live.transition : '') +
+                            ' · 画像 ' + emotion.live.portraitCount + ' 人')
+                        : (emotion.stateExists === false
+                            ? '已安装情绪插件 · 暂无 state.json（等待首轮打分或发条 QQ 私聊后自动生成）'
+                            : (emotion.note || '已安装'))) +
+                      (emKind === 'merge' && emotion.externalLive ? (' · 外部心情：' + emotion.externalLive) : '')
+                    ),
+                    h('div', { className: 'pg-row-hint' },
+                      emotion.needsRepair && emotion.issues && emotion.issues.length
+                        ? '检测到遗留或无效配置：' + emotion.issues.join('；')
+                        : ('自动随 QQ 私聊、指令与探索更新 inbox.jsonl' +
+                            (emotion.live && emotion.live.updatedAt ? ' · 最近更新 ' + clockOf(new Date(emotion.live.updatedAt).toISOString()) : '') +
+                            (emotion.inboxBytes ? ' · inbox ' + Math.max(1, Math.round(emotion.inboxBytes / 1024)) + ' KB' : ''))
+                    )
+                  ),
+                  emotion.installed ? h('div', { className: 'pg-row-ctl' },
+                    h('button', {
+                      className: 'pg-btn' + (emotion.needsRepair ? ' pg-btn-primary' : ''),
+                      type: 'button',
+                      disabled: busy,
+                      onClick: onRepairEmotion,
+                    }, emotion.needsRepair ? '一键修复本机配置' : '重新对齐配置')
+                  ) : null
+                )
+              )
+            );
+          })() : null,
+          memory && memory.enabled && ((memory.files && memory.files.length) || memory.label || memory.resolvedPlugin) ? (function () {
+            var memFiles = memory.files || [];
             var sVal = memory.sessionSetting || '';
-            var nonEmpty = memory.files.filter(function (f) { return f.count > 0; });
-            var wsFiles = memory.supportsMerge !== false ? memory.files.filter(function (f) { return f.kind === 'workspace'; }) : [];
+            var nonEmpty = memFiles.filter(function (f) { return f.count > 0; });
+            var wsFiles = memory.supportsMerge !== false ? memFiles.filter(function (f) { return f.kind === 'workspace'; }) : [];
             var sessFiles = memory.supportsMerge !== false ? nonEmpty.filter(function (f) { return f.kind === 'session'; }) : [];
             var known = sVal === '' || sVal === 'all' || nonEmpty.some(function (f) { return f.id === sVal; });
             var activeTarget = mergeTargetFile && wsFiles.some(function (f) { return f.name === mergeTargetFile; })
@@ -1321,7 +1555,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
             var memTitleName = memory.label || memory.resolvedPlugin || memory.plugin || 'fish-memory';
             return h('div', { className: 'pg-card' },
               h('div', { className: 'pg-card-head' },
-                h('div', { className: 'pg-card-title' }, '长期记忆（' + memTitleName + ' · 共 ' + memory.files.length + ' 份）'),
+                h('div', { className: 'pg-card-title' }, '长期记忆（' + memTitleName + ' · 共 ' + memFiles.length + ' 份）'),
                 h('span', { className: 'pg-badge ' + (sVal && sVal !== 'all' ? 'pg-badge-dry' : 'pg-badge-live') }, readBadge)
               ),
               h('div', { className: 'pg-rows' },
@@ -1527,39 +1761,39 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
               )
             ),
             h('div', { className: 'pg-exp-body' },
-              exploration.lastRun ? h('div', { className: 'pg-row-hint' },
-                '最近路径：' + (exploration.lastRun.calls && exploration.lastRun.calls.length ? exploration.lastRun.calls.join(' → ') : '文字探索')) : null,
+              exploration.lastRun ? (function () {
+                var calls = Array.isArray(exploration.lastRun.calls) ? exploration.lastRun.calls : [];
+                return h('details', { className: 'pg-exp-details' },
+                  h('summary', { className: 'pg-exp-sum' },
+                    calls.length ? ('最近路径（共 ' + calls.length + ' 步）') : '最近路径（文字探索）'),
+                  h('div', { className: 'pg-row-hint' }, calls.length ? calls.join(' → ') : '文字探索')
+                );
+              })() : null,
               exploration.candidate && exploration.candidate.loginSite ? h('div', { className: 'pg-row-hint' },
                 '待登录 · ', h('a', { className: 'pg-link', href: exploration.candidate.source.url, target: '_blank', rel: 'noopener noreferrer' }, exploration.candidate.loginSite),
                 '。请在网站页面完成登录；公开网页工具可能仍无法读取登录后的页面。') : null,
-              thread || leisure || lightExp ? h('details', {
-                className: 'pg-exp-details',
-                open: showExplorationDetails,
-                onToggle: function (event) { setShowExplorationDetails(event.currentTarget.open); }
-              },
-                h('summary', { className: 'pg-exp-sum' }, '最近的探索进展'),
-                h('div', { className: 'pg-exp-list' },
-                  [thread, leisure].filter(Boolean).flatMap(function (entry, index) {
-                    var prefix = entry === leisure ? '休闲' : '研究';
-                    return [['进度', entry.checkpoint], ['新发现', entry.discovery], ['待确认', entry.waitingFor]]
-                      .filter(function (item) { return item[1]; }).map(function (item) {
-                        return h('div', { key: index + item[0], className: 'pg-exp-item' }, prefix + ' · ' + item[0] + '：' + item[1]);
-                      });
-                  }),
-                  thread ? h('div', { className: 'pg-exp-highlight' }, thread.topic + '：' + thread.progress) : null,
-                  thread && thread.next ? h('div', { className: 'pg-exp-item' }, '下一步：' + thread.next) : null,
-                  ...sourceLinks(thread),
-                  feedbackButtons('thread'),
-                  leisure ? h('div', { className: 'pg-exp-highlight' }, '随便逛逛 · ' + leisure.topic + '：' + leisure.progress) : null,
-                  ...sourceLinks(leisure),
-                  feedbackButtons('leisure'),
-                  lightExp ? h('div', { className: 'pg-exp-highlight' }, '随手看看 · ' + lightExp.topic + '：' + (lightExp.summary || lightExp.progress)) : null,
-                  ...sourceLinks(lightExp),
-                  feedbackButtons('light'),
-                  exploration.candidate ? h('div', { className: 'pg-exp-item' }, '可分享：' + exploration.candidate.line) : null,
-                  exploration.mood ? h('div', { className: 'pg-exp-item' }, '探索感受：' + exploration.mood.text) : null
-                )
-              ) : null,
+              (function () {
+                var entries = activeExplorationEntries();
+                if (!entries.length) return null;
+                var latest = entries[0];
+                var older = entries.slice(1);
+                return h('details', {
+                  className: 'pg-exp-details',
+                  open: showExplorationDetails,
+                  onToggle: function (event) { setShowExplorationDetails(event.currentTarget.open); }
+                },
+                  h('summary', { className: 'pg-exp-sum' }, '最近的探索进展'),
+                  h('div', { className: 'pg-exp-list' },
+                    renderExplorationEntry(latest),
+                    older.length ? h('details', { className: 'pg-exp-details' },
+                      h('summary', { className: 'pg-exp-sum' }, '查看较早的另一条记录（' + older[0].label + '）'),
+                      older.map(renderExplorationEntry)
+                    ) : null,
+                    exploration.candidate ? h('div', { className: 'pg-exp-item' }, '可分享：' + exploration.candidate.line) : null,
+                    exploration.mood ? h('div', { className: 'pg-exp-item' }, '探索感受：' + exploration.mood.text) : null
+                  )
+                );
+              })(),
               exploreFeedback && exploreFeedback.candidates && exploreFeedback.candidates.length ?
                 h('div', { className: 'pg-exp-list' },
                   h('strong', null, '近期好奇候选'),
@@ -1675,7 +1909,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           groups.length ? h('div', { className: 'pg-sec-label' }, '参数设置') : null,
           groups.map(function (g) {
             return h(Group, { key: g.name, group: g, busy: busy, onSave: onSave });
-          }),
+          })) : null,
           h(
             'div',
             { className: 'pg-foot' },
@@ -1808,6 +2042,18 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         '.pg-card-inner-note{margin:9px 0 4px;}',
         '.pg-rows{display:flex;flex-direction:column;}',
         '.pg-timing-search{width:100%;margin:9px 0 4px;text-align:left;padding:6px 10px;}',
+        '.pg-search-card{padding:10px 14px;}',
+        '.pg-search-bar{display:flex;align-items:center;gap:8px;}',
+        '.pg-search-input{flex:1 1 auto;width:auto;text-align:left;padding:7px 10px;}',
+        '.pg-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}',
+        '.pg-chip{font:inherit;font-size:11.5px;line-height:1.2;padding:4px 10px;border-radius:999px;border:1px solid var(--pg-line);background:var(--pg-field);color:var(--pg-muted);cursor:pointer;transition:background .15s,border-color .15s,color .15s;}',
+        '.pg-chip:hover{border-color:var(--pg-muted);color:var(--pg-fg);}',
+        '.pg-chip-on{background:var(--pg-brand);border-color:var(--pg-brand);color:var(--pg-brand-fg);}',
+        '.pg-chip-on:hover{color:var(--pg-brand-fg);opacity:.92;}',
+        '.pg-search-results{margin-top:10px;padding-top:8px;border-top:1px solid var(--pg-line-soft);}',
+        '.pg-search-meta{font-size:11.5px;color:var(--pg-faint);margin-bottom:4px;}',
+        '.pg-search-hidden-note{margin-top:8px;padding-top:8px;border-top:1px dashed var(--pg-line-soft);}',
+        '.pg-row-group{display:inline-block;margin-left:7px;font-size:10.5px;font-weight:500;padding:1px 6px;border-radius:999px;background:var(--pg-bar);border:1px solid var(--pg-line-soft);color:var(--pg-faint);vertical-align:middle;}',
         '.pg-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:10px 0;border-bottom:1px solid var(--pg-line-soft);}',
         '.pg-row:last-child{border-bottom:0;}',
         '.pg-row-text{flex:1 1 auto;min-width:0;}',

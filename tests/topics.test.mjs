@@ -749,6 +749,7 @@ test('最近四条里两句都在说她坐屏幕前 → 这一拍换掉', () => 
     pc,
   };
   assert.equal(pickTopic(ctx, cfgOf(), now, st), null);
+  assert.equal(pickTopic(ctx, { ...cfgOf(), debugMode: true }, now, st), null);
 });
 
 test('同一类由头连着两拍 → 第三拍不再来', () => {
@@ -758,8 +759,22 @@ test('同一类由头连着两拍 → 第三拍不再来', () => {
   const st = { content: { recentSlots: ['longSit', 'longSit'] }, pc };
   assert.equal(pickTopic(ctx, cfgOf(), now, st), null);
 
+  assert.equal(pickTopic(ctx, { ...cfgOf(), debugMode: true }, now, st)?.slot, 'longSit');
+
   const once = { content: { recentSlots: ['share', 'longSit'] }, pc };
   assert.equal(pickTopic(ctx, cfgOf(), now, once)?.slot, 'longSit');
+});
+
+test('调试模式让连续两条分享后的新探索通过同类检查', () => {
+  const now = at(20);
+  const ctx = ctxOf({ self: { section: '漫画分镜', line: '有个漫画分镜用留白做出了空间感。', exploration: true } });
+  const cfg = cfgOf({ shareGapMin: 0 });
+  const st = { content: { recentSlots: ['share', 'share'] } };
+  const misses = new Map();
+  assert.deepEqual([...topicCandidates(ctx, cfg, now, st, undefined, misses)], []);
+  assert.equal(misses.get('share'), 'repeated');
+  assert.equal([...topicCandidates(ctx, { ...cfg, debugMode: true }, now, st, undefined, misses)][0]?.slot, 'share');
+  assert.equal(misses.has('share'), false);
 });
 
 test('选题遍历记录分由头原因，与实际的开关、时段和数据门槛一致', () => {

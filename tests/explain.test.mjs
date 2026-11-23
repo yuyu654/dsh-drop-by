@@ -58,3 +58,34 @@ test('无具体原因时用一句话概括日常未触发的话题', () => {
   });
   assert.equal(detail, '当前没有待回复消息、待提醒日程或新的可分享进展。');
 });
+
+test('探索分享被同主题冷却、反馈避开或未开分享开关拦下时，给出明确原因', async () => {
+  const { topicCandidates } = await import('../src/topics.js');
+  const misses = new Map();
+  const list = [...topicCandidates(
+    { self: null, selfMiss: 'share_topic_cooldown', fish: { ok: false }, her: {}, me: {}, pc: {} },
+    { content: { topics: {} }, timezone: 'Asia/Shanghai' },
+    Date.now(),
+    {},
+    () => {},
+    misses,
+  )];
+  assert.equal(list.length, 0);
+  assert.equal(misses.get('share'), 'share_topic_cooldown');
+
+  const cooldown = explanations.explainRun({
+    record: { reason: 'NO_TOPIC', topicMisses: [{ slot: 'share', reason: 'share_topic_cooldown' }] },
+  });
+  assert.match(cooldown.detail, /分享同一探索主题 6 小时内刚分享过/);
+
+  const offerOff = explanations.explainRun({
+    record: { reason: 'NO_TOPIC', topicMisses: [{ slot: 'share', reason: 'share_offer_off' }] },
+  });
+  assert.match(offerOff.detail, /让探索进展参与主动分享/);
+  assert.match(offerOff.actionHint, /自主探索/);
+
+  const avoided = explanations.explainRun({
+    record: { reason: 'NO_TOPIC', topicMisses: [{ slot: 'share', reason: 'share_avoided' }] },
+  });
+  assert.match(avoided.detail, /换个方向/);
+});

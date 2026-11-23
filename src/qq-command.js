@@ -1,17 +1,20 @@
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { explorationStatus } from './explore.js';
+import { saveConfig } from './config.js';
+import { explorationStatus, loadExploration } from './explore.js';
+import { recentSharedExplorationTopic, recordExplorationDirection, topicInExplorationFeedback } from './exploration-feedback.js';
+import { loadPersona } from './persona.js';
 import { publicExplorationUrl } from './explore-media.js';
 import { shiftDay } from './retention.js';
 import { dayKey } from './time.js';
 import { incomingMatches } from './action-proposal.js';
 import { activeChatChannel, canReadChat, chatDialogue, chatPeer } from './channels/external.js';
 import { saveTopicPreference } from './feedback.js';
-import { looksLikeTopicPreference } from './command-matcher.js';
+import { explorationDirectionSite, looksLikeExplorationDirection, looksLikeTopicPreference, safeExplorationTopic } from './command-matcher.js';
 import { topicLabel } from './explain.js';
 
-export function verifiedPreferenceMessage({ peer, kind, text, bridgeText = text, at, cfg, now = Date.now() }) {
+export function verifiedPreferenceMessage({ peer, kind, text, bridgeText = text, at, cfg, internalSession, now = Date.now() }) {
   const message = String(bridgeText || '').trim();
   if (kind !== 'private' || !peer || chatPeer(cfg) !== String(peer) ||
       cfg.enabled === false || cfg.rules?.qqCommands?.enabled !== true || !canReadChat(cfg) ||
@@ -19,7 +22,7 @@ export function verifiedPreferenceMessage({ peer, kind, text, bridgeText = text,
   const age = now - Number(at);
   if (!(age >= 0 && age <= Number(cfg.rules.qqCommands.freshSec ?? 120) * 1000)) return '';
   const { incoming } = chatDialogue(cfg);
-  return incomingMatches({ peer, kind, bridgeText, at, incoming, cfg }) ? message : '';
+  return incomingMatches({ peer, kind, bridgeText, at, incoming, cfg, internalSession }) ? message : '';
 }
 
 export function applyTopicPreference(preference, input) {
@@ -36,6 +39,84 @@ export function applyTopicPreference(preference, input) {
   const effect = { reset: '恢复默认', allow_silent: '照常考虑发送，用户没回复也不会因此追问或降频',
     mute_less: '有效期内暂停主动提起' }[result.mode];
   return '【陪伴话题偏好已保存】根据已生效的结果自然确认一句，无需调用工具。' + JSON.stringify({ 话题: label, 效果: effect });
+}
+
+
+// QQ's marker keeps only 80 characters. Require the entire command to be covered.
+export function verifiedExplorationInput({ peer, kind, text, bridgeText = text, at, cfg, internalSession, now = Date.now() }) {
+  const message = String(bridgeText || '');
+  const channel = activeChatChannel(cfg);
+  if (kind !== 'private' || !peer || chatPeer(cfg) !== String(peer) ||
+      cfg.enabled === false || cfg.rules?.qqCommands?.enabled !== true || !canReadChat(cfg)) return null;
+  const age = now - Number(at);
+  if (!(age >= 0 && age <= Number(cfg.rules.qqCommands.freshSec ?? 120) * 1000)) return null;
+  if (channel === 'internal') return internalSession === peer ? message.trim() : null;
+  const { incoming } = chatDialogue(cfg);
+  if (!incomingMatches({ peer, kind, bridgeText, at, incoming, cfg })) return null;
+  // Count authenticated long turns without passing their truncated text to the matcher.
+  return message.length <= (channel === 'qq' ? 80 : 180) ? message.trim() : '';
+}
+
+export function explorationDirectionContext({ cfg, peer }, recent = []) {
+  const status = explorationStatus(loadExploration(), loadPersona({ cfg }));
+  const entries = [status.thread, status.leisure, status.light].filter(entry => entry?.topic)
+    .sort((a, b) => (b.at || 0) - (a.at || 0));
+  const share = recentSharedExplorationTopic({ cfg, peer, channel: activeChatChannel(cfg) });
+  const directions = [share, ...entries.map(entry => entry.topic), cfg.exploration?.nextTopic, cfg.exploration?.interest]
+    .map(safeExplorationTopic).filter(Boolean);
+  return { recent, directions: [...new Set(directions)] };
+}
+
+function directionTopicKey(text) {
+  const value = String(text || '').trim();
+  const title = value.match(/^(?:[^《》]{1,24}[：:]\s*)?《([^《》]+)》$/u)?.[1] ||
+    (explorationDirectionSite(value.split(/[：:]/u)[0]) ? value.replace(/^[^：:]+[：:]\s*/u, '') : value);
+  return title.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+}
+
+export function applyExplorationDirection(direction, input) {
+  const { cfg } = input;
+  const message = verifiedExplorationInput(input);
+  if (message !== direction.quote || !looksLikeExplorationDirection(message)) return '';
+  const target = safeExplorationTopic(direction.target);
+  if (!target) return '';
+  const options = cfg.exploration;
+  let title = target;
+  try {
+    if (direction.action === 'focus') {
+      const site = explorationDirectionSite(message);
+      if (site && !explorationDirectionSite(target)) title = site + '：' + target;
+      if (title.length > 120) return '';
+      saveConfig({ ...cfg, exploration: { ...options, nextTopic: title } });
+    } else {
+      if (!explorationDirectionContext(input).directions.includes(target) ||
+          !recordExplorationDirection({ cfg, action: direction.action, topic: target })) return '';
+      const clearNext = Boolean(options?.nextTopic && (
+        directionTopicKey(options.nextTopic) === directionTopicKey(target) ||
+        topicInExplorationFeedback(options.nextTopic, [target])
+      ));
+      const clearInterest = Boolean(options?.interest && (
+        directionTopicKey(options.interest) === directionTopicKey(target) ||
+        topicInExplorationFeedback(options.interest, [target])
+      ));
+      if (clearNext || clearInterest) {
+        saveConfig({
+          ...cfg,
+          exploration: {
+            ...options,
+            ...(clearNext ? { nextTopic: '' } : {}),
+            ...(clearInterest ? { interest: '' } : {}),
+          },
+        });
+      }
+    }
+  } catch {
+    return '<qq_reply_context>\n【陪伴探索方向保存异常】按实际情况说明，别承诺更改已经完成。\n</qq_reply_context>';
+  }
+  const effect = direction.action === 'focus' ? '已设为下一轮探索主题'
+    : direction.action === 'change' ? '已放下旧方向，接下来换个题目' : '已放下这个探索方向';
+  return '<qq_reply_context>\n【陪伴探索方向已更新】按人设自然确认一句，无需调用工具。' +
+    JSON.stringify({ 主题: title, 效果: effect }) + '\n</qq_reply_context>';
 }
 
 const exec = promisify(execFile);
@@ -104,10 +185,12 @@ export async function executeQqCommand({ cmd, cfg, media, explore, state, person
       const result = await explore(cmd.params);
       if (!result?.ok) return { text: result?.reason === 'UNAVAILABLE' ? '手头那轮探索还在跑，这次没能再起一轮。'
         : '这轮探索没跑完，没拿到新进展。' };
-      if (result.action === 'skip' || !result.thread?.progress) return { text: '这一轮看过了，暂时没有新进展。' };
-      return { text: ['刚把「' + brief(result.thread.topic, 40) + '」往前推了一点。',
-        brief(result.thread.progress, 170),
-        ...(result.thread.next ? ['接下来：' + brief(result.thread.next, 90)] : [])].join('\n') };
+      const entry = result.action === 'light' ? result.light : result.thread;
+      const progress = entry?.progress || entry?.summary;
+      if (result.action === 'skip' || !progress) return { text: '这一轮看过了，暂时没有新进展。' };
+      return { text: ['刚把「' + brief(entry.topic, 40) + '」往前推了一点。',
+        brief(progress, 170),
+        ...(entry.next ? ['接下来：' + brief(entry.next, 90)] : [])].join('\n') };
     }
     case 'summarize_notes':
       return { text: summarizeExplorationNotes(state(), persona(), cmd.params.target, now, cfg.timezone) };

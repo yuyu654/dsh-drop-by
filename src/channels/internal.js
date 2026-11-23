@@ -313,11 +313,70 @@ async function readSessionEvents({ sessionId, sessions, controller, persistence,
   return { events: [], title: '' };
 }
 
+export function extractSessionModelFromEvents(events) {
+  let pending = null;
+  let lastUsed = null;
+  for (const event of Array.isArray(events) ? events : []) {
+    const data = event?.data && typeof event.data === 'object' ? event.data : event;
+    if (event?.type === 'model/selection') {
+      const provider = String(data?.provider || '').trim();
+      const model = String(data?.model || '').trim();
+      if (provider && model) pending = { provider, model };
+      continue;
+    }
+    if (event?.type === 'request/header') {
+      const config = data?.header?.config ?? data?.config;
+      const provider = String(config?.provider || '').trim();
+      const model = String(config?.model || '').trim();
+      if (provider && model) {
+        lastUsed = { provider, model };
+        if (pending && pending.provider === provider && pending.model === model) pending = null;
+      }
+    }
+  }
+  return pending || lastUsed || null;
+}
+
+export function observeBoundSessionModel(session, event) {
+  const sid = String(session?.id || '').trim();
+  if (!sid || sid !== sharedSessionId()) return null;
+  if (event?.type !== 'model/selection' && event?.type !== 'request/header') return null;
+  const picked = extractSessionModelFromEvents([event]);
+  if (!picked) return null;
+  const binding = readChatData('external-chat');
+  const nextModel = { sessionId: sid, provider: picked.provider, model: picked.model };
+  if (binding.sessionModel?.sessionId !== sid ||
+      binding.sessionModel?.provider !== nextModel.provider ||
+      binding.sessionModel?.model !== nextModel.model) {
+    writeChatData('external-chat', { ...binding, sessionModel: nextModel });
+  }
+  return nextModel;
+}
+
+export async function syncBoundSessionModel({ sessionId = sharedSessionId(), sessions, controller, persistence, timeoutMs = 3000 } = {}) {
+  const sid = String(sessionId || '').trim();
+  if (!sid) return null;
+  const { events } = await readSessionEvents({ sessionId: sid, sessions, controller, persistence, timeoutMs });
+  const picked = extractSessionModelFromEvents(events);
+  if (!picked) return null;
+  const nextModel = { sessionId: sid, provider: picked.provider, model: picked.model };
+  const binding = readChatData('external-chat');
+  if (binding.sessionId === sid && (
+    binding.sessionModel?.sessionId !== sid ||
+    binding.sessionModel?.provider !== nextModel.provider ||
+    binding.sessionModel?.model !== nextModel.model
+  )) {
+    writeChatData('external-chat', { ...binding, sessionModel: nextModel });
+  }
+  return nextModel;
+}
+
 export async function syncInternalHistory({ sessionId = internalSessionId(), sessions, controller, persistence, timeoutMs = 5000 } = {}) {
   const sid = String(sessionId || '').trim();
   if (!sid) return null;
   const { events, title: metaTitle } = await readSessionEvents({ sessionId: sid, sessions, controller, persistence, timeoutMs });
   const parsed = extractDialogueFromEvents(events, sid);
+  const sessionModel = extractSessionModelFromEvents(events);
   const title = parsed.title || metaTitle || '';
   const now = Date.now();
   const state = updateInternalState(sid, (s) => {
@@ -336,10 +395,23 @@ export async function syncInternalHistory({ sessionId = internalSessionId(), ses
       dialogue: keepExisting ? s.dialogue : (parsed.dialogue.length ? parsed.dialogue : (s.dialogue || [])),
     };
   });
-  if (title) {
+  if (title || sessionModel) {
     const binding = readChatData('external-chat');
-    if (binding.sessionId === sid && binding.sessionTitle !== title) {
-      writeChatData('external-chat', { ...binding, sessionTitle: title });
+    if (binding.sessionId === sid) {
+      const nextModel = sessionModel ? { sessionId: sid, provider: sessionModel.provider, model: sessionModel.model } : binding.sessionModel;
+      const titleChanged = Boolean(title && binding.sessionTitle !== title);
+      const modelChanged = Boolean(sessionModel && (
+        binding.sessionModel?.sessionId !== sid ||
+        binding.sessionModel?.provider !== sessionModel.provider ||
+        binding.sessionModel?.model !== sessionModel.model
+      ));
+      if (titleChanged || modelChanged) {
+        writeChatData('external-chat', {
+          ...binding,
+          ...(title ? { sessionTitle: title } : {}),
+          ...(nextModel ? { sessionModel: nextModel } : {}),
+        });
+      }
     }
   }
   return state;

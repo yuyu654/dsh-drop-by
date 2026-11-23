@@ -160,7 +160,11 @@ export function createSessionRollover({ controller, projections, workspaceRegist
         (await controller.projections({ sessionId: oldSessionId }, AbortSignal.timeout(5000)))?.values?.contextPressure,
       );
       const { thresholdPercent, carryMessages, prepareBindingFile } = options;
-      if (!usage || usage.ratio * 100 < thresholdPercent) return;
+      if (!usage) return;
+      const maxWindow = Math.max(1000, Number(options.maxWindowTokens) || 120_000);
+      const effectiveLimit = Math.min(usage.limit, maxWindow);
+      const effectiveRatio = Math.max(usage.ratio, effectiveLimit > 0 ? usage.used / effectiveLimit : 0);
+      if (effectiveRatio * 100 < thresholdPercent) return;
 
       const snapshot = await controller.inspect(oldSessionId, AbortSignal.timeout(5000));
       const workspaces = workspaceRegistry()?.list?.() || [];
