@@ -452,3 +452,60 @@ test('内部会话用户发消息经过 controller.prompt 时注入角色上下�
   await h.controller.prompt({ sessionId: 'bound-s', content: [{ type: 'text', text: proactiveText }] });
   assert.equal(h.prompts[2].content[0].text, proactiveText);
 });
+
+test('通用会话选择：QQ 和抖音模式下可直接选择已有会话或新建会话并实时切换绑定', async (t) => {
+  const h = setupHost(t, {
+    qq: true,
+    existingSessions: [
+      { id: 'sess-a', title: '日常聊 A', cwd: '/ws', updatedAt: Date.now() - 1000 },
+      { id: 'sess-b', title: '新主题 B', cwd: '/ws', updatedAt: Date.now() },
+    ],
+    config: {
+      channels: { primary: 'qq', qq: { peerId: '10001' }, douyin: { peerSecUid: 'MS4w-dy', peerName: '测试好友' } },
+      send: { enabled: false },
+    },
+  });
+
+  // QQ 模式下选择 sess-a
+  const pickA = await h.request('POST', '/chat/session', { sessionId: 'sess-a' }, { host: '127.0.0.1:53276' });
+  assert.equal(pickA.status, 200);
+  assert.equal(pickA.json.ok, true, pickA.json.error);
+  assert.equal(pickA.json.sessionId, 'sess-a');
+  assert.equal(chatBinding().sessionId, 'sess-a');
+  assert.equal(h.bridge.get('sess-a')?.enabled, true);
+  assert.equal(h.bridge.get('sess-a')?.peerId, '10001');
+
+  // QQ 模式下改选 sess-b：应停用旧绑定 sess-a，并绑定 sess-b
+  const pickB = await h.request('POST', '/chat/session', { sessionId: 'sess-b' }, { host: '127.0.0.1:53276' });
+  assert.equal(pickB.status, 200);
+  assert.equal(pickB.json.ok, true, pickB.json.error);
+  assert.equal(chatBinding().sessionId, 'sess-b');
+  assert.equal(h.bridge.get('sess-a')?.enabled, false);
+  assert.equal(h.bridge.get('sess-b')?.enabled, true);
+  assert.equal(h.bridge.get('sess-b')?.peerId, '10001');
+
+  // GET /sessions 应准确反映当前绑定会话
+  const listed = await h.request('GET', '/sessions');
+  assert.equal(listed.json.ok, true);
+  assert.equal(listed.json.boundSessionId, 'sess-b');
+  assert.equal(listed.json.primary, 'qq');
+
+  // QQ 模式下新建并接入会话
+  const created = await h.request('POST', '/chat/session', { create: true, title: '新建QQ会话' }, { host: '127.0.0.1:53276' });
+  assert.equal(created.status, 200);
+  assert.equal(created.json.ok, true, created.json.error);
+  const newSid = created.json.sessionId;
+  assert.ok(newSid);
+  assert.equal(h.bridge.get('sess-b')?.enabled, false);
+  assert.equal(h.bridge.get(newSid)?.enabled, true);
+  assert.equal(chatBinding().sessionId, newSid);
+
+  // 切到抖音模式后也能通过 /chat/session 选择已有会话
+  const toDy = await h.save('channels.primary', 'douyin');
+  assert.equal(toDy.json.ok, true, toDy.json.error);
+  const pickDy = await h.request('POST', '/chat/session', { sessionId: 'sess-a' }, { host: '127.0.0.1:53276' });
+  assert.equal(pickDy.status, 200);
+  assert.equal(pickDy.json.ok, true, pickDy.json.error);
+  assert.equal(chatBinding().sessionId, 'sess-a');
+  assert.equal(chatBinding().sessionTitle, '日常聊 A');
+});

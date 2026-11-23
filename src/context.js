@@ -305,7 +305,12 @@ export function buildContext({ cfg, now, st, ch, sys, tz }) {
         if (avoided) { selfMiss ||= 'share_avoided'; return null; }
         if (topicCool) { selfMiss ||= 'share_topic_cooldown'; return null; }
         if (loginSent || discoverySent || usedAlready) { selfMiss ||= 'already_used'; return null; }
-        return { ...candidate, exploration: true };
+        const linkAlreadySent = Boolean(
+          candidate.continuation &&
+          !candidate.loginSite &&
+          topicInExplorationFeedback(candidate.section, st?.content?.sharedLinkTopics || []),
+        );
+        return { ...candidate, exploration: true, ...(linkAlreadySent ? { linkAlreadySent: true } : {}) };
       };
       const usableMemItem = mem?.items.find((x) => !x.private && !recentShareLines.has(String(x.line || '').slice(0, 80))) || null;
       const rawExploreShare = explorationShare(exploration, persona, now, cfg?.exploration);

@@ -377,7 +377,7 @@ export function createExplorationMedia({ tools, webService, web, video, extraToo
     web: Boolean(webReady),
     video: Boolean(videoReady),
     extSources,
-    async browse({ initialQuery = '', preferredSites = [], anchorQuery = '', anchorKeywords = '', interest = '', pinnedTopic = '', mode = 'leisure', personaText = '', generate, maxSteps = browseMaxSteps } = {}) {
+    async browse({ initialQuery = '', preferredSites = [], anchorQuery = '', anchorKeywords = '', interest = '', pinnedTopic = '', memoryHint = '', mode = 'leisure', personaText = '', generate, maxSteps = browseMaxSteps } = {}) {
       if (!webReady) return { sources: [], query: initialQuery, stepsUsed: 0 };
       return runBrowserExploreLoop({
         maxSteps,
@@ -387,6 +387,7 @@ export function createExplorationMedia({ tools, webService, web, video, extraToo
         anchorKeywords,
         interest,
         pinnedTopic,
+        memoryHint,
         mode,
         personaText,
         generate,

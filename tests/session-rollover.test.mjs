@@ -182,11 +182,37 @@ test('pendingRollovers exposes binding metadata and dismissRollover hides dismis
   assert.equal(dismissRollover(f.base.file, 'missing-session'), false);
 });
 
-test('effective window cap triggers rollover around 96k tokens even when a 1M-context plugin inflates contextWindow', async (t) => {
+test('rollover uses actual contextWindow ratio by default and respects explicit maxWindowTokens cap', async (t) => {
   const f = fixture(t);
-  f.setPressure({ projectedTokens: 96_000, contextWindow: 1_000_000 });
+  f.cfg.rules.qqRollover.thresholdPercent = 35;
+  f.setPressure({ projectedTokens: 67_021, contextWindow: 262_144 });
   const rollover = createSessionRollover(f.base);
+  await rollover.handleEvent(old, end);
+  assert.equal(f.calls.create.length, 0);
+
+  f.cfg.rules.qqRollover.thresholdPercent = 80;
+  f.cfg.rules.qqRollover.maxWindowTokens = 120_000;
+  f.setPressure({ projectedTokens: 96_000, contextWindow: 1_000_000 });
   await rollover.handleEvent(old, end);
   assert.deepEqual(f.calls.create, [{ workspaceId: 'ws-1' }]);
   assert.equal(f.state().newSessionId, nextId);
+});
+
+test('conversation extraction skips DSH host-injected runtime, memory, time, and hindsight user messages', () => {
+  const history = [
+    user('第一句真实消息'),
+    assistant('第一句回复'),
+    user('Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\n## 人格设定（AGENT.md）'),
+    user('<hindsight_pages>\nThis repository has Hindsight...\n</hindsight_pages>'),
+    user('Time sampled while preparing turn 165, step 1: 2026-11-23T20:57:40+08:00'),
+    user('MNEMON RUNTIME MEMORY SNAPSHOT\nUSER.md...'),
+    user('第二句真实消息'),
+    assistant('第二句回复'),
+  ];
+  assert.deepEqual(extractHandoffMessages(history, 10, stripQqSourceHeader), [
+    { role: 'user', text: '第一句真实消息' },
+    { role: 'assistant', text: '第一句回复' },
+    { role: 'user', text: '第二句真实消息' },
+    { role: 'assistant', text: '第二句回复' },
+  ]);
 });

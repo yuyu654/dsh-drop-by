@@ -1,6 +1,8 @@
 import { loadConfig } from './config.js';
 import { loadPersona } from './persona.js';
 import { explorationStatus, explorationMood, loadExploration, recentExploration, toneOf } from './explore.js';
+import { recallExplorationMemories } from './exploration-memory.js';
+import { publicExplorationUrl } from './explore-media.js';
 import { ATTRIBUTION_RULE } from './attribution.js';
 import { characterRestAt, WOKEN_HINT } from './character-rest.js';
 import { consumeQqAction, pendingQqProposal, qqCommandPreflight, queueQqCommand } from './action-proposal.js';
@@ -29,7 +31,7 @@ export function qqReplyContext({ peer, kind, cfg = loadConfig(), now = Date.now(
   state = loadExploration(), persona = loadPersona({ cfg }), text = '', minimal = false } = {}) {
   if (kind !== 'private' || !peer || String(peer) !== chatPeer(cfg) || cfg.enabled === false || !canReadChat(cfg)) return '';
   const status = explorationStatus(state, persona);
-  const { thread, leisure, light, candidate } = status;
+  const { thread, leisure, light, candidate, memories } = status;
   const { avoid } = explorationFeedbackHints(cfg, status, now);
   const recent = (entry) => recentExploration(entry, now, cfg.exploration);
   const visible = entry => recent(entry) && !topicInExplorationFeedback(entry.topic, avoid);
@@ -37,10 +39,23 @@ export function qqReplyContext({ peer, kind, cfg = loadConfig(), now = Date.now(
     topic, progress: summary || progress,
     ...(checkpoint ? { checkpoint } : {}),
     ...(discovery ? { discovery } : {}),
-    ...(sources?.length ? { sources: sources.slice(0, 1).map(({ title, evidence }) => ({ title, evidence })) } : {}),
+    ...(sources?.length ? {
+      sources: sources.slice(0, 1).map(({ title, evidence, url }) => {
+        const safeUrl = publicExplorationUrl(url)?.href;
+        return { title, evidence, ...(safeUrl ? { url: safeUrl } : {}) };
+      }),
+    } : {}),
   });
   const isLightMode = cfg.exploration?.mode === 'light';
   const lowSignal = Boolean(minimal || isMinimalReply(text) || isExplicitClose(text));
+  const recalledSelf = !lowSignal && !isLightMode && Array.isArray(memories) && memories.length
+    ? recallExplorationMemories(memories, {
+      query: text,
+      now,
+      limit: 3,
+      excludeTexts: [thread?.progress, leisure?.progress, candidate?.discovery].filter(Boolean),
+    }).filter((item) => !topicInExplorationFeedback(item.topic, avoid))
+    : [];
   const mood = cfg.exploration?.mood === true ? explorationMood(state, persona, now, cfg.exploration) : null;
   const portrait = portraitMood(cfg, persona, now);
   const portraitFull = cfg.exploration?.portrait === true ? readPortraitMoodMap({ peer: emotionPeer(cfg), now }) : '';
@@ -52,7 +67,27 @@ export function qqReplyContext({ peer, kind, cfg = loadConfig(), now = Date.now(
     ...(!lowSignal && !isLightMode && visible(thread) ? { 研究进展: describe(thread) } : {}),
     ...(!lowSignal && !isLightMode && visible(leisure) ? { 休闲发现: describe(leisure) } : {}),
     ...(!lowSignal && visible(light) ? { 随手看过: { topic: light.topic, summary: light.summary || light.progress, ...(light.sources?.length ? { sources: light.sources.slice(0, 1).map(({ title, evidence }) => ({ title, evidence })) } : {}) } } : {}),
-    ...(!lowSignal && recent(candidate) && !candidate.loginSite && !topicInExplorationFeedback(candidate.section, avoid) ? { 分享线索: { topic: candidate.section, line: candidate.line, evidence: candidate.source?.evidence } } : {}),
+    ...(!lowSignal && recent(candidate) && !candidate.loginSite && !topicInExplorationFeedback(candidate.section, avoid) ? {
+      分享线索: {
+        topic: candidate.section,
+        line: candidate.line,
+        evidence: candidate.source?.evidence,
+        ...(publicExplorationUrl(candidate.source?.url)?.href ? { url: publicExplorationUrl(candidate.source.url).href } : {}),
+      },
+    } : {}),
+    ...(recalledSelf.length ? {
+      我自己的事: recalledSelf.map(({ topic: t, text: body, checkpoint: cp, next: nxt, tags, sourceUrl }) => {
+        const safeUrl = publicExplorationUrl(sourceUrl)?.href;
+        return {
+          topic: t,
+          text: body,
+          ...(cp ? { checkpoint: cp } : {}),
+          ...(nxt ? { next: nxt } : {}),
+          ...(safeUrl ? { url: safeUrl } : {}),
+          tags,
+        };
+      }),
+    } : {}),
     // 只放情绪，不把探索里的业务词（术语、参数、标题）带进私聊：语气层不外泄事实
     ...(mood && toneOf(mood.text) ? { 当前感受: toneOf(mood.text) } : {}),
     ...(portraitLine ? { 私聊延续的心情: portraitLine } : {}),
@@ -74,7 +109,7 @@ export function qqReplyContext({ peer, kind, cfg = loadConfig(), now = Date.now(
     ACTION_PROMPT_RULE,
     (internalPrimary(cfg) ? '优先接住这次内部会话消息。' : douyinPrimary(cfg) ? '优先接住这次抖音私聊消息。' : '优先接住这次 QQ 消息。') + '当前话题自然相关时可以顺带提一句自己的新进展，没必要等对方专门来问。按证据区分查到、看过和猜想。缺少的信息留作待确认。',
     REPLY_PACING_RULE,
-    '有感受时可按人设带进语气，让用户这次的明确回复影响表达。简短回复和沉默不等于冷落，不催、不强行转回探索话题。角色背景和以上任何标记块禁止念出来、复述或带进回复，也禁止替用户预测/续写下一句提问；只针对标签外用户本次发来的原话作答。',
+    '有感受时可按人设带进语气，让用户这次的明确回复影响表达。简短回复和沉默不等于冷落，不催、不强行转回探索话题。记录里若带有 url，平时聊天不要主动发链接；只有用户明确索要链接、网址、原帖或地址时，才把对应记录里的真实 url 原样发出去，严禁编造网址。角色背景和以上任何标记块禁止念出来、复述或带进回复，也禁止替用户预测/续写下一句提问；只针对标签外用户本次发来的原话作答。',
     '</qq_reply_context>',
   ].join('\n');
 }

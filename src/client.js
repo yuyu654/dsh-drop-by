@@ -990,23 +990,23 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
 
         var primaryChannel = state && state.externalChat ? state.externalChat.primary : '';
         useEffect(function () {
-          if (primaryChannel === 'internal') loadHostSessions();
+          if (primaryChannel) loadHostSessions();
         }, [primaryChannel, loadHostSessions]);
 
-        function onBindInternalSession(body) {
+        function onBindChatSession(body) {
           setBindingBusy(true);
-          apiPost('/internal/session', body).then(function (r) {
+          apiPost('/chat/session', body).then(function (r) {
             if (!mounted.current) return;
-            if (!r || r.ok === false) throw new Error((r && r.error) || '绑定失败');
+            if (!r || r.ok === false) throw new Error((r && r.error) || '切换会话失败');
             if (r.state) setState(r.state);
             if (r.sessionId) setSelectedSessionId(r.sessionId);
             setConnectivity(null);
             setPreview(null);
             loadDiagnostics();
             loadHostSessions();
-            flash((r.notes && r.notes[0]) || '内部会话已绑定', 'ok');
+            flash((r.notes && r.notes[0]) || '聊天接入会话已切换', 'ok');
           }).catch(function (e) {
-            if (mounted.current) flash((e && e.message) || '绑定失败', 'err');
+            if (mounted.current) flash((e && e.message) || '切换会话失败', 'err');
           }).finally(function () {
             if (mounted.current) setBindingBusy(false);
           });
@@ -1815,7 +1815,12 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
               explorationItems.map(function (item) {
                 return h(Row, { key: item.path, item: item, busy: busy, onSave: onSave });
               })
-            ) : null
+            ) : null,
+            h(
+              'div',
+              { className: 'pg-row-hint', style: { marginTop: '10px', paddingTop: '8px', borderTop: '1px solid var(--pg-border, rgba(128,128,128,0.16))' } },
+              '注：鉴于不同外部记忆插件间的适配性差异，深度探索采用内置记忆机制；其遗忘衰减、召回强化与标签归类借鉴了插件「鱼的记忆（dsh-fish-memory）」的设计思路，并非原创，特此致谢。本插件仅作免费开源与个人学习交流，不用于任何商业及盈利用途，如有不妥请联系移除。'
+            )
           ) : null,
           channelItems.length || (state && state.externalChat) ? (function () {
             var ec = (state && state.externalChat) || {};
@@ -1861,13 +1866,15 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
                 channelItems.map(function (item) {
                   return h(Row, { key: item.path, item: item, busy: busy, onSave: onSave });
                 }),
-                p === 'internal' ? h('div', { className: 'pg-row' },
+                h('div', { className: 'pg-row' },
                   h('div', { className: 'pg-row-text' },
-                    h('div', { className: 'pg-row-label' }, '绑定内部会话'),
+                    h('div', { className: 'pg-row-label' }, '聊天接入会话'),
                     h('div', { className: 'pg-row-hint' },
                       hostSessions.length
-                        ? '从当前 DSH 的 ' + hostSessions.length + ' 个会话中选择绑定，或新建一条陪伴会话。'
-                        : (sessionsLoading ? '正在读取 DSH 会话列表…' : '未找到可绑定的已有会话，可直接新建陪伴会话。')
+                        ? '从当前 DSH 的 ' + hostSessions.length + ' 个会话中选择让' +
+                          (p === 'qq' ? ' QQ ' : p === 'douyin' ? '抖音私信' : '内部聊天') +
+                          '接入的会话，或直接新建一条。'
+                        : (sessionsLoading ? '正在读取 DSH 会话列表…' : '未找到可选择的已有会话，可直接新建陪伴会话。')
                     )
                   ),
                   h('div', { className: 'pg-row-ctl pg-row-ctl-wrap' },
@@ -1879,7 +1886,11 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
                     },
                       !hostSessions.length ? h('option', { value: '' }, '暂无已有会话') : null,
                       hostSessions.map(function (s) {
-                        var label = (s.title || '未命名会话') + ' [' + s.id.slice(0, 8) + ']' + (s.id === ec.sessionId ? '（当前）' : '');
+                        var wsName = s.cwd ? String(s.cwd).replace(/[\\/]+$/, '').split(/[\\/]/).pop() : '';
+                        var label = (s.title || '未命名会话') +
+                          (wsName ? ' · ' + wsName : '') +
+                          ' [' + s.id.slice(0, 8) + ']' +
+                          (s.id === ec.sessionId ? '（当前）' : '');
                         return h('option', { key: s.id, value: s.id }, label);
                       })
                     ),
@@ -1887,14 +1898,14 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
                       type: 'button',
                       className: 'pg-btn pg-btn-primary',
                       disabled: busy || bindingBusy || !selectedSessionId || selectedSessionId === ec.sessionId,
-                      onClick: function () { onBindInternalSession({ sessionId: selectedSessionId }); },
-                    }, bindingBusy ? '绑定中…' : '绑定所选'),
+                      onClick: function () { onBindChatSession({ sessionId: selectedSessionId }); },
+                    }, bindingBusy ? '切换中…' : '接入所选会话'),
                     h('button', {
                       type: 'button',
                       className: 'pg-btn',
                       disabled: busy || bindingBusy,
-                      onClick: function () { onBindInternalSession({ create: true }); },
-                    }, '新建陪伴会话'),
+                      onClick: function () { onBindChatSession({ create: true }); },
+                    }, '新建并接入'),
                     h('button', {
                       type: 'button',
                       className: 'pg-btn',
@@ -1902,7 +1913,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
                       onClick: loadHostSessions,
                     }, sessionsLoading ? '刷新中…' : '刷新列表')
                   )
-                ) : null
+                )
               ) : null
             );
           })() : null,

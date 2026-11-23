@@ -5,6 +5,7 @@ const HANDOFF_HEADING = '【上一会话近期对话前情（已切换新会话�
 const INJECTED_HEADS = [
   HANDOFF_HEADING, '【dsh-drop-by 角色背景】', '【来源归属铁律】', '【陪伴动作', '【陪伴任务',
 ];
+const HOST_INJECTED_USER_RE = /^(?:Current runtime context\.|Time sampled while preparing turn\b|MNEMON RUNTIME MEMORY SNAPSHOT\b|## 人格设定（AGENT\.md）|<hindsight_pages\b|<hindsight_page_refresh\b|<system-reminder\b)/u;
 
 export function contextUsage(pressure) {
   const used = pressure?.projectedTokens ?? pressure?.pressureTokens;
@@ -22,7 +23,7 @@ function textContent(content) {
 
 function stripUserEnvelope(text, stripSourceHeader) {
   let user = text.trim();
-  if (user.startsWith('<dsh_drop_by_proactive>') || user.startsWith('[dsh-drop-by 主动消息')) return '';
+  if (user.startsWith('<dsh_drop_by_proactive>') || user.startsWith('[dsh-drop-by 主动消息') || HOST_INJECTED_USER_RE.test(user)) return '';
   while (true) {
     if (user.startsWith('<qq_reply_context>')) {
       const close = user.indexOf('</qq_reply_context>');
@@ -44,6 +45,7 @@ function stripUserEnvelope(text, stripSourceHeader) {
     }
     break;
   }
+  if (HOST_INJECTED_USER_RE.test(user)) return '';
   user = user.replace(/^【抖音私信原文】\s*/u, '');
   return stripSourceHeader(user).trim();
 }
@@ -161,8 +163,10 @@ export function createSessionRollover({ controller, projections, workspaceRegist
       );
       const { thresholdPercent, carryMessages, prepareBindingFile } = options;
       if (!usage) return;
-      const maxWindow = Math.max(1000, Number(options.maxWindowTokens) || 120_000);
-      const effectiveLimit = Math.min(usage.limit, maxWindow);
+      const configuredMax = Number(options.maxWindowTokens);
+      const effectiveLimit = Number.isFinite(configuredMax) && configuredMax >= 1000
+        ? Math.min(usage.limit, configuredMax)
+        : usage.limit;
       const effectiveRatio = Math.max(usage.ratio, effectiveLimit > 0 ? usage.used / effectiveLimit : 0);
       if (effectiveRatio * 100 < thresholdPercent) return;
 

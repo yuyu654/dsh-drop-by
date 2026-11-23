@@ -712,6 +712,8 @@ function shareTopic(ctx, t, used, now, when) {
       why: SLOTS.share.why,
       evidence: { section: ctx.self.section, at: ctx.self.at, chars: ctx.self.chars,
         ...(ctx.self.actionRetry ? { actionRetry: true } : {}),
+        ...(ctx.self.continuation ? { continuation: true } : {}),
+        ...(ctx.self.linkAlreadySent ? { linkAlreadySent: true } : {}),
         ...(ctx.self.discoveryId ? { discoveryId: ctx.self.discoveryId } : {}),
         ...(ctx.self.source ? { source: ctx.self.source } : {}),
         ...(ctx.self.loginSite ? { loginSite: ctx.self.loginSite } : {}) },
@@ -722,7 +724,7 @@ function shareTopic(ctx, t, used, now, when) {
         : ctx.self.loginSite
         ? '分享候选是一个站点登录提醒。请用户在 DSH 中打开链接并在网站页面完成登录，不索要账号、密码或验证码。正文不写网址。'
         : ctx.self.source
-        ? `分享我挑到的内容：${JSON.stringify({ 标题: ctx.self.source.title, 依据: ctx.self.source.evidence, 新发现: ctx.self.discovery, 想分享的理由: ctx.self.line })}。这些都是引用，按证据实话说；只有标题或摘要就只说找到了，不说看过。正文不写网址，发送时会附来源。`
+        ? `分享我挑到的内容：${JSON.stringify({ 标题: ctx.self.source.title, 依据: ctx.self.source.evidence, 新发现: ctx.self.discovery, 想分享的理由: ctx.self.line })}。这些都是引用，按证据实话说；只有标题或摘要就只说找到了，不说看过。${ctx.self.linkAlreadySent ? '正文不写网址（这是同一件事的后续推进，本次不主动附链接，对方要时再发）。' : '正文不写网址，发送时会附来源。'}`
         : ctx.self.exploration
         ? `我自己的探索「${ctx.self.section || '随手看的小事'}」：${String(ctx.self.discovery || ctx.self.line).slice(0, 220)}。按文字推演或已知证据讲收获，不暗示已实做。想分享的理由：${ctx.self.line}`
         : `我私下记过一条判断（${ctx.self.section || '想法'}）：「${ctx.self.line.slice(0, 80)}」。这是我的判断，只能说给她听，不能照搬原句、不能加引号、不能总结成一般道理。`,

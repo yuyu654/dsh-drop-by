@@ -303,6 +303,7 @@ export async function runBrowserExploreLoop({
   anchorKeywords = '',
   interest = '',
   pinnedTopic = '',
+  memoryHint = '',
   mode = 'leisure',
   personaText = '',
   generate,
@@ -370,6 +371,7 @@ export async function runBrowserExploreLoop({
         '- {"action":"look","prompt":"想重点看清画面里的什么"}（把当前页面截图/漫画图片发给识图模型阅读）',
         '- {"action":"done","summary":"本轮在网站里实际看到的收获（2-4句）"}（拿到足够素材就尽早收尾，别浪费步数）',
         pinnedTopic || interest ? `本轮目标：${pinnedTopic || interest}。若指定了具体作品，只看该作品，不要偏题。` : '',
+        memoryHint ? `上次探索记忆（请顺着上次进度继续往下看，避免重复停留在已看过的内容）：\n${memoryHint}` : '',
         step >= limit - 2 ? '已接近步数上限，请立刻输出 {"action":"done","summary":"..."} 收尾。' : '',
         JSON.stringify({
           persona: String(personaText || '').slice(0, 1200),

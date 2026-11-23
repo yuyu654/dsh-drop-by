@@ -33,6 +33,23 @@ export function qqRolloverAdapter(home = dshHome()) {
         enabled: entry.enabled !== false,
       } : null;
     },
+    activeSessionForPeer(peerId) {
+      const target = String(peerId || '').trim();
+      if (!target) return null;
+      const sessions = read().sessions || {};
+      const matches = Object.entries(sessions)
+        .filter(([, entry]) => entry && entry.enabled !== false && entry.peerKind === 'private' && String(entry.peerId) === target)
+        .map(([sessionId, entry]) => ({
+          sessionId,
+          peerId: String(entry.peerId),
+          peerKind: entry.peerKind,
+          peerName: String(entry.peerName || ''),
+          authoritative: entry.authoritative === true,
+          updatedAt: Number(entry.updatedAt) || 0,
+        }))
+        .sort((a, b) => Number(b.authoritative) - Number(a.authoritative) || b.updatedAt - a.updatedAt);
+      return matches[0] || null;
+    },
     prepareBinding({ oldSessionId, newSessionId, peerId, peerKind, triggeredAt }) {
       const data = read();
       const entry = data.sessions?.[oldSessionId];

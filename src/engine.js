@@ -86,7 +86,7 @@ function previewState(st) {
   // feedback still come from st.real, channel history, and st.feedback.
   const realOnly = [
     'lastAgendaNight', 'lastAgendaSoon', 'lastExamSoon', 'lastExamReview',
-    'lastNoReplyFor', 'lastRetryProposalAt', 'sharedExplorationIds', 'explorationLoginNotices',
+    'lastNoReplyFor', 'lastRetryProposalAt', 'sharedExplorationIds', 'sharedLinkTopics', 'explorationLoginNotices',
   ];
   const content = Object.fromEntries(realOnly.filter(key => Object.hasOwn(st.content, key)).map(key => [key, st.content[key]]));
   return { ...st, content };
@@ -748,11 +748,14 @@ export async function tick({
         }
         if (d.decision === 'send' && mediaShare && !actionProposal) {
           const url = publicExplorationUrl(mediaShare.url);
+          const suppressLink = Boolean(
+            topic.evidence?.linkAlreadySent && !topic.evidence?.loginSite,
+          );
           if (!url || /https?:\/\//i.test(content.text) ||
               (topic.evidence?.loginSite && /密码|验证码|cookie|口令|账号/i.test(content.text))) {
             d.decision = 'skip';
             d.reason = 'GUARD_REJECTED';
-          } else {
+          } else if (!suppressLink) {
             content.text += '\n' + url.href;
           }
         }
@@ -1097,6 +1100,11 @@ export async function tick({
         st.content.sharedExplorationIds = [...new Set([
           ...(st.content.sharedExplorationIds || []), topic.evidence.discoveryId,
         ])].slice(-50);
+      }
+      if (!useSim && delivery?.ok && topic.evidence?.source?.url && !topic.evidence?.linkAlreadySent && !topic.evidence?.loginSite && ctx?.self?.section) {
+        st.content.sharedLinkTopics = [...new Set([
+          ...(st.content.sharedLinkTopics || []), ctx.self.section,
+        ])].slice(-40);
       }
       if (!useSim && delivery?.ok && topic.evidence?.loginSite) {
         st.content.explorationLoginNotices = [...new Set([

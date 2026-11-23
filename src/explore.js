@@ -5,6 +5,12 @@ import { CONFIG_PATH } from './config.js';
 import { guidedWebSearch, pickInterestItem, planInitialWebSearch } from './explore-media.js';
 import { topicInExplorationFeedback } from './exploration-feedback.js';
 import { pickShareHook, recordShareHook } from './chat-rhythm.js';
+import {
+  formatMemoryHint,
+  recallExplorationMemories,
+  recordExplorationMemory,
+  reinforceExplorationMemories,
+} from './exploration-memory.js';
 
 const FILE = path.join(path.dirname(CONFIG_PATH), 'data', 'exploration.json');
 const BIAS_CYCLES = {
@@ -47,7 +53,7 @@ function resolvePlannedKind({ rawKind, media, extList = [], pinnedTopic = '', in
   return 'none';
 }
 
-async function collectInitialWeb(media, { pinnedTopic, interest, plannerQuery, light = false, mode = '', personaText = '', generate = null, timing = null, recentTopics = [], roundCount = 0 }) {
+async function collectInitialWeb(media, { pinnedTopic, interest, plannerQuery, light = false, mode = '', personaText = '', generate = null, timing = null, recentTopics = [], roundCount = 0, memoryHint = '' }) {
   const cleanPinned = cleanTopicQuery(pinnedTopic);
   const rawInterest = typeof interest === 'string' ? interest.trim().slice(0, 160) : '';
   const activeInterest = line(
@@ -70,6 +76,7 @@ async function collectInitialWeb(media, { pinnedTopic, interest, plannerQuery, l
       anchorKeywords,
       interest: activeInterest,
       pinnedTopic: cleanPinned,
+      memoryHint: light ? '' : memoryHint,
       mode: mode || (light ? 'light' : 'leisure'),
       personaText,
       generate,
@@ -150,7 +157,8 @@ export function explorationStatus(state, persona) {
     ...(state.light ? { light: state.light } : {}),
     ...(Array.isArray(state.lightHistory) ? { lightHistory: state.lightHistory } : {}),
     ...(state.lastRun ? { lastRun: state.lastRun } : {}),
-    ...(Array.isArray(state.notes) ? { notes: state.notes } : {}) };
+    ...(Array.isArray(state.notes) ? { notes: state.notes } : {}),
+    ...(Array.isArray(state.memories) ? { memories: state.memories } : {}) };
 }
 
 export function explorationShare(state, persona, now = Date.now(), timing) {
@@ -286,6 +294,7 @@ function baseExplorationState(key, now, old, prior) {
     ...(Array.isArray(old.lightHistory) ? { lightHistory: old.lightHistory } : {}),
     ...(Array.isArray(prior?.hookHistory) ? { hookHistory: prior.hookHistory.slice(-12) } : {}),
     ...(old.notes ? { notes: old.notes } : {}),
+    ...(Array.isArray(old.memories) ? { memories: old.memories } : {}),
     roundCount: (Number(prior?.roundCount) || 0) + 1,
   };
 }
@@ -509,6 +518,16 @@ export async function exploreRound({ persona, previous, interest = '', focusTopi
   const researchThread = researchThreadFor(eligibleThread, { pinnedTopic, interest, explicitResearch, retry, media });
   const eligibleLeisure = available(old.leisure);
   const leisureThread = researchThreadFor(eligibleLeisure, { pinnedTopic, interest, explicitResearch, retry, media });
+  const memoryQuery = [pinnedTopic, interest, leisureThread?.topic, researchThread?.topic].filter(Boolean).join(' ');
+  const eligibleMemories = (Array.isArray(old.memories) ? old.memories : [])
+    .filter((m) => m && !topicInExplorationFeedback(m.topic, feedback.avoid) &&
+      (!interest || pinnedTopic || matchesInterest(m.topic, interest) !== false));
+  const recalledMemories = memoryQuery
+    ? recallExplorationMemories(eligibleMemories, { query: memoryQuery, now, limit: 3, requireMatch: true })
+    : [];
+  const memorySummary = recalledMemories.map(({ topic: t, text, next: nxt, checkpoint: cp, tags }) => ({
+    topic: t, text, ...(cp ? { checkpoint: cp } : {}), ...(nxt ? { next: nxt } : {}), tags,
+  }));
   const newInterest = !retry && !explicitResearch && line(interest, 160) && eligibleThread && !researchThread;
   const every = Number(leisureEvery);
   let mode = direction || (every > 0 && (completed + 1) % every === 0 ? 'leisure' : 'research');
@@ -541,7 +560,9 @@ export async function exploreRound({ persona, previous, interest = '', focusTopi
       'kind 选择规则：漫画（含哔哩哔哩漫画/B漫）、小说、文章、专栏、帖子、网页资料或明确写「不要视频」时，kind 必须选 web（网页搜索读正文或简介），严禁选 video 或选 none 空想标题；只有明确找视频、番剧、动画或实况时才选 video。若 interest 或 requestedTopic 已指定具体作品名，query 直接搜作品名（最多带「简介」），不要附加无根据的猜测词。',
       JSON.stringify({ persona: persona.text.slice(0, 16_000), interest: line(interest, 160), thread: researchThread,
         ...(feedback.prefer ? { recentCuriosity: feedback.prefer } : {}), avoidTopics: feedback.avoid,
-        lastLeisure: leisureThread?.topic, lastMode: prior?.lastMode, streak: prior?.modeStreak,
+        lastLeisure: leisureThread ? { topic: leisureThread.topic, progress: leisureThread.progress, ...(leisureThread.next ? { next: leisureThread.next } : {}), ...(leisureThread.checkpoint ? { checkpoint: leisureThread.checkpoint } : {}) } : undefined,
+        ...(memorySummary.length ? { explorationMemories: memorySummary } : {}),
+        lastMode: prior?.lastMode, streak: prior?.modeStreak,
         requiredMode: forcedMode, requestedTopic: pinnedTopic, web: media.web, video: media.video,
         ...(extList.length ? { extSources: extList } : {}) }),
       pinnedTopic ? '本轮只能按 requestedTopic 选一条公开搜索词。' : '',
@@ -564,10 +585,12 @@ export async function exploreRound({ persona, previous, interest = '', focusTopi
     } else if (['web', 'video'].includes(plannedKind) && query && !topicInExplorationFeedback(query, feedback.avoid)) {
       kind = plannedKind;
       if (kind === 'web') {
+        const browseMemoryHint = formatMemoryHint(recalledMemories, mode === 'leisure' ? leisureThread : researchThread);
         ({ query, sources } = await collectInitialWeb(media, {
           pinnedTopic, interest, plannerQuery, mode, personaText: persona.text, generate, timing,
           recentTopics: [old.thread?.topic, old.leisure?.topic].filter(Boolean),
           roundCount: completed,
+          memoryHint: browseMemoryHint,
         }));
       } else {
         sources = await media.collect(kind, query);
@@ -607,7 +630,8 @@ export async function exploreRound({ persona, previous, interest = '', focusTopi
       (includeMood ? ',"mood":"按人设写本轮真实进展带来的一点感受和缘由，没感觉留空"' : '') +
       '}。continue 保留原题；skip 只写 action。每个字段简短。',
     JSON.stringify({ persona: persona.text.slice(0, 16_000), interest: line(interest, 160),
-      thread: working.thread, requestedTopic: pinnedTopic, ...(feedback.prefer ? { recentCuriosity: feedback.prefer } : {}),
+      thread: working.thread, ...(memorySummary.length ? { explorationMemories: memorySummary } : {}),
+      requestedTopic: pinnedTopic, ...(feedback.prefer ? { recentCuriosity: feedback.prefer } : {}),
       avoidTopics: feedback.avoid, ...(sources.length ? { sources } : {}) }),
   ].join('\n');
   let reply = retry && !sources.some((source) => source.evidence === '网页正文')
@@ -659,6 +683,11 @@ export async function exploreRound({ persona, previous, interest = '', focusTopi
     ...(progressSource !== undefined ? { progressSource } : {}), ...(links.length ? { sources: links } : {}),
     ...(checkpoint ? { checkpoint } : {}), ...(discovery ? { discovery } : {}), ...(waitingFor ? { waitingFor } : {}) };
   state.notes = appendExplorationNote(old.notes, [old.thread, old.leisure, entry]);
+  const reinforcedIds = recalledMemories
+    .filter((m) => matchesInterest(topic, m.topic) === true || m.topic === topic)
+    .map((m) => m.id);
+  const baseMemories = reinforceExplorationMemories(old.memories, reinforcedIds, now);
+  state.memories = recordExplorationMemory(baseMemories, { ...entry, mode }, { now });
   if (mode === 'leisure') state.leisure = entry;
   else state.thread = entry;
   const feeling = includeMood ? line(value.mood, 80) : '';
@@ -668,8 +697,13 @@ export async function exploreRound({ persona, previous, interest = '', focusTopi
   const effectiveDiscovery = discovery || (progress && progress !== previousEntry?.progress ? line(progress, 120) : '');
   const grounded = Boolean(effectiveDiscovery && effectiveDiscovery !== previousEntry?.discovery &&
     /正文|画面|口播|字幕/.test(evidenceOf(shareSource)));
+  const priorTopics = [old.thread, old.leisure, ...(Array.isArray(old.memories) ? old.memories : [])]
+    .map((item) => item?.topic)
+    .filter(Boolean);
+  const isContinuation = action === 'continue' || priorTopics.some((prev) => prev === topic || matchesInterest(topic, prev) === true);
   if (share && (!links.length || (shareSource && shareSource.evidence !== '需要登录'))) {
     state.candidate = { section: topic, line: share, chars: share.length, at: now,
+      ...(isContinuation ? { continuation: true } : {}),
       ...(shareHook?.style ? { hookStyle: shareHook.style } : {}),
       ...(shareSource ? { source: shareSource } : {}),
       ...(grounded ? { discovery: effectiveDiscovery, discoveryId: explorationDiscoveryId(topic, effectiveDiscovery, shareSource) } : {}) };

@@ -55,7 +55,7 @@ import {
   listExtensions, listExploreSources, notifyExternalMoodMessage, shouldUseBuiltinEmotion, inspectActiveMood,
 } from './extensions.js';
 import { bridgeLastIn, bridgeLastOut } from './outbound.js';
-import { chatBinding, chatChanging, changePrimaryChannel, bindSharedSession, localApiOrigin, localChatApi, markChatBoot, readyDouyinBinding, switchState } from './channels/chat-switch.js';
+import { chatBinding, chatChanging, changePrimaryChannel, bindSharedSession, localApiOrigin, localChatApi, markChatBoot, readyDouyinBinding, switchState, switchToQq } from './channels/chat-switch.js';
 import { douyinPeer, douyinPeerName, douyinPrimary, pollDelayMs, readDouyinState, sendDouyinText, writeChatData } from './channels/douyin-im.js';
 import {
   bindInternalDispatcher, dispatchToHostSession, internalPrimary, internalSessionId,
@@ -334,6 +334,7 @@ export function apply(ctx, config = {}) {
   const workspaceRegistry = () => registryService || serviceOf(ctx, 'workspaceRegistry');
   const sessionsHost = () => sessionsService || serviceOf(ctx, 'sessions');
   const sessionPersistence = () => persistenceService || serviceOf(ctx, 'sessionPersistence');
+  const sessionProjections = () => projectionsService || serviceOf(ctx, 'sessionProjections');
 
   let disposed = false;
   let running = false;
@@ -742,10 +743,25 @@ export function apply(ctx, config = {}) {
     continuationTimer.unref?.();
   }
 
+  function activeBoundSession(cfg = loadConfig()) {
+    const binding = chatBinding();
+    if (!internalPrimary(cfg) && !douyinPrimary(cfg)) {
+      const qqActive = qqAdapter.activeSessionForPeer?.(cfg.channels?.qq?.peerId);
+      if (qqActive?.sessionId) {
+        return {
+          ...binding,
+          sessionId: qqActive.sessionId,
+          sessionTitle: binding.sessionId === qqActive.sessionId ? (binding.sessionTitle || '') : '',
+        };
+      }
+    }
+    return binding;
+  }
+
   /** 状态快照：状态接口、工具、以及 --status 之外的自检都用它。 */
   function snapshot() {
     const cfg = loadConfig();
-    const binding = chatBinding();
+    const binding = activeBoundSession(cfg);
     const isDy = douyinPrimary(cfg);
     const isInt = internalPrimary(cfg);
     const internalState = isInt && binding.sessionId ? readInternalState(binding.sessionId) : null;
@@ -1146,15 +1162,24 @@ export function apply(ctx, config = {}) {
                   return json(200, { ...r, state: snapshot() });
                 }
                 if (route === '/sessions' && (req.method || 'GET') === 'GET') {
+                  const cfg = loadConfig();
                   const list = await listHostSessions({
                     sessions: sessionsHost(),
                     persistence: sessionPersistence(),
                     workspaceRegistry: workspaceRegistry(),
+                    projections: sessionProjections(),
                   });
-                  const b = chatBinding();
-                  return json(200, { ok: true, sessions: list, boundSessionId: b.sessionId || '', sessionTitle: b.sessionTitle || '' });
+                  const b = activeBoundSession(cfg);
+                  const matchedTitle = b.sessionId ? (list.find((item) => item.id === b.sessionId)?.title || '') : '';
+                  return json(200, {
+                    ok: true,
+                    sessions: list,
+                    boundSessionId: b.sessionId || '',
+                    sessionTitle: b.sessionTitle || matchedTitle,
+                    primary: cfg.channels.primary,
+                  });
                 }
-                if (route === '/internal/session' && req.method === 'POST') {
+                if ((route === '/chat/session' || route === '/internal/session') && req.method === 'POST') {
                   let body = {};
                   try {
                     const raw = typeof req?.on === 'function' ? await readBody(req) : '';
@@ -1163,54 +1188,103 @@ export function apply(ctx, config = {}) {
                     return json(400, { ok: false, error: '请求体不是 JSON' });
                   }
                   const cfg = loadConfig();
+                  const primary = cfg.channels.primary || 'internal';
+                  const isInt = internalPrimary(cfg);
+                  const isDy = douyinPrimary(cfg);
+                  const isQq = !isInt && !isDy;
+                  const priorBinding = chatBinding();
+                  let targetId = '';
+                  let foundTitle = '';
+                  let created = false;
                   if (body?.create === true) {
                     const customTitle = typeof body.title === 'string' ? body.title.trim().slice(0, 60) : '';
-                    const newId = await openSharedSession(cfg, undefined, 'internal', customTitle);
-                    const finalTitle = customTitle || '陪伴会话';
-                    bindSharedSession(newId, { title: finalTitle });
-                    await syncInternalHistory({
-                      sessionId: newId, sessions: sessionsHost(), controller: sessionController(), persistence: sessionPersistence(),
-                    }).catch(() => {});
-                    return json(200, {
-                      ok: true,
-                      sessionId: newId,
-                      title: finalTitle,
-                      notes: [`已新建并绑定共用会话「${finalTitle}」(${newId.slice(0, 8)})。`],
-                      state: snapshot(),
+                    targetId = await openSharedSession(cfg, undefined, isInt ? 'internal' : isDy ? 'douyin' : 'qq', customTitle);
+                    foundTitle = customTitle || '陪伴会话';
+                    created = true;
+                  } else {
+                    const sid = typeof body?.sessionId === 'string' ? body.sessionId.trim() : '';
+                    if (!sid) return json(400, { ok: false, error: '请提供 sessionId 或 create: true' });
+                    const list = await listHostSessions({
+                      sessions: sessionsHost(),
+                      persistence: sessionPersistence(),
+                      workspaceRegistry: workspaceRegistry(),
+                      projections: sessionProjections(),
                     });
+                    const matched = list.find((item) => item.id === sid);
+                    foundTitle = matched?.title || '';
+                    if (!matched) {
+                      const controller = sessionController();
+                      const live = sessionsHost()?.get?.(sid);
+                      if (live) {
+                        foundTitle = String(live.header?.title || '').trim();
+                      } else if (typeof controller?.inspect === 'function') {
+                        const info = await controller.inspect(sid, AbortSignal.timeout(cfg.send?.timeoutMs || 8000));
+                        foundTitle = String(info?.events?.findLast?.((e) => e.type === 'session/title')?.data?.title || info?.meta?.title || '').trim();
+                      } else {
+                        return json(404, { ok: false, error: '找不到该会话，请刷新列表后重试' });
+                      }
+                    }
+                    targetId = sid;
                   }
-                  const sid = typeof body?.sessionId === 'string' ? body.sessionId.trim() : '';
-                  if (!sid) return json(400, { ok: false, error: '请提供 sessionId 或 create: true' });
-                  const list = await listHostSessions({
-                    sessions: sessionsHost(),
-                    persistence: sessionPersistence(),
-                    workspaceRegistry: workspaceRegistry(),
-                  });
-                  const matched = list.find((item) => item.id === sid);
-                  let foundTitle = matched?.title || '';
-                  if (!matched) {
-                    const controller = sessionController();
-                    const live = sessionsHost()?.get?.(sid);
-                    if (live) {
-                      foundTitle = String(live.header?.title || '').trim();
-                    } else if (typeof controller?.inspect === 'function') {
-                      const info = await controller.inspect(sid, AbortSignal.timeout(cfg.send?.timeoutMs || 8000));
-                      foundTitle = String(info?.events?.findLast?.((e) => e.type === 'session/title')?.data?.title || info?.meta?.title || '').trim();
-                    } else {
-                      return json(404, { ok: false, error: '找不到该会话，请刷新列表后重试' });
+
+                  const bound = bindSharedSession(targetId, { title: foundTitle });
+                  const notes = [];
+                  if (isQq) {
+                    try {
+                      const prevQq = qqAdapter.activeSessionForPeer?.(cfg.channels?.qq?.peerId);
+                      const preservedQq = prevQq
+                        ? {
+                          peerKind: prevQq.peerKind || 'private',
+                          peerId: prevQq.peerId,
+                          ...(prevQq.peerName ? { peerName: prevQq.peerName } : {}),
+                          authoritative: true,
+                        }
+                        : null;
+                      const call = localChatApi(localApiOrigin(req.headers || {}), { timeoutMs: 12_000, headers: req.headers || {} });
+                      const qqNotes = await switchToQq(
+                        { ...bound, sessionId: targetId, qqBinding: preservedQq },
+                        call,
+                        {
+                          cfg,
+                          commit: (nextBinding) => {
+                            if (nextBinding) writeChatData('external-chat', { ...nextBinding, sessionTitle: foundTitle || nextBinding.sessionTitle || '' });
+                          },
+                        },
+                      );
+                      if (Array.isArray(qqNotes) && qqNotes.length) notes.push(...qqNotes);
+                    } catch (error) {
+                      writeChatData('external-chat', priorBinding);
+                      return json(error?.status && error.status >= 400 && error.status < 600 ? error.status : 409, {
+                        ok: false,
+                        error: error?.message || '切换 QQ 绑定会话失败',
+                      });
+                    }
+                  } else if (isInt) {
+                    await syncInternalHistory({
+                      sessionId: targetId, sessions: sessionsHost(), controller: sessionController(), persistence: sessionPersistence(),
+                    }).catch(() => {});
+                  }
+
+                  // 手动切到非待接管目标的会话时，忽略旧的待交接续聊记录，避免把别的会话前情误注入
+                  for (const pending of pendingRollovers(rolloverFile, rolloverAdapter)) {
+                    if (pending.newSessionId !== targetId) {
+                      dismissRollover(rolloverFile, pending.oldSessionId);
                     }
                   }
-                  bindSharedSession(sid, { title: foundTitle });
-                  await syncInternalHistory({
-                    sessionId: sid, sessions: sessionsHost(), controller: sessionController(), persistence: sessionPersistence(),
-                  }).catch(() => {});
-                  const latestBinding = chatBinding();
+
+                  const latestBinding = activeBoundSession(cfg);
                   const label = latestBinding.sessionTitle || foundTitle;
+                  if (!notes.length) {
+                    const verb = created ? '已新建并接入' : '已接入';
+                    const chanLabel = isQq ? 'QQ ' : isDy ? '抖音私信' : '共用';
+                    notes.push(`${verb}${chanLabel}会话${label ? `「${label}」` : ''}(${targetId.slice(0, 8)})。`);
+                  }
                   return json(200, {
                     ok: true,
-                    sessionId: sid,
+                    sessionId: targetId,
                     title: label,
-                    notes: [`已绑定共用会话${label ? `「${label}」` : ''}(${sid.slice(0, 8)})。`],
+                    primary,
+                    notes,
                     state: snapshot(),
                   });
                 }

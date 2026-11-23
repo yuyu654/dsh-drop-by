@@ -1,5 +1,8 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { loadConfig } from '../config.js';
+import { dshHome } from '../detect.js';
 import { readChatData, writeChatData } from './douyin-im.js';
 
 function stripQqHeader(text) {
@@ -433,7 +436,30 @@ function normalizeHeader(entry) {
   };
 }
 
-export async function listHostSessions({ sessions, persistence, workspaceRegistry, limit = 80 } = {}) {
+function readProjCacheMeta(sessionId, home = dshHome()) {
+  if (!sessionId || !home) return null;
+  const file = path.join(home, 'storages', 'session_projcache', 'sessions', `${sessionId}.json`);
+  try {
+    const stat = fs.statSync(file);
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const rows = parsed?.record?.rows || {};
+    const rawTitle = String(rows?.title?.val || '').trim();
+    const firstRaw = String(rows?.titleInput?.val?.first?.text || '').trim();
+    const fallbackFirst = firstRaw
+      && !/^【上一会话|^\[QQ |^<qq_reply_context>|^Current runtime context\./u.test(firstRaw)
+      ? firstRaw.split(/\r?\n/, 1)[0].trim().slice(0, 40)
+      : '';
+    const title = rawTitle || fallbackFirst;
+    const cwd = String(parsed?.record?.identity?.cwd || '').trim();
+    const createdAt = Number(parsed?.record?.identity?.createdAt) || 0;
+    const updatedAt = Math.max(Number(stat?.mtimeMs) || 0, createdAt);
+    return { title, cwd, updatedAt };
+  } catch {
+    return null;
+  }
+}
+
+export async function listHostSessions({ sessions, persistence, workspaceRegistry, projections, home = dshHome(), limit = 80 } = {}) {
   const archived = new Set(Array.isArray(workspaceRegistry?.archivedSessionIds) ? workspaceRegistry.archivedSessionIds : []);
   const map = new Map();
   const add = (item) => {
@@ -481,6 +507,31 @@ export async function listHostSessions({ sessions, persistence, workspaceRegistr
       }
     }
   } catch { /* optional */ }
+
+  // 补齐真实标题与更新时间：优先实时 projections，其次读 DSH 的 session_projcache
+  for (const [sid, entry] of map.entries()) {
+    let title = entry.title;
+    let cwd = entry.cwd;
+    let updatedAt = entry.updatedAt;
+    if (!title && typeof projections?.snapshot === 'function' && typeof sessions?.get === 'function') {
+      try {
+        const live = sessions.get(sid);
+        const projTitle = live ? String(projections.snapshot(live)?.values?.title || '').trim() : '';
+        if (projTitle) title = projTitle;
+      } catch { /* optional */ }
+    }
+    if (!title || !updatedAt || !cwd) {
+      const cached = readProjCacheMeta(sid, home);
+      if (cached) {
+        if (!title && cached.title) title = cached.title;
+        if (!cwd && cached.cwd) cwd = cached.cwd;
+        if (cached.updatedAt > updatedAt) updatedAt = cached.updatedAt;
+      }
+    }
+    if (title !== entry.title || cwd !== entry.cwd || updatedAt !== entry.updatedAt) {
+      map.set(sid, { id: sid, title, cwd, updatedAt });
+    }
+  }
 
   return [...map.values()]
     .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))
