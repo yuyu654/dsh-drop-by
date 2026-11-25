@@ -15,11 +15,11 @@ process.env.PG_SECRETS_PATH = path.join(dir, 'secrets.json');
 process.env.PG_DSH_HOME = dir;
 fs.mkdirSync(process.env.PG_LOG_DIR, { recursive: true });
 
-const { loadConfig, saveConfig, loadState } = await import('../src/config.js');
-const { tick: engineTick } = await import('../src/engine.js');
+const { loadConfig, saveConfig, loadState } = await import('../src/settings/config.js');
+const { tick: engineTick } = await import('../src/decision/engine.js');
 const tick = (options) => engineTick({ ...options, probeSystem: async () => ({ idle_ms: 0 }) });
-const { shadowEligible, shadowRate, runShadow, shadowLine } = await import('../src/shadow.js');
-const { recordDay } = await import('../src/retention.js');
+const { shadowEligible, shadowRate, runShadow, shadowLine } = await import('../src/decision/shadow.js');
+const { recordDay } = await import('../src/settings/retention.js');
 const NOW = Date.parse('2026-11-22T12:00:00+08:00');
 const TODAY = recordDay(NOW, 'Asia/Shanghai', loadConfig());
 

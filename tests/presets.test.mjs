@@ -6,9 +6,9 @@ import {
   updatePresetOverride,
   resetPresetOverride,
   presetsForUi,
-} from '../src/presets.js';
-import { applyChange } from '../src/settings.js';
-import { loadConfig } from '../src/config.js';
+} from '../src/settings/presets.js';
+import { applyChange } from '../src/settings/settings.js';
+import { loadConfig } from '../src/settings/config.js';
 
 test('presets：默认是 custom；切到套餐前自动快照原参数，切回 custom 完整恢复', () => {
   const base = loadConfig();

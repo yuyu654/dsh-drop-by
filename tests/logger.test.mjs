@@ -10,7 +10,7 @@ import path from 'node:path';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pg-log-'));
 process.env.PG_LOG_DIR = dir;
-const { append, appendOnce, tail } = await import('../src/logger.js');
+const { append, appendOnce, tail } = await import('../src/settings/logger.js');
 
 const TZ = 'Asia/Shanghai';
 const now = Date.parse('2026-11-06T10:00:00+08:00');

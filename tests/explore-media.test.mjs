@@ -17,8 +17,8 @@ test.after(() => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 
-const { createExplorationMedia, guidedWebSearch, planInitialWebSearch } = await import('../src/explore-media.js');
-const { exploreRound } = await import('../src/explore.js');
+const { createExplorationMedia, guidedWebSearch, planInitialWebSearch } = await import('../src/explore/explore-media.js');
+const { exploreRound } = await import('../src/explore/explore.js');
 
 const toolsFor = (handlers) => ({ get: (name) => handlers[name] && { execute: handlers[name] } });
 const source = { url: 'https://example.org/article', title: '厂商资料' };
@@ -363,7 +363,7 @@ test('Route A (vision_light) extracts page image and upgrades evidence to 网页
 });
 
 test('Route B (browser_agent) runs bounded multi-step open -> look -> done loop and closes tab', async () => {
-  const { runBrowserExploreLoop } = await import('../src/explore-browser.js');
+  const { runBrowserExploreLoop } = await import('../src/explore/explore-browser.js');
   let closed = false;
   let stepCount = 0;
   const actions = [
@@ -404,7 +404,7 @@ test('Route B (browser_agent) runs bounded multi-step open -> look -> done loop 
 });
 
 test('multi-item exploration.interest splits cleanly, inherits shared site prefix, and picks one work per round', async () => {
-  const { splitInterestItems, planInitialWebSearch } = await import('../src/explore-media.js');
+  const { splitInterestItems, planInitialWebSearch } = await import('../src/explore/explore-media.js');
   const shared = splitInterestItems('哔哩哔哩漫画：《作品甲》、《作品乙》');
   assert.deepEqual(shared, ['哔哩哔哩漫画:《作品甲》', '哔哩哔哩漫画:《作品乙》']);
 
@@ -430,7 +430,7 @@ test('multi-item exploration.interest splits cleanly, inherits shared site prefi
 });
 
 test('Route B prioritizes 网页画面 over 搜索摘要, merges multi-scroll look observations, and reports trace errors when vision is missing', async () => {
-  const { runBrowserExploreLoop } = await import('../src/explore-browser.js');
+  const { runBrowserExploreLoop } = await import('../src/explore/explore-browser.js');
   let step = 0;
   let lookCount = 0;
   const actions = [

@@ -61,7 +61,7 @@ fs.utimesSync(out, outAt, outAt);
 
 fs.writeFileSync(cfgPath, JSON.stringify(baseCfg));
 
-const { tick: engineTick } = await import('../src/engine.js');
+const { tick: engineTick } = await import('../src/decision/engine.js');
 const tick = (options) => engineTick({ ...options, probeSystem: async () => ({ idle_ms: 0 }) });
 
 beforeEach(t => t.mock.method(Date, 'now', () => now));

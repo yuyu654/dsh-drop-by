@@ -28,7 +28,7 @@ test.after(() => {
 const { apply } = await import('../src/plugin.js');
 const { chatBinding, changePrimaryChannel, localChatApi } = await import('../src/channels/chat-switch.js');
 const { writeChatData } = await import('../src/channels/douyin-im.js');
-const { loadConfig } = await import('../src/config.js');
+const { loadConfig } = await import('../src/settings/config.js');
 const cfg = {
   channels: { primary: 'qq', qq: { peerId: '' }, douyin: { peerSecUid: 'MS4w-test', peerName: '测试昵称' } },
   rules: { qqRollover: { enabled: true, thresholdPercent: 80, prepareBindingFile: true } },

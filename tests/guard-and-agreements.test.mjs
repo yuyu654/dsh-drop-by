@@ -11,9 +11,9 @@ process.env.PG_STATE_PATH = path.join(tmp, 'state.json');
 process.env.PG_LOG_DIR = path.join(tmp, 'logs');
 test.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
-const { guard } = await import('../src/compose.js');
-const { explainRun } = await import('../src/explain.js');
-const { agreementAnchor, handleAgreementChatCommand, listAgreements, observeAgreement } = await import('../src/agreements.js');
+const { guard } = await import('../src/decision/compose.js');
+const { explainRun } = await import('../src/decision/explain.js');
+const { agreementAnchor, handleAgreementChatCommand, listAgreements, observeAgreement } = await import('../src/chat/agreements.js');
 
 test('guard：卷次/平台/年份短标签括号不误杀，真正的括号动作仍拦截', () => {
   for (const okText of [
@@ -145,9 +145,9 @@ test('agreements：聊天内直接查看、按关键词取消、取消最近一�
 });
 
 test('tickDueAgreement：到点提醒优先走轻量无思考模型按人设生成，失败或违规才退回固定模板', async (t) => {
-  const { saveConfig, saveState } = await import('../src/config.js');
+  const { saveConfig, saveState } = await import('../src/settings/config.js');
   const { writeChatData } = await import('../src/channels/douyin-im.js');
-  const { tickDueAgreement } = await import('../src/engine.js');
+  const { tickDueAgreement } = await import('../src/decision/engine.js');
   const now = Date.parse('2026-11-25T15:00:00+08:00');
   t.mock.method(Date, 'now', () => now);
   const peer = '20002';
@@ -219,8 +219,8 @@ test('tickDueAgreement：到点提醒优先走轻量无思考模型按人设生�
 });
 
 test('buildReplyContext：命中时间线索且小本本开启时注入防重复 DSH 定时器提示', async (t) => {
-  const { saveConfig } = await import('../src/config.js');
-  const { buildReplyContext } = await import('../src/qq-reply.js');
+  const { saveConfig } = await import('../src/settings/config.js');
+  const { buildReplyContext } = await import('../src/chat/qq-reply.js');
   const now = Date.parse('2026-11-25T15:00:00+08:00');
   t.mock.method(Date, 'now', () => now);
   const peer = '30003';

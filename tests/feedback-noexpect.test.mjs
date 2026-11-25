@@ -6,8 +6,8 @@
 // 还会被 pendingFromFeedback 当成「我发过去、她一直没回」，追一句「你怎么不回」。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { noteSent, settle, sweep, slotStats, coldSlots } from '../src/feedback.js';
-import { pendingFromFeedback } from '../src/noreply.js';
+import { noteSent, settle, sweep, slotStats, coldSlots } from '../src/decision/feedback.js';
+import { pendingFromFeedback } from '../src/chat/noreply.js';
 
 const MIN = 60_000;
 const HOUR = 3_600_000;

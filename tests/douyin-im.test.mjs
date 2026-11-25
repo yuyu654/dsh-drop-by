@@ -53,7 +53,7 @@ test('consumeCompanionQqOutbound delivers unsynced QQ proactive messages once', 
     else process.env.PG_DSH_HOME = prevHome;
     fs.rmSync(home, { recursive: true, force: true });
   });
-  const { consumeCompanionQqOutbound } = await import('../src/send.js');
+  const { consumeCompanionQqOutbound } = await import('../src/chat/send.js');
   const dir = path.join(home, 'qq-bridge');
   fs.mkdirSync(dir, { recursive: true });
   const now = Date.now();

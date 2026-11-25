@@ -3,7 +3,7 @@
 // 得看她最后一次碰键鼠有多久；人不在就整条不给，免得写成「你在写代码吧」。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildPrompt } from '../src/compose.js';
+import { buildPrompt } from '../src/decision/compose.js';
 
 const cfgOf = (idle = {}) => ({ content: { mode: 'llm', maxChars: 60 }, idle });
 const topicOf = (slot, evidence = {}) => ({ slot, label: slot, why: '', evidence, brief: `由头 ${slot}`, at: Date.now() });

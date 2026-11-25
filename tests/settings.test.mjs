@@ -1,7 +1,7 @@
 // settings.test.mjs —— 设置页能改什么、改成什么样算合法。纯函数，不碰磁盘。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { SCHEMA, coerce, applyChange, listForUi, channelItemsForUi, display, normalizeHm } from '../src/settings.js';
+import { SCHEMA, coerce, applyChange, listForUi, channelItemsForUi, display, normalizeHm } from '../src/settings/settings.js';
 
 const cfg = () => ({
   enabled: true,

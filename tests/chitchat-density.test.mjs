@@ -1,8 +1,8 @@
 // chitchat-density.test.mjs —— 阶段 4：密度（接得好才多说）与熔断（连着被晾就闭嘴）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { densityTarget, chitchatGate, noteChitchatSent } from '../src/chitchat.js';
-import { settle } from '../src/feedback.js';
+import { densityTarget, chitchatGate, noteChitchatSent } from '../src/decision/chitchat.js';
+import { settle } from '../src/decision/feedback.js';
 
 const TZ = 'Asia/Shanghai';
 const NOW = Date.UTC(2026, 10, 7, 4, 0); // 北京 12:00

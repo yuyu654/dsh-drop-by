@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { qqReplyContext } from '../src/qq-reply.js';
-import { exploreRound } from '../src/explore.js';
+import { qqReplyContext } from '../src/chat/qq-reply.js';
+import { exploreRound } from '../src/explore/explore.js';
 
 test('QQ reply gets relevant exploration context only for the configured private contact', async () => {
   const persona = { ok: true, text: '喜欢推理' };

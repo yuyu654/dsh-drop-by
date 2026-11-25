@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { detectPlugin, detectQq, detectDouyin, detectPhone, detectEmotionPortrait } from '../src/detect.js';
+import { detectPlugin, detectQq, detectDouyin, detectPhone, detectEmotionPortrait } from '../src/settings/detect.js';
 
 function tmpHome() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pg-detect-'));

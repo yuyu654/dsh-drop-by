@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { pollFishMail, hostFor, maskUser, maskAuth, summaryOf, encryptSecret, decryptSecret, saveSecrets, loadSecrets } from '../src/fishmail.js';
+import { pollFishMail, hostFor, maskUser, maskAuth, summaryOf, encryptSecret, decryptSecret, saveSecrets, loadSecrets } from '../src/perception/fishmail.js';
 import { buildFishMail, buildOtherMail, SUMMARY } from './fixtures.mjs';
 
 // mailUpdateMode 在 logging 里，不在 mail 里（别顺手塞进 over，会被当成 mail 的键）

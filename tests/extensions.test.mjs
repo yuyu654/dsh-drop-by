@@ -28,18 +28,18 @@ test.after(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-const { loadConfig } = await import('../src/config.js');
+const { loadConfig } = await import('../src/settings/config.js');
 const {
   registerExploreSource, registerMoodSource, registerMemorySource, registerTopicProvider,
   listExtensions, clearExtensions, extensionsDir,
   runExploreSource, readExternalMoods, resolveCombinedMood, shouldUseBuiltinEmotion, inspectActiveMood, notifyExternalMoodMessage, collectExternalTopics,
-} = await import('../src/extensions.js');
-const { parseExtraToolNames, createExplorationMedia } = await import('../src/explore-media.js');
-const { exploreRound, explorationProgress } = await import('../src/explore.js');
-const { readMemory, detectMemory, inspectMemory } = await import('../src/memorysource.js');
-const { topicCandidates, pickTopic, tierOfSlot } = await import('../src/topics.js');
-const { topicLabel } = await import('../src/explain.js');
-const { applyChange, listForUi } = await import('../src/settings.js');
+} = await import('../src/settings/extensions.js');
+const { parseExtraToolNames, createExplorationMedia } = await import('../src/explore/explore-media.js');
+const { exploreRound, explorationProgress } = await import('../src/explore/explore.js');
+const { readMemory, detectMemory, inspectMemory } = await import('../src/decision/memorysource.js');
+const { topicCandidates, pickTopic, tierOfSlot } = await import('../src/decision/topics.js');
+const { topicLabel } = await import('../src/decision/explain.js');
+const { applyChange, listForUi } = await import('../src/settings/settings.js');
 const { apply } = await import('../src/plugin.js');
 
 const persona = { ok: true, text: '平时喜欢逛 B 站看独立游戏评测和推理杂谈。' };

@@ -2,8 +2,8 @@
 // 2026-11-07 起「下课」改成段：上午段上完一次、当天最后一节上完一次（一天最多两次）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { detectTriggers } from '../src/triggers.js';
-import { parseAgenda, courseKey } from '../src/agenda.js';
+import { detectTriggers } from '../src/decision/triggers.js';
+import { parseAgenda, courseKey } from '../src/perception/agenda.js';
 
 const TZ = 'Asia/Shanghai';
 const cfg = (nt = {}, extra = {}) => ({

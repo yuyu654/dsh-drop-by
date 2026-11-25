@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { projectQuestion, recordProjectQuestion, captureProjectAnswer, proactiveProjectBlock, writeProjectQuestion } from '../src/project-chat.js';
+import { projectQuestion, recordProjectQuestion, captureProjectAnswer, proactiveProjectBlock, writeProjectQuestion } from '../src/chat/project-chat.js';
 
 const cfg = { rules: { askProjectOnce: true }, channels: { qq: { peerId: '42' } } };
 const now = 1_000_000;

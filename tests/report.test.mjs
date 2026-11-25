@@ -12,8 +12,8 @@ process.env.PG_LOG_DIR = path.join(dir, 'logs');
 process.env.PG_SECRETS_PATH = path.join(dir, 'secrets.json');
 fs.mkdirSync(process.env.PG_LOG_DIR, { recursive: true });
 
-const { buildDailyReport, writeDailyReport, reportFile, readDayRecords, dayFile, recentReports, maybeWriteYesterdayReport } = await import('../src/report.js');
-const { pruneOldRecords, shiftDay } = await import('../src/retention.js');
+const { buildDailyReport, writeDailyReport, reportFile, readDayRecords, dayFile, recentReports, maybeWriteYesterdayReport } = await import('../src/decision/report.js');
+const { pruneOldRecords, shiftDay } = await import('../src/settings/retention.js');
 
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
 

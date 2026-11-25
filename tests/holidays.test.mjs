@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { isHoliday, busyNow, lastBusyEnd, deepseekPeakStatus, offPeakNow } from '../src/holidays.js';
-import { inQuiet } from '../src/schedule.js';
+import { isHoliday, busyNow, lastBusyEnd, deepseekPeakStatus, offPeakNow } from '../src/perception/holidays.js';
+import { inQuiet } from '../src/perception/schedule.js';
 
 const TZ = 'Asia/Shanghai';
 const cfgOf = (extra = {}) => ({ timezone: TZ, busyHours: [['08:00', '12:00']], ...extra });

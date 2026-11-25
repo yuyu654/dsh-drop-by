@@ -1,7 +1,7 @@
 // topics.test.mjs —— 「有没有由头」的纯函数。这是「要不要发」最关键的一层。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { topicCandidates, pickTopic, explainNoTopic, looksForwarded, classifySleep, fishStale } from '../src/topics.js';
+import { topicCandidates, pickTopic, explainNoTopic, looksForwarded, classifySleep, fishStale } from '../src/decision/topics.js';
 
 const TZ = 'Asia/Shanghai';
 const at = (h, m = 0) => Date.UTC(2026, 10, 4, h - 8, m);

@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { matchUserCommand, parseCommandIntent } from '../src/command-matcher.js';
-import { guard } from '../src/compose.js';
-import { guidedWebSearch, publicExplorationUrl } from '../src/explore-media.js';
-import { coerce } from '../src/settings.js';
+import { matchUserCommand, parseCommandIntent } from '../src/chat/command-matcher.js';
+import { guard } from '../src/decision/compose.js';
+import { guidedWebSearch, publicExplorationUrl } from '../src/explore/explore-media.js';
+import { coerce } from '../src/settings/settings.js';
 
 test('QQ 模型分流识别委婉请求，校验原话和白名单', async () => {
   const request = '能帮我翻翻公开的反时限过流实现吗';

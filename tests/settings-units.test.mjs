@@ -7,11 +7,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SCHEMA, applyChange, courseItems, coerce, listForUi } from '../src/settings.js';
+import { SCHEMA, applyChange, courseItems, coerce, listForUi } from '../src/settings/settings.js';
 
-import { wellnessCooldown } from '../src/decide.js';
-import { firstDelayMs } from '../src/split.js';
-import { recentExploration } from '../src/explore.js';
+import { wellnessCooldown } from '../src/decision/decide.js';
+import { firstDelayMs } from '../src/chat/split.js';
+import { recentExploration } from '../src/explore/explore.js';
 
 test('保存的时间设置直接改变冷却、探索有效期和首条等待', () => {
   const now = Date.parse('2026-11-14T12:00:00+08:00');

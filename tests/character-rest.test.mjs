@@ -12,17 +12,17 @@ process.env.PG_DSH_HOME = tmp;
 process.env.PG_FISH_LATEST_PATH = path.join(tmp, 'fish-latest.json');
 test.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
-const { characterRestAt, characterRestStatus, characterRestCue, WIND_DOWN_HINT } = await import('../src/character-rest.js');
-const { loadConfig, saveConfig } = await import('../src/config.js');
-const { applyChange, listForUi, explorationItemsForUi } = await import('../src/settings.js');
-const { decide } = await import('../src/decide.js');
-const { buildReplyContext } = await import('../src/qq-reply.js');
+const { characterRestAt, characterRestStatus, characterRestCue, WIND_DOWN_HINT } = await import('../src/decision/character-rest.js');
+const { loadConfig, saveConfig } = await import('../src/settings/config.js');
+const { applyChange, listForUi, explorationItemsForUi } = await import('../src/settings/settings.js');
+const { decide } = await import('../src/decision/decide.js');
+const { buildReplyContext } = await import('../src/chat/qq-reply.js');
 const { writeChatData } = await import('../src/channels/douyin-im.js');
-const { guard, buildPrompt } = await import('../src/compose.js');
-const { pickTopic, topicCandidates } = await import('../src/topics.js');
-const { noteSent, sweep, slotStats, coldSlots, noteProactive, topicPreferenceMode } = await import('../src/feedback.js');
-const { tick } = await import('../src/engine.js');
-const { shadowEligible } = await import('../src/shadow.js');
+const { guard, buildPrompt } = await import('../src/decision/compose.js');
+const { pickTopic, topicCandidates } = await import('../src/decision/topics.js');
+const { noteSent, sweep, slotStats, coldSlots, noteProactive, topicPreferenceMode } = await import('../src/decision/feedback.js');
+const { tick } = await import('../src/decision/engine.js');
+const { shadowEligible } = await import('../src/decision/shadow.js');
 
 const at = (day, hm) => Date.parse(day + 'T' + hm + ':00+08:00');
 const cfg = { timezone: 'Asia/Shanghai', characterRest: { bed: '22:00', wake: '06:30', jitterMin: 0 } };

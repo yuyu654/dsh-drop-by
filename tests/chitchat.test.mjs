@@ -1,12 +1,12 @@
 // chitchat.test.mjs —— 随口说话（阶段 1）：没有由头时那一条候选的产出条件与生成纪律。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { densityTarget, chitchatGate, chitchatTopic, noteChitchatSent, chitchatToday, chitchatYield, chitchatJudgeNo, allowBareToday, bareRemainingToday, bareLimit } from '../src/chitchat.js';
-import { REASONS } from '../src/decide.js';
-import { compose, composeDraft, guard, buildChitchatPrompt } from '../src/compose.js';
-import { buildSnapshot } from '../src/snapshot.js';
-import { noteSent, settle, sweep, slotStats } from '../src/feedback.js';
-import { SCHEMA, applyChange, listForUi } from '../src/settings.js';
+import { densityTarget, chitchatGate, chitchatTopic, noteChitchatSent, chitchatToday, chitchatYield, chitchatJudgeNo, allowBareToday, bareRemainingToday, bareLimit } from '../src/decision/chitchat.js';
+import { REASONS } from '../src/decision/decide.js';
+import { compose, composeDraft, guard, buildChitchatPrompt } from '../src/decision/compose.js';
+import { buildSnapshot } from '../src/decision/snapshot.js';
+import { noteSent, settle, sweep, slotStats } from '../src/decision/feedback.js';
+import { SCHEMA, applyChange, listForUi } from '../src/settings/settings.js';
 
 const TZ = 'Asia/Shanghai';
 const HOUR = 3_600_000;
@@ -297,7 +297,7 @@ test('轻招呼每日次数上限可由 rules.chitchat.barePerDay 配置与校�
 });
 
 test('persona 类型随口话种子可聊偏好，但已发生的事需要依据', async () => {
-  const { judgePrompt } = await import('../src/judge.js');
+  const { judgePrompt } = await import('../src/decision/judge.js');
   const pTopic = chitchatTopic(cfgOf(), {
     seedKind: 'persona',
     seed: '天生胃不好：熬夜就犯，但还是嘴馋爱喝冰的。',

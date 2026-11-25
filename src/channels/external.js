@@ -1,8 +1,8 @@
-import { readBridgeDialogue, bridgeInFlight } from '../outbound.js';
+import { readBridgeDialogue, bridgeInFlight } from '../chat/outbound.js';
 import { douyinPrimary, douyinPeer, readDouyinState, sendDouyinText } from './douyin-im.js';
 import { internalPrimary, internalSessionId, internalInFlight, readInternalState, sendInternalMessage } from './internal.js';
 import { chatBinding, chatChanging, readyDouyinBinding } from './chat-switch.js';
-import { sendQQRound } from '../send.js';
+import { sendQQRound } from '../chat/send.js';
 
 export const activeChatChannel = cfg => internalPrimary(cfg) ? 'internal' : douyinPrimary(cfg) ? 'douyin' : 'qq';
 export const chatPeer = cfg => internalPrimary(cfg)

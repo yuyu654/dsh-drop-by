@@ -4,7 +4,7 @@
 // 全在这里决定。任何一段拼错了，模型就会拿错材料做判断。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSnapshot, periodOf, agoText } from '../src/snapshot.js';
+import { buildSnapshot, periodOf, agoText } from '../src/decision/snapshot.js';
 
 const NOW = Date.parse('2026-11-06T12:17:00+08:00'); // 周五中午
 const TZ = 'Asia/Shanghai';
@@ -110,7 +110,7 @@ test('periodOf / agoText：时间说法', () => {
 });
 
 test('snapshot：自定义作息与勾选关闭的课程一致生效', async () => {
-  const { parseAgenda, courseKey } = await import('../src/agenda.js');
+  const { parseAgenda, courseKey } = await import('../src/perception/agenda.js');
   const periods = '1-2 08:30-10:05\n3-4 10:25-12:00';
   const text = '周一 第1-2节 电力电子技术\n周一 第3-4节 自动控制';
   const [c1] = parseAgenda(text, { periods });

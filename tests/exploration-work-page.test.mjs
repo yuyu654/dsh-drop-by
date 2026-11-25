@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fetchWorkPage } from '../src/exploration-work-page.js';
-import { openCdpTab } from '../src/explore-browser.js';
+import { fetchWorkPage } from '../src/explore/exploration-work-page.js';
+import { openCdpTab } from '../src/explore/explore-browser.js';
 
 const root = 'https://publisher.example.org/';
 const allow = url => new URL(url).origin === new URL(root).origin;

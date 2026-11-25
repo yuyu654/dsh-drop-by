@@ -132,8 +132,8 @@ test('自主探索模型：默认跟随绑定会话模型，并可切换到当�
   const { writeChatData } = await import('../src/channels/douyin-im.js');
   writeChatData('external-chat', { sessionId: 'bound-sess-1', sessionTitle: '陪伴会话' });
 
-  const { loadConfig } = await import('../src/config.js');
-  const { applyChange } = await import('../src/settings.js');
+  const { loadConfig } = await import('../src/settings/config.js');
+  const { applyChange } = await import('../src/settings/settings.js');
   const { apply } = await import('../src/plugin.js');
 
   assert.equal(loadConfig().exploration.model, '');

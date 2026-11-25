@@ -11,10 +11,10 @@ process.env.PG_STATE_PATH = path.join(tmp, 'state.json');
 process.env.PG_LOG_DIR = path.join(tmp, 'logs');
 process.env.PG_CHAT_DATA_DIR = path.join(tmp, 'chat-data');
 
-const { loadConfig, saveConfig } = await import('../src/config.js');
-const { applyChange, listForUi } = await import('../src/settings.js');
-const { parseCommandIntent, commandIntentPrompt } = await import('../src/command-matcher.js');
-const { executeQqCommand, latestLoginContext } = await import('../src/qq-command.js');
+const { loadConfig, saveConfig } = await import('../src/settings/config.js');
+const { applyChange, listForUi } = await import('../src/settings/settings.js');
+const { parseCommandIntent, commandIntentPrompt } = await import('../src/chat/command-matcher.js');
+const { executeQqCommand, latestLoginContext } = await import('../src/chat/qq-command.js');
 const { writeChatData } = await import('../src/channels/douyin-im.js');
 const { apply } = await import('../src/plugin.js');
 

@@ -25,11 +25,11 @@ test.after(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-const { loadConfig, saveConfig } = await import('../src/config.js');
-const { loadPersona } = await import('../src/persona.js');
-const { saveExploration } = await import('../src/explore.js');
-const { rememberExplorationShare, explorationFeedbackHints } = await import('../src/exploration-feedback.js');
-const { buildReplyContext } = await import('../src/qq-reply.js');
+const { loadConfig, saveConfig } = await import('../src/settings/config.js');
+const { loadPersona } = await import('../src/decision/persona.js');
+const { saveExploration } = await import('../src/explore/explore.js');
+const { rememberExplorationShare, explorationFeedbackHints } = await import('../src/explore/exploration-feedback.js');
+const { buildReplyContext } = await import('../src/chat/qq-reply.js');
 const { writeChatData } = await import('../src/channels/douyin-im.js');
 const { apply } = await import('../src/plugin.js');
 fs.writeFileSync(path.join(dir, 'persona.md'), '喜欢研究日常用品和闲时漫画。');

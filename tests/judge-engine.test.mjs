@@ -19,12 +19,12 @@ fs.mkdirSync(process.env.PG_LOG_DIR, { recursive: true });
 fs.mkdirSync(path.join(dir, 'node_modules', 'dsh-plugin-qq-bridge'), { recursive: true });
 fs.writeFileSync(path.join(dir, 'node_modules', 'dsh-plugin-qq-bridge', 'package.json'), JSON.stringify({ name: 'dsh-plugin-qq-bridge', version: '1.0.0' }));
 
-const { loadConfig, saveConfig, loadState, saveState } = await import('../src/config.js');
-const { tick: engineTick } = await import('../src/engine.js');
+const { loadConfig, saveConfig, loadState, saveState } = await import('../src/settings/config.js');
+const { tick: engineTick } = await import('../src/decision/engine.js');
 const tick = (options) => engineTick({ ...options, probeSystem: async () => ({ idle_ms: 0 }) });
-const { loadPersona } = await import('../src/persona.js');
-const { exploreRound, saveExploration } = await import('../src/explore.js');
-const { dayKey, hhmm } = await import('../src/time.js');
+const { loadPersona } = await import('../src/decision/persona.js');
+const { exploreRound, saveExploration } = await import('../src/explore/explore.js');
+const { dayKey, hhmm } = await import('../src/settings/time.js');
 const NOW = Date.parse('2026-11-22T12:00:00+08:00');
 
 /** 把「30 分钟后有一场考试」写进配置：这样 pickTopic 一定挑得出一个与当前时刻无关的由头。 */
@@ -310,7 +310,7 @@ test('自适应额外间隔只加一次', async () => {
     rules: { ...loadConfig().rules, judge: { enabled: false }, minGapMin: 10,
       adaptiveGap: true, gapByTier: { enabled: false }, naturalTriggers: { enabled: false } },
   });
-  const { recordDay } = await import('../src/retention.js');
+  const { recordDay } = await import('../src/settings/retention.js');
   for (const [minutes, expected] of [[14, 'skip'], [16, 'send']]) {
     saveState({ day: recordDay(Date.now(), 'Asia/Shanghai', loadConfig()),
       sim: { lastSendAt: Date.now() - minutes * 60_000 }, feedback: { streak: 2 } });

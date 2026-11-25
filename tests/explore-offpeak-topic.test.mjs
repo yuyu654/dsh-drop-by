@@ -23,7 +23,7 @@ test('nextTopic pins one round and auto-clears; explicit body.topic overrides; o
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-05-01T08:00:00+08:00') });
 
   const { apply } = await import('../src/plugin.js');
-  const { loadConfig } = await import('../src/config.js');
+  const { loadConfig } = await import('../src/settings/config.js');
   let route;
   const services = {
     webServer: { register: (r) => { route = r; return () => {}; } },

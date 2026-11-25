@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { inWindows } from '../schedule.js';
+import { inWindows } from '../perception/schedule.js';
 import { readyDouyinBinding } from './chat-switch.js';
 import { collectIncoming, douyinPeer, douyinPrimary, markDouyinSessionSynced, pollDelayMs, readDouyinIm, readDouyinState, originalWatcherDisabled, sendDouyinText, unsyncedDouyinContext, updateDouyinState } from './douyin-im.js';
 

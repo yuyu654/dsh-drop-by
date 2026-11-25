@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { loadConfig } from '../config.js';
-import { dshHome } from '../detect.js';
+import { loadConfig } from '../settings/config.js';
+import { dshHome } from '../settings/detect.js';
 import { readChatData, writeChatData } from './douyin-im.js';
 
 function stripQqHeader(text) {

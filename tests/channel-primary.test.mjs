@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyChange, channelItemsForUi, listForUi } from '../src/settings.js';
-import { loadConfig } from '../src/config.js';
+import { applyChange, channelItemsForUi, listForUi } from '../src/settings/settings.js';
+import { loadConfig } from '../src/settings/config.js';
 
 test('primary channel and polling bounds are available in settings', () => {
   const cfg = loadConfig();

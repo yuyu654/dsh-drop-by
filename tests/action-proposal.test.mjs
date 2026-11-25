@@ -5,8 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 test('归属：角色笔记和角色历史不能证明用户说过参数', async () => {
-  const { guard, buildPrompt, buildChitchatPrompt } = await import('../src/compose.js');
-  const { judgePrompt } = await import('../src/judge.js');
+  const { guard, buildPrompt, buildChitchatPrompt } = await import('../src/decision/compose.js');
+  const { judgePrompt } = await import('../src/decision/judge.js');
   const draft = '照你说的，用120%、150%反解τ和A阈值。';
   const ctx = { her: { lastText: '用120%，别先改轴。' },
     dialogueTurns: [{ who: 'me', text: '用120%、150%反解τ和A阈值' }],

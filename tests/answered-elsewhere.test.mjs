@@ -4,10 +4,10 @@
 // 「你刚给我回的消息，是关于我抖音分享给你的视频的，但是你在抖音已经回过我了」。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildPrompt } from '../src/compose.js';
-import { hasAnsweredOnOwnChannel } from '../src/context.js';
-import { buildSnapshot } from '../src/snapshot.js';
-import { judgePrompt } from '../src/judge.js';
+import { buildPrompt } from '../src/decision/compose.js';
+import { hasAnsweredOnOwnChannel } from '../src/decision/context.js';
+import { buildSnapshot } from '../src/decision/snapshot.js';
+import { judgePrompt } from '../src/decision/judge.js';
 
 const cfgOf = (o = {}) => ({ content: { mode: 'llm', maxChars: 60, ...o } });
 const topicOf = (slot, evidence = {}) => ({ slot, label: slot, why: '', evidence, brief: `由头 ${slot}`, at: Date.now() });

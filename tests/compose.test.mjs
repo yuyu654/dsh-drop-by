@@ -1,7 +1,7 @@
 // compose.test.mjs —— 清洗、红线、模板、模式回落。全部不联网、不调模型。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { clean, guard, renderTemplate, compose, composeDraft, buildPrompt, styleSamples, coarseMin } from '../src/compose.js';
+import { clean, guard, renderTemplate, compose, composeDraft, buildPrompt, styleSamples, coarseMin } from '../src/decision/compose.js';
 
 const cfgOf = (o = {}) => ({
   content: { mode: 'template', maxChars: 60, ...o, topics: {} },

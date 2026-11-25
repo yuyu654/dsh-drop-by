@@ -16,7 +16,7 @@ import {
   checkSchedule,
   describeSchedule,
   featureByKey,
-} from '../src/schedule.js';
+} from '../src/perception/schedule.js';
 
 const TZ = 'Asia/Shanghai';
 

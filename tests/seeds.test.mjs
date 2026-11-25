@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { memoryPool, personaPool, pickSeed, seedId, conversationLine, rememberSeed } from '../src/seeds.js';
-import { noteChitchatSent } from '../src/chitchat.js';
+import { memoryPool, personaPool, pickSeed, seedId, conversationLine, rememberSeed } from '../src/decision/seeds.js';
+import { noteChitchatSent } from '../src/decision/chitchat.js';
 
 const TZ = 'Asia/Shanghai';
 const NOW = Date.UTC(2026, 10, 7, 12, 0); // 北京 20:00

@@ -2,7 +2,7 @@
 // 不跑探针、不截屏（那两个要真桌面，靠 --l123 手工验）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { screenFacts, screenHints } from '../src/perception.js';
+import { screenFacts, screenHints } from '../src/perception/perception.js';
 
 test('screenFacts：逐字拆开的碎词丢掉，像话的留下', () => {
   const got = screenFacts([

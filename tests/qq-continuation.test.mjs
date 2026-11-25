@@ -10,8 +10,8 @@ after(() => fs.rmSync(dir, { recursive: true, force: true }));
 for (const [key, file] of Object.entries({
   PG_CONFIG_PATH: 'config.json', PG_STATE_PATH: 'state.json', PG_LOG_DIR: 'logs', PG_DSH_HOME: '.',
 })) process.env[key] = path.join(dir, file);
-const { createQqContinuation, runQqContinuation } = await import('../src/qq-continuation.js');
-const { qqContinuationTone } = await import('../src/persona.js');
+const { createQqContinuation, runQqContinuation } = await import('../src/chat/qq-continuation.js');
+const { qqContinuationTone } = await import('../src/decision/persona.js');
 
 const peer = '42';
 const grounded = (anchor = '那个漫画', line = '那个漫画最戳你的是哪一格？') =>
@@ -137,8 +137,8 @@ test('a new incoming message during semantic review prevents delivery', async ()
 });
 
 test('use a full recent inbound message for drafting without changing its bridge marker', async () => {
-  const { waitForQqBurst } = await import('../src/qq-debounce.js');
-  const { readBridgeDialogue } = await import('../src/outbound.js');
+  const { waitForQqBurst } = await import('../src/chat/qq-debounce.js');
+  const { readBridgeDialogue } = await import('../src/chat/outbound.js');
   const folder = path.join(dir, 'qq-bridge');
   fs.mkdirSync(folder, { recursive: true });
   const stamp = Date.now();
@@ -165,7 +165,7 @@ test('use a full recent inbound message for drafting without changing its bridge
 
 test('engine preview uses the shared quota and never calls the QQ transport', async (t) => {
   t.mock.method(Date, 'now', () => Date.parse('2026-11-22T12:00:00+08:00'));
-  const { tickQqContinuation } = await import('../src/engine.js');
+  const { tickQqContinuation } = await import('../src/decision/engine.js');
   fs.writeFileSync(process.env.PG_CONFIG_PATH, JSON.stringify({
     dryRun: true, quietHours: [], busyHours: [], persona: { enabled: false },
     rules: { qqContinuation: true, dailyCap: 1 }, channels: { qq: { peerId: peer } },
@@ -194,7 +194,7 @@ test('engine preview uses the shared quota and never calls the QQ transport', as
 
 test('tickQqContinuation passes portrait mood-map tone into generation prompt when enabled', async (t) => {
   t.mock.method(Date, 'now', () => Date.parse('2026-11-22T12:00:00+08:00'));
-  const { tickQqContinuation } = await import('../src/engine.js');
+  const { tickQqContinuation } = await import('../src/decision/engine.js');
   fs.writeFileSync(process.env.PG_STATE_PATH, '{}');
   const emDir = path.join(dir, 'profiles', 'desktop', 'node_modules', 'emotion-state-portrait', 'emotion');
   fs.mkdirSync(emDir, { recursive: true });

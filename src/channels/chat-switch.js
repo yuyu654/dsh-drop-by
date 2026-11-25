@@ -1,5 +1,5 @@
 import { performance } from 'node:perf_hooks';
-import { detectQq } from '../detect.js';
+import { detectQq } from '../settings/detect.js';
 import { readChatData, writeChatData, douyinInstallation, douyinPeer, drainDouyinSends, originalWatcherDisabled } from './douyin-im.js';
 
 const boot = performance.timeOrigin;

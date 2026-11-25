@@ -1,7 +1,7 @@
 // split-guard.test.mjs —— 空行 = 要拆成几条发：那就每条各自守字数，整轮最多四段。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { guard } from '../src/compose.js';
+import { guard } from '../src/decision/compose.js';
 
 const cfg = { content: { maxChars: 60 } };
 

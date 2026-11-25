@@ -1,7 +1,7 @@
 // hostllm.test.mjs —— 插件用宿主模型生成这一条路。全部用假 ctx，不联网、不出进程。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { makeHostLlm, clearReasoningEffortCache, setHostLlmTrace } from '../src/hostllm.js';
+import { makeHostLlm, clearReasoningEffortCache, setHostLlmTrace } from '../src/decision/hostllm.js';
 
 /** 假 ctx：get 按名字返回服务，别的什么都不做。 */
 function ctxWith(services) {

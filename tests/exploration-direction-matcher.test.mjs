@@ -22,7 +22,7 @@ test.after(() => {
 });
 
 const { looksLikeExplorationDirection, matchUserCommand, parseCommandIntent, explorationDirectionSite } =
-  await import('../src/command-matcher.js');
+  await import('../src/chat/command-matcher.js');
 const context = { directions: ['插排过载的几种情况', '昨天探索过的数学题'], recent: [] };
 const route = (action, target, quote) => ({ intent: 'exploration_direction', direction: { action, target, quote } });
 const output = (action, target, quote) => JSON.stringify({ intent: 'exploration_direction', action, target, quote });

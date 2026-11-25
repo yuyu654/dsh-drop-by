@@ -47,7 +47,7 @@ fs.writeFileSync(
   }),
 );
 
-const { tick: engineTick } = await import('../src/engine.js');
+const { tick: engineTick } = await import('../src/decision/engine.js');
 const tick = (options) => engineTick({ ...options, probeSystem: async () => ({ idle_ms: 0 }) });
 
 after(() => fs.rmSync(dir, { recursive: true, force: true }));

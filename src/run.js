@@ -34,14 +34,14 @@
 // 默认 dryRun=true：不发送、不写真实计数，只演进影子计数。
 import fs from 'node:fs';
 import path from 'node:path';
-import { ROOT, loadConfig, saveConfig, loadState, saveState, setPath, getPath, LOG_DIR } from './config.js';
-import { probe, classifyActivity } from './probe.js';
-import { perceive, appendPerception } from './perception.js';
-import { readSignals, signalLine } from './signals.js';
-import { readMemory, memoryLine } from './memorysource.js';
+import { ROOT, loadConfig, saveConfig, loadState, saveState, setPath, getPath, LOG_DIR } from './settings/config.js';
+import { probe, classifyActivity } from './perception/probe.js';
+import { perceive, appendPerception } from './perception/perception.js';
+import { readSignals, signalLine } from './perception/signals.js';
+import { readMemory, memoryLine } from './decision/memorysource.js';
 import { readChannels } from './channels/index.js';
-import { decide, presenceOf, checkTierGap, tierGapMs, REASONS } from './decide.js';
-import { append, tail } from './logger.js';
+import { decide, presenceOf, checkTierGap, tierGapMs, REASONS } from './decision/decide.js';
+import { append, tail } from './settings/logger.js';
 import {
   pruneOldRecords,
   recordDay,
@@ -51,8 +51,8 @@ import {
   shiftDay,
   mailUpdateMode,
   MAIL_UPDATE_MODES,
-} from './retention.js';
-import { hhmm, agoSec, healthDay, hmToMin, parseDur, minToHm } from './time.js';
+} from './settings/retention.js';
+import { hhmm, agoSec, healthDay, hmToMin, parseDur, minToHm } from './settings/time.js';
 import {
   inQuiet,
   inBusy,
@@ -62,32 +62,32 @@ import {
   describeSchedule,
   featureByKey,
   FEATURES,
-} from './schedule.js';
-import { busyNow } from './holidays.js';
-import { sendQQPrivate, bridgeInfo } from './send.js';
-import { buildContext, selfMtime } from './context.js';
-import { detectTriggers } from './triggers.js';
-import { pickTopic, explainNoTopic, classifySleep, bedTimeOf, fishStale, SLOTS, tierOfSlot } from './topics.js';
-import { summarizeVideo, readCache, CACHE_DIR } from './videosum.js';
-import { outboundFor, answeredAlready, recentOutbound, douyinLastInbound } from './outbound.js';
-import { feedbackSummary, adaptiveExtraMin } from './feedback.js';
-import { topicLabel } from './explain.js';
-import { parseAgenda, agendaSource, nextCourse, currentWeek, courseEnabled } from './agenda.js';
-import { parseExams, examsSource, reviewDue, soonDue } from './exams.js';
-import { pickNoReply, noReplyDue } from './noreply.js';
-import { compose, guard, composeDraft } from './compose.js';
-import { buildSnapshot } from './snapshot.js';
-import { judgeDecision } from './judge.js';
-import { shadowLine, shadowRate } from './shadow.js';
-import { checkHealth, healthLines } from './health.js';
-import { writeDailyReport } from './report.js';
-import { generate } from './llm.js';
-import { tick } from './engine.js';
-import { restFor, restLine, clockOf } from './bedtime.js';
-import { chitchatGate, chitchatToday } from './chitchat.js';
-import { applyChange, isKnownPath, saveSecret } from './settings.js';
-import { detectSources } from './detect.js';
-import { loadPersona, personaPlan, ensureLocalPersonaTemplate, dshHome } from './persona.js';
+} from './perception/schedule.js';
+import { busyNow } from './perception/holidays.js';
+import { sendQQPrivate, bridgeInfo } from './chat/send.js';
+import { buildContext, selfMtime } from './decision/context.js';
+import { detectTriggers } from './decision/triggers.js';
+import { pickTopic, explainNoTopic, classifySleep, bedTimeOf, fishStale, SLOTS, tierOfSlot } from './decision/topics.js';
+import { summarizeVideo, readCache, CACHE_DIR } from './perception/videosum.js';
+import { outboundFor, answeredAlready, recentOutbound, douyinLastInbound } from './chat/outbound.js';
+import { feedbackSummary, adaptiveExtraMin } from './decision/feedback.js';
+import { topicLabel } from './decision/explain.js';
+import { parseAgenda, agendaSource, nextCourse, currentWeek, courseEnabled } from './perception/agenda.js';
+import { parseExams, examsSource, reviewDue, soonDue } from './perception/exams.js';
+import { pickNoReply, noReplyDue } from './chat/noreply.js';
+import { compose, guard, composeDraft } from './decision/compose.js';
+import { buildSnapshot } from './decision/snapshot.js';
+import { judgeDecision } from './decision/judge.js';
+import { shadowLine, shadowRate } from './decision/shadow.js';
+import { checkHealth, healthLines } from './perception/health.js';
+import { writeDailyReport } from './decision/report.js';
+import { generate } from './decision/llm.js';
+import { tick } from './decision/engine.js';
+import { restFor, restLine, clockOf } from './decision/bedtime.js';
+import { chitchatGate, chitchatToday } from './decision/chitchat.js';
+import { applyChange, isKnownPath, saveSecret } from './settings/settings.js';
+import { detectSources } from './settings/detect.js';
+import { loadPersona, personaPlan, ensureLocalPersonaTemplate, dshHome } from './decision/persona.js';
 import {
   pollFishMail,
   readLatest,
@@ -99,7 +99,7 @@ import {
   mailReady,
   LATEST_PATH,
   SECRETS_PATH,
-} from './fishmail.js';
+} from './perception/fishmail.js';
 
 const argv = process.argv.slice(2);
 const has = (f) => argv.includes(f);

@@ -3,8 +3,8 @@
 // ②「忙完了把那条视频点开看一眼」她不知道是哪条 → 提到我发过的东西必须带标题。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { coarseAgo, buildPrompt, renderTemplate } from '../src/compose.js';
-import { pickTopic } from '../src/topics.js';
+import { coarseAgo, buildPrompt, renderTemplate } from '../src/decision/compose.js';
+import { pickTopic } from '../src/decision/topics.js';
 
 const cfgOf = (o = {}) => ({ content: { mode: 'llm', maxChars: 60, ...o } });
 const topicOf = (slot, evidence = {}) => ({ slot, label: slot, why: '', evidence, brief: `由头 ${slot}`, at: Date.now() });

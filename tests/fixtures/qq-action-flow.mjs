@@ -89,11 +89,11 @@ globalThis.fetch = async (raw, options) => {
   return Response.json({ status: 'ok', data: { message_id: 1000 + sends.length } });
 };
 const { apply } = await import('../../src/plugin.js');
-const { actionProposalCandidate, prepareActionProposal } = await import('../../src/action-proposal.js');
-const { sendQQRound } = await import('../../src/send.js');
-const { loadConfig } = await import('../../src/config.js');
-const { loadPersona } = await import('../../src/persona.js');
-const { pickTopic } = await import('../../src/topics.js');
+const { actionProposalCandidate, prepareActionProposal } = await import('../../src/chat/action-proposal.js');
+const { sendQQRound } = await import('../../src/chat/send.js');
+const { loadConfig } = await import('../../src/settings/config.js');
+const { loadPersona } = await import('../../src/decision/persona.js');
+const { pickTopic } = await import('../../src/decision/topics.js');
 const { apply: applyBridge } = await import(pathToFileURL(bridgePath));
 const api = apply(ctx, { startupDelaySec: 3600, tool: true });
 applyBridge(ctx, { home: dir });

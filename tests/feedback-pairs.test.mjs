@@ -1,8 +1,8 @@
 // feedback-pairs.test.mjs —— 阶段 2：她的原话配对（我发出去什么 → 她怎么回）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { emptyFeedback, noteSent, settle, recentPairs } from '../src/feedback.js';
-import { buildSnapshot } from '../src/snapshot.js';
+import { emptyFeedback, noteSent, settle, recentPairs } from '../src/decision/feedback.js';
+import { buildSnapshot } from '../src/decision/snapshot.js';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;

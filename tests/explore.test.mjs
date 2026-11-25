@@ -20,7 +20,7 @@ test.after(() => {
 });
 
 const { exploreRound, explorationProgress, explorationShare, explorationMood, explorationToneHint, styleApprovedDraft } =
-  await import('../src/explore.js');
+  await import('../src/explore/explore.js');
 
 const persona = { ok: true, text: '喜欢推理小说，常留意不可靠叙述者。' };
 const result = (value) => ({ ok: true, text: JSON.stringify(value) });

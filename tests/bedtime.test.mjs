@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { nightMinutes, clockOf, median, nightOf, readNights, deriveRest, inRest, restFor, FALLBACK_REST } from '../src/bedtime.js';
+import { nightMinutes, clockOf, median, nightOf, readNights, deriveRest, inRest, restFor, FALLBACK_REST } from '../src/decision/bedtime.js';
 
 const DAY_MS = 86_400_000;
 

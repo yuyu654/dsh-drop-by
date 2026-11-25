@@ -2,7 +2,7 @@
 // QQ 上那句「……没偷偷买冰的吧」把人搞反了：管我的是她，偷喝的是我。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildPrompt } from '../src/compose.js';
+import { buildPrompt } from '../src/decision/compose.js';
 
 const cfgOf = (o = {}) => ({ content: { mode: 'llm', maxChars: 60, ...o } });
 // 这条规则是「本机私有」的：插件不带，靠 local-style / content.local 注入。

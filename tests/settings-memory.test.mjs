@@ -5,8 +5,8 @@
 // （选项仍然只列内置的那一个，不在设置页里让用户手填插件名——名字对不上只会静默读不到。）
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { listForUi, SCHEMA } from '../src/settings.js';
-import { MEMORY_PLUGINS } from '../src/memorysource.js';
+import { listForUi, SCHEMA } from '../src/settings/settings.js';
+import { MEMORY_PLUGINS } from '../src/decision/memorysource.js';
 
 const cfg = () => ({
   enabled: true,

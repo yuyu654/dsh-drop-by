@@ -18,18 +18,18 @@ test.after(() => {
   }
   fs.rmSync(dir, { recursive: true, force: true });
 });
-const fb = await import('../src/feedback.js');
-const { looksLikeTopicPreference, parseCommandIntent } = await import('../src/command-matcher.js');
-const { loadConfig, loadState, saveConfig, saveState } = await import('../src/config.js');
-const { pickNoReply } = await import('../src/noreply.js');
-const { topicCandidates } = await import('../src/topics.js');
-const { buildSnapshot } = await import('../src/snapshot.js');
-const { buildReplyContext } = await import('../src/qq-reply.js');
+const fb = await import('../src/decision/feedback.js');
+const { looksLikeTopicPreference, parseCommandIntent } = await import('../src/chat/command-matcher.js');
+const { loadConfig, loadState, saveConfig, saveState } = await import('../src/settings/config.js');
+const { pickNoReply } = await import('../src/chat/noreply.js');
+const { topicCandidates } = await import('../src/decision/topics.js');
+const { buildSnapshot } = await import('../src/decision/snapshot.js');
+const { buildReplyContext } = await import('../src/chat/qq-reply.js');
 const { writeChatData } = await import('../src/channels/douyin-im.js');
-const { tick } = await import('../src/engine.js');
-const { sendQQRound } = await import('../src/send.js');
-const { applyChange, listForUi } = await import('../src/settings.js');
-const { chitchatGate, noteChitchatSent } = await import('../src/chitchat.js');
+const { tick } = await import('../src/decision/engine.js');
+const { sendQQRound } = await import('../src/chat/send.js');
+const { applyChange, listForUi } = await import('../src/settings/settings.js');
+const { chitchatGate, noteChitchatSent } = await import('../src/decision/chitchat.js');
 
 const H = 3_600_000, now = Date.parse('2026-11-22T18:00:00+08:00');
 const cfg = { timezone: 'Asia/Shanghai', rules: { feedback: { keepHours: 24 }, qqCommands: { enabled: true, freshSec: 120 } } };
@@ -354,7 +354,7 @@ test('另一个进程来不及等待状态更新时不得覆盖偏好', (t) => {
   t.mock.method(fs, 'renameSync', (tmp, file) => {
     if (file === env.PG_STATE_PATH) {
       const child = spawnSync(process.execPath, ['--input-type=module', '-e',
-        "import { saveState } from './src/config.js'; saveState({ feedback: { streak: 42 } });"
+        "import { saveState } from './src/settings/config.js'; saveState({ feedback: { streak: 42 } });"
       ], { encoding: 'utf8' });
       assert.notEqual(child.status, 0);
       assert.match(child.stderr, /STATE_WRITE_BUSY/);

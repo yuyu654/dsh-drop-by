@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ensureEdge, downloadVideo } from '../src/videosum.js';
+import { ensureEdge, downloadVideo } from '../src/perception/videosum.js';
 
 const tmpScript = path.join(os.tmpdir(), `pg-edge-test-${process.pid}.ps1`);
 fs.writeFileSync(tmpScript, '# fake\n');

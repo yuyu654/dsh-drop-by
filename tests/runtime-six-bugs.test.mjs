@@ -22,13 +22,13 @@ fs.mkdirSync(path.join(dsh, 'qq-bridge'), { recursive: true });
 fs.writeFileSync(path.join(dsh, 'qq-bridge', 'connection.json'), '{}');
 
 const { readQq } = await import('../src/channels/qq.js');
-const { buildContext } = await import('../src/context.js');
-const { bridgeLastIn, bridgeLastOut } = await import('../src/outbound.js');
-const { handleAgreementChatCommand, listAgreements } = await import('../src/agreements.js');
+const { buildContext } = await import('../src/decision/context.js');
+const { bridgeLastIn, bridgeLastOut } = await import('../src/chat/outbound.js');
+const { handleAgreementChatCommand, listAgreements } = await import('../src/chat/agreements.js');
 const { writeChatData } = await import('../src/channels/douyin-im.js');
-const { tick, tickDueAgreement } = await import('../src/engine.js');
-const { loadConfig, saveConfig } = await import('../src/config.js');
-const { probe } = await import('../src/probe.js');
+const { tick, tickDueAgreement } = await import('../src/decision/engine.js');
+const { loadConfig, saveConfig } = await import('../src/settings/config.js');
+const { probe } = await import('../src/perception/probe.js');
 
 test.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 

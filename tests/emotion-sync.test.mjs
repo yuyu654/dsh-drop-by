@@ -11,7 +11,7 @@ import {
   readPortraitMoodMap,
   recordExplorationEmotion,
   repairEmotionConfig,
-} from '../src/emotion-sync.js';
+} from '../src/decision/emotion-sync.js';
 
 function makeEnv(t, { profile = 'desktop', withConfig = true } = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'pg-emotion-sync-'));

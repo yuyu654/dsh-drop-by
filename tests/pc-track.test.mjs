@@ -3,7 +3,7 @@
 // 离开超过阈值就断掉连续坐的时间，回来时把离开时长算准。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { trackPcPresence } from '../src/engine.js';
+import { trackPcPresence } from '../src/decision/engine.js';
 
 const TZ = 'Asia/Shanghai';
 const cfg = { timezone: TZ, idle: { onlineSec: 30, awaySec: 600 } };

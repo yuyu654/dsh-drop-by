@@ -2,8 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
-import { CONFIG_PATH, loadConfig } from '../config.js';
-import { detectPlugin, douyinPluginPeer, dshHome } from '../detect.js';
+import { CONFIG_PATH, loadConfig } from '../settings/config.js';
+import { detectPlugin, douyinPluginPeer, dshHome } from '../settings/detect.js';
 
 export { douyinPluginPeer };
 

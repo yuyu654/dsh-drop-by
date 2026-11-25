@@ -13,7 +13,7 @@ process.env.PG_DSH_HOME = tmp;
 process.env.PG_FISH_LATEST_PATH = path.join(tmp, 'fish-latest.json');
 test.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 const { agreementAnchor, observeAgreement, flushAgreementIntake, listAgreements, dueAgreement, dismissAgreement,
-  claimAgreement, releaseAgreement, markAgreementSent } = await import('../src/agreements.js');
+  claimAgreement, releaseAgreement, markAgreementSent } = await import('../src/chat/agreements.js');
 const at = Date.parse('2026-11-22T12:00:00+08:00');
 const cfg = { timezone: 'Asia/Shanghai', agreements: { enabled: true } };
 const input = { cfg, at, now: at, peer: '1001', channel: 'qq' };
@@ -80,9 +80,9 @@ test('远期线索合并限频，短时不排在远期队尾，划掉后保持�
 });
 
 test('设置回显及容量生效，专用到点通道只为明确短时约定跳过普通间隔', async (t) => {
-  const { saveConfig, loadConfig, loadState, saveState } = await import('../src/config.js');
-  const { listForUi, applyChange } = await import('../src/settings.js');
-  const { tickDueAgreement } = await import('../src/engine.js');
+  const { saveConfig, loadConfig, loadState, saveState } = await import('../src/settings/config.js');
+  const { listForUi, applyChange } = await import('../src/settings/settings.js');
+  const { tickDueAgreement } = await import('../src/decision/engine.js');
   const { writeChatData } = await import('../src/channels/douyin-im.js');
   writeChatData('agreements', { items: ['额外备忘', '更远备忘'].map((title, index) => ({
     id: 'fixture-' + index, title, dueAt: at + (index + 1) * 86_400_000, status: 'pending', peer: 'someone-else', channel: 'qq',
@@ -137,7 +137,7 @@ test('设置回显及容量生效，专用到点通道只为明确短时约定�
 
 test('QQ 桥短时来信由秒级轮询抽取和到点发送，无需等待普通拍或私聊回复', async (t) => {
   const { apply } = await import('../src/plugin.js');
-  const { saveConfig, loadConfig } = await import('../src/config.js');
+  const { saveConfig, loadConfig } = await import('../src/settings/config.js');
   const { writeChatData } = await import('../src/channels/douyin-im.js');
   const start = Date.parse('2026-11-23T13:00:00+08:00');
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: start });
@@ -188,10 +188,10 @@ test('QQ 桥短时来信由秒级轮询抽取和到点发送，无需等待普�
 });
 
 test('抖音只把新收的私信交给小本本，未等待会话回复也可记下', async (t) => {
-  const { saveConfig, loadConfig } = await import('../src/config.js');
+  const { saveConfig, loadConfig } = await import('../src/settings/config.js');
   const { writeChatData } = await import('../src/channels/douyin-im.js');
   const { createDouyinSession } = await import('../src/channels/douyin-session.js');
-  const { observePrivateMessage } = await import('../src/qq-reply.js');
+  const { observePrivateMessage } = await import('../src/chat/qq-reply.js');
   const now = Date.parse('2026-11-24T12:00:00+08:00');
   t.mock.method(Date, 'now', () => now);
   const peer = 'MS4w-fake';

@@ -7,9 +7,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { bridgeLastOut, bridgeLastIn, bridgeInFlight, qqLastOutbound, answeredAlready, recentTurns, recentOutbound } from '../src/outbound.js';
+import { bridgeLastOut, bridgeLastIn, bridgeInFlight, qqLastOutbound, answeredAlready, recentTurns, recentOutbound } from '../src/chat/outbound.js';
 import { readQq } from '../src/channels/qq.js';
-import { pickTopic } from '../src/topics.js';
+import { pickTopic } from '../src/decision/topics.js';
 
 function home(files = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pg-bridge-'));
@@ -115,7 +115,7 @@ test('qq-history 为空但桥刚有过 QQ 对话：buildContext 看到她刚说�
       messages: [{ from: 'them', at: twoDaysAgo, text: '旧抖音视频' }],
     },
   });
-  const { buildContext } = await import(`../src/context.js?bridge=${now}`);
+  const { buildContext } = await import(`../src/decision/context.js?bridge=${now}`);
   const cfg = { channels: { qq: { peerId: '10001' } }, content: { topics: { catchup: true, catchupDays: 1, share: false } } };
   const ch = readQq({ peerId: '10001' }, now, 'Asia/Shanghai');
   const ctx = buildContext({ cfg, now, st: {}, ch, sys: {}, tz: 'Asia/Shanghai' });

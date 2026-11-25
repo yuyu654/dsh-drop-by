@@ -1,8 +1,8 @@
 // agenda.test.mjs —— 课表：一行一节，早课前一晚催睡、下一节课前提醒。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseAgenda, weekdayOf, coursesOn, coursesTomorrow, nextCourse, currentWeek, courseApplies, courseKey, courseEnabled, parsePeriods } from '../src/agenda.js';
-import { pickTopic } from '../src/topics.js';
+import { parseAgenda, weekdayOf, coursesOn, coursesTomorrow, nextCourse, currentWeek, courseApplies, courseKey, courseEnabled, parsePeriods } from '../src/perception/agenda.js';
+import { pickTopic } from '../src/decision/topics.js';
 
 const TZ = 'Asia/Shanghai';
 // 2026-11-04 是周三；用 UTC 换算成北京时间

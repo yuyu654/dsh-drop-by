@@ -43,7 +43,7 @@ fs.writeFileSync(
 );
 
 const { performance } = await import('node:perf_hooks');
-const { tick } = await import('../src/engine.js');
+const { tick } = await import('../src/decision/engine.js');
 const { writeChatData } = await import('../src/channels/douyin-im.js');
 writeChatData('chat-switch', { boot: performance.timeOrigin, restartBoot: performance.timeOrigin });
 writeChatData('external-chat', { sessionId: 'shared-1' });

@@ -1,7 +1,7 @@
 // health.test.mjs —— 阶段 5.1：绿/黄/红三分支。全部依赖用 deps 注入，不碰真端口/真插件。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkHealth, healthLines, agoText } from '../src/health.js';
+import { checkHealth, healthLines, agoText } from '../src/perception/health.js';
 
 const NOW = Date.parse('2026-11-06T14:00:00+08:00');
 const cfg = { sources: { phone: { staleHours: 36 } }, perception: { signals: { port: 9223 } } };

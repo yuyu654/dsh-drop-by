@@ -11,8 +11,8 @@ import { readDouyin } from './douyin.js';
 import { readDouyinState, douyinPeer, douyinInstallation } from './douyin-im.js';
 import { internalSessionId, readInternalState } from './internal.js';
 import { readyDouyinBinding } from './chat-switch.js';
-import { detectQq } from '../detect.js';
-import { inQuiet, inWindows, normalizeWindows } from '../schedule.js';
+import { detectQq } from '../settings/detect.js';
+import { inQuiet, inWindows, normalizeWindows } from '../perception/schedule.js';
 
 /** 跳过时的统一形状：state 只表示「本拍没读」，不是失败。 */
 function skipEntry(channel, g) {

@@ -14,12 +14,12 @@ test.after(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-const { loadConfig } = await import('../src/config.js');
+const { loadConfig } = await import('../src/settings/config.js');
 const {
   listForUi, explorationItemsForUi, channelItemsForUi, hiddenItemsForSearch,
   applyChange, SEARCH_TAGS,
-} = await import('../src/settings.js');
-const { pickTopic } = await import('../src/topics.js');
+} = await import('../src/settings/settings.js');
+const { pickTopic } = await import('../src/decision/topics.js');
 
 test('两条主动分享间隔改用分钟：默认 1440 分钟、兼容旧 shareGapH、非默认值运行时生效', () => {
   // 全新默认：1440 分钟（24 小时）

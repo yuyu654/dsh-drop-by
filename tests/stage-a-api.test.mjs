@@ -18,9 +18,9 @@ const originalEnv = Object.entries(env).map(([key]) => [key, process.env[key]]);
 Object.assign(process.env, env);
 const { apply } = await import('../src/plugin.js');
 const LATEST_PATH = env.PG_FISH_LATEST_PATH;
-const { recordDay } = await import('../src/retention.js');
-const { loadConfig, loadState, saveState } = await import('../src/config.js');
-const { coldSlots, noteSent, settle, slotStats, sweep } = await import('../src/feedback.js');
+const { recordDay } = await import('../src/settings/retention.js');
+const { loadConfig, loadState, saveState } = await import('../src/settings/config.js');
+const { coldSlots, noteSent, settle, slotStats, sweep } = await import('../src/decision/feedback.js');
 
 const write = (file, data) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -392,8 +392,8 @@ test('旧版汇总可识别确定的最后一次未回，日志补齐近七天�
 
 test('小本本和探索反馈写入口走准入校验，路由更新结果可回读', async (t) => {
   const { writeChatData } = await import('../src/channels/douyin-im.js');
-  const { loadPersona } = await import('../src/persona.js');
-  const { exploreRound, saveExploration } = await import('../src/explore.js');
+  const { loadPersona } = await import('../src/decision/persona.js');
+  const { exploreRound, saveExploration } = await import('../src/explore/explore.js');
   const personaFile = path.join(dir, 'curiosity-persona.md');
   fs.writeFileSync(personaFile, '喜欢琢磨古典吉他。');
   write(env.PG_CONFIG_PATH, { ...base, persona: { localFile: personaFile, dshHome: dir }, agreements: { enabled: true } });

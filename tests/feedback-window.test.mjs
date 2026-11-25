@@ -3,8 +3,8 @@
 // 只有整段窗口都在白天、她一句没说，才算一次没接住。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { emptyFeedback, noteSent, settle, sweep, classify, windowEnd, slotStats, recentPairs } from '../src/feedback.js';
-import { buildSnapshot } from '../src/snapshot.js';
+import { emptyFeedback, noteSent, settle, sweep, classify, windowEnd, slotStats, recentPairs } from '../src/decision/feedback.js';
+import { buildSnapshot } from '../src/decision/snapshot.js';
 
 // 2026-11-04（周三）北京时间 h:m
 const at = (h, m = 0, day = 4) => Date.UTC(2026, 10, day, h - 8, m);

@@ -1,8 +1,8 @@
 // noreply.test.mjs —— 忙碌时段 + 「我发过去她一直没回」这条追问。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { inBusy, lastWindowEnd } from '../src/schedule.js';
-import { decide } from '../src/decide.js';
+import { inBusy, lastWindowEnd } from '../src/perception/schedule.js';
+import { decide } from '../src/decision/decide.js';
 import {
   pickNoReply,
   noReplyDue,
@@ -10,9 +10,9 @@ import {
   judgePrompt,
   pendingFromFeedback,
   pendingFromDouyin,
-} from '../src/noreply.js';
-import { pickTopic, explainNoTopic } from '../src/topics.js';
-import { renderTemplate } from '../src/compose.js';
+} from '../src/chat/noreply.js';
+import { pickTopic, explainNoTopic } from '../src/decision/topics.js';
+import { renderTemplate } from '../src/decision/compose.js';
 
 const TZ = 'Asia/Shanghai';
 /** 北京时间 → UTC 时间戳 */

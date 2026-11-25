@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { classifyExplorationTarget, resolveExplorationTarget, setExplorationWorkSource } from '../src/exploration-target.js';
+import { classifyExplorationTarget, resolveExplorationTarget, setExplorationWorkSource } from '../src/explore/exploration-target.js';
 
 test('ordinary research and an explicit topic skip work lookup', async () => {
   const lookup = async () => assert.fail('ordinary topics must skip the work catalog');

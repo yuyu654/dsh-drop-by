@@ -2,8 +2,8 @@
 // 全部不联网：CDP 那一路用注入的 pages 代替。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { windowInfo, pickTab, siteOf, readSignals, signalFacts, signalLine, cleanTitle, needL3 } from '../src/signals.js';
-import { buildPrompt } from '../src/compose.js';
+import { windowInfo, pickTab, siteOf, readSignals, signalFacts, signalLine, cleanTitle, needL3 } from '../src/perception/signals.js';
+import { buildPrompt } from '../src/decision/compose.js';
 
 const cfgOf = (signals = {}) => ({ perception: { signals: { enabled: true, browser: true, port: 9223, ...signals } } });
 

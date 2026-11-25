@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { readChannels } from '../src/channels/index.js';
-import { pickTopic } from '../src/topics.js';
+import { pickTopic } from '../src/decision/topics.js';
 
 const TZ = 'Asia/Shanghai';
 const at = (h, m = 0) => Date.UTC(2026, 10, 4, h - 8, m);

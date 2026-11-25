@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { REASONS } from '../src/decide.js';
-import * as explanations from '../src/explain.js';
+import { REASONS } from '../src/decision/decide.js';
+import * as explanations from '../src/decision/explain.js';
 
 test('每种决策都有中文解释，静默显示当前时段', () => {
   for (const reason of Object.keys(REASONS)) {
@@ -60,7 +60,7 @@ test('无具体原因时用一句话概括日常未触发的话题', () => {
 });
 
 test('探索分享被同主题冷却、反馈避开或未开分享开关拦下时，给出明确原因', async () => {
-  const { topicCandidates } = await import('../src/topics.js');
+  const { topicCandidates } = await import('../src/decision/topics.js');
   const misses = new Map();
   const list = [...topicCandidates(
     { self: null, selfMiss: 'share_topic_cooldown', fish: { ok: false }, her: {}, me: {}, pc: {} },

@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { contextUsage, createSessionRollover, dismissRollover, extractHandoffMessages, pendingRollovers } from '../src/session-rollover.js';
-import { qqRolloverAdapter, stripQqSourceHeader } from '../src/qq-rollover-adapter.js';
-import { installQqPromptMerge } from '../src/qq-debounce.js';
-import { applyChange } from '../src/settings.js';
+import { contextUsage, createSessionRollover, dismissRollover, extractHandoffMessages, pendingRollovers } from '../src/chat/session-rollover.js';
+import { qqRolloverAdapter, stripQqSourceHeader } from '../src/chat/qq-rollover-adapter.js';
+import { installQqPromptMerge } from '../src/chat/qq-debounce.js';
+import { applyChange } from '../src/settings/settings.js';
 
 const text = (value) => ({ type: 'text', text: value });
 const user = (value) => ({ type: 'user/message', data: { content: [text(value)] } });

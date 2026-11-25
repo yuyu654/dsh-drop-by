@@ -16,7 +16,7 @@ import {
   outboundFor,
   answeredAlready,
   recentOutbound,
-} from '../src/outbound.js';
+} from '../src/chat/outbound.js';
 
 function fakeHome() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pg-outbound-'));

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadPersona, personaPlan, dshHome } from '../src/persona.js';
+import { loadPersona, personaPlan, dshHome } from '../src/decision/persona.js';
 
 function tmpHome(files = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'pg-persona-'));

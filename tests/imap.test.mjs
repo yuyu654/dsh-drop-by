@@ -1,7 +1,7 @@
 // tests/imap.test.mjs —— IMAP 客户端：握手、登录、SELECT、带字面量的 FETCH。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ImapClient } from '../src/imap.js';
+import { ImapClient } from '../src/perception/imap.js';
 import { startFakeImap } from './fake-imap.mjs';
 import { buildFishMail, buildOtherMail } from './fixtures.mjs';
 

@@ -1,7 +1,7 @@
 // private.test.mjs —— 「别拿出去用」的自我标记，不许写死某个人的名字。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PRIVATE_MARK, isPrivate } from '../src/private.js';
+import { PRIVATE_MARK, isPrivate } from '../src/settings/private.js';
 
 test('private：任何人的「不给 XX 看」都算', () => {
   assert.equal(isPrivate('这条不给她看：我其实有点慌'), true);

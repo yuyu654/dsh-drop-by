@@ -15,7 +15,7 @@ import {
   recordDay,
   recordSummary,
   shiftDay,
-} from '../src/retention.js';
+} from '../src/settings/retention.js';
 
 const TZ = 'Asia/Shanghai';
 const cfgOf = (logging = {}) => ({ timezone: TZ, logging: { keepDays: 2, dayStartHour: 7, ...logging } });

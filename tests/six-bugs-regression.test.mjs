@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { probe } from '../src/probe.js';
+import { probe } from '../src/perception/probe.js';
 import { readChannels } from '../src/channels/index.js';
-import { detectPhone } from '../src/detect.js';
-import { connectivity } from '../src/diagnostics.js';
-import { windowOverlapsBusyOrClass, scoreReceptivity, updateReceptivity } from '../src/receptivity.js';
-import { courseKey, parseAgenda } from '../src/agenda.js';
+import { detectPhone } from '../src/settings/detect.js';
+import { connectivity } from '../src/settings/diagnostics.js';
+import { windowOverlapsBusyOrClass, scoreReceptivity, updateReceptivity } from '../src/decision/receptivity.js';
+import { courseKey, parseAgenda } from '../src/perception/agenda.js';
 
 test('Bug 1：反作弊进程命中时 winprobe 不读取前台窗口标题与音频峰值', async () => {
   const res = await probe(
@@ -135,7 +135,7 @@ test('Bug 5：小算盘课表判断支持自定义节次、单双周与 courseKe
 });
 
 test('Bug 6：engine.js 普通主动发送成功时将 channel 写回 d.channel 以落入决策日志', () => {
-  const src = fs.readFileSync(path.join(process.cwd(), 'src', 'engine.js'), 'utf8');
+  const src = fs.readFileSync(path.join(process.cwd(), 'src', 'decision', 'engine.js'), 'utf8');
   assert.match(src, /if \(delivered\)\s*\{\s*d\.channel = channel;/);
   assert.match(src, /const antiHitForLog = Boolean\(anticheatRunning\(sys, cfg\)\);/);
 });

@@ -6,11 +6,11 @@ import {
   classifyMissCensor,
   updateReceptivity,
   scoreReceptivity,
-} from '../src/receptivity.js';
-import { detectWindDownSignals, closingCooldownActive } from '../src/chat-rhythm.js';
-import { noteSent, settle, sweep } from '../src/feedback.js';
-import { applyChange, listForUi } from '../src/settings.js';
-import { loadConfig } from '../src/config.js';
+} from '../src/decision/receptivity.js';
+import { detectWindDownSignals, closingCooldownActive } from '../src/chat/chat-rhythm.js';
+import { noteSent, settle, sweep } from '../src/decision/feedback.js';
+import { applyChange, listForUi } from '../src/settings/settings.js';
+import { loadConfig } from '../src/settings/config.js';
 
 test('receptivity：识别进行时在忙/上课/开会口语，排除问句与第三人称', () => {
   assert.equal(detectBusySpeech('我在上课呢'), true);

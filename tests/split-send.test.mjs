@@ -1,7 +1,7 @@
 // split-send.test.mjs —— 2026-11-09 她：一句一条地发，别把两段塞进一个气泡。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { splitOutgoing, firstDelayMs, partGapMs } from '../src/split.js';
+import { splitOutgoing, firstDelayMs, partGapMs } from '../src/chat/split.js';
 
 test('一段就一条，不硬拆', () => {
   assert.deepEqual(splitOutgoing('嗯，我在。'), ['嗯，我在。']);

@@ -4,7 +4,7 @@
 // 调用方要退回原来的规则链；只有明确 say:false 才是模型主动决定不开口。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { judgePrompt, parseJudge, judgeDecision } from '../src/judge.js';
+import { judgePrompt, parseJudge, judgeDecision } from '../src/decision/judge.js';
 
 const persona = { text: '我是示例角色，话短。' };
 const snapshot = '现在：2026-11-06 周五 12:17（中午）\n规则建议（可参考也可不用）：拿睡眠说事';

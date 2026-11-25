@@ -9,12 +9,12 @@ import {
   recallExplorationMemories,
   recordExplorationMemory,
   reinforceExplorationMemories,
-} from '../src/exploration-memory.js';
-import { exploreRound } from '../src/explore.js';
-import { qqReplyContext } from '../src/qq-reply.js';
-import { pickTopic } from '../src/topics.js';
-import { inspectSessionContext } from '../src/diagnostics.js';
-import { applyChange } from '../src/settings.js';
+} from '../src/explore/exploration-memory.js';
+import { exploreRound } from '../src/explore/explore.js';
+import { qqReplyContext } from '../src/chat/qq-reply.js';
+import { pickTopic } from '../src/decision/topics.js';
+import { inspectSessionContext } from '../src/settings/diagnostics.js';
+import { applyChange } from '../src/settings/settings.js';
 
 const persona = { ok: true, text: '喜欢百合漫画和自动化的小澪' };
 const DAY = 86_400_000;

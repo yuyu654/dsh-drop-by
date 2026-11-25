@@ -8,7 +8,7 @@ import {
   coldSlots,
   adaptiveExtraMin,
   feedbackSummary,
-} from '../src/feedback.js';
+} from '../src/decision/feedback.js';
 
 const MIN = 60_000;
 const HOUR = 3_600_000;

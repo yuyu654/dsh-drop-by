@@ -18,7 +18,7 @@ test.after(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 const { applyExplorationFeedback, explorationFeedbackForUi, explorationFeedbackHints, observeCuriosity,
-  rememberExplorationShare, recentSharedExplorationTopic, consumeExplorationFeedback, recordExplorationDirection } = await import('../src/exploration-feedback.js');
+  rememberExplorationShare, recentSharedExplorationTopic, consumeExplorationFeedback, recordExplorationDirection } = await import('../src/explore/exploration-feedback.js');
 const now = Date.parse('2026-11-22T12:00:00+08:00');
 const cfg = { exploration: { feedback: { enabled: true, maxCandidates: 2, warmMin: 10 } } };
 
@@ -60,7 +60,7 @@ test('真发出去的分享和有标题的转发聊热后才纳入，不保存�
 });
 
 test('深度和轻量探索避开已淡出的题材，明确指定主题优先', async () => {
-  const { exploreRound } = await import('../src/explore.js');
+  const { exploreRound } = await import('../src/explore/explore.js');
   const known = { prefer: '古典吉他', avoid: ['遥感气象重建'] };
   for (const mode of ['deep', 'light']) {
     const attempts = [];

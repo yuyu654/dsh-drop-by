@@ -30,9 +30,9 @@ test('QQ 连发只处理一次上下文和回应，旧投递拒绝并保留附�
     'export const applyScore = (state, _, __, score) => { state.mood = score.emotions; };',
   ].join('\n'));
 
-  const { installQqPromptMerge, isBridgeManagedMessage } = await import('../src/qq-debounce.js');
-  const { prepareQqReplyContext } = await import('../src/qq-reply.js');
-  const { bindActionExecutor } = await import('../src/action-proposal.js');
+  const { installQqPromptMerge, isBridgeManagedMessage } = await import('../src/chat/qq-debounce.js');
+  const { prepareQqReplyContext } = await import('../src/chat/qq-reply.js');
+  const { bindActionExecutor } = await import('../src/chat/action-proposal.js');
   const dropExecutor = bindActionExecutor({ command: () => assert.fail('chat must not execute commands') });
   t.after(dropExecutor);
 
@@ -123,7 +123,7 @@ test('QQ 连发只处理一次上下文和回应，旧投递拒绝并保留附�
 });
 
 test('QQ 防抖设置只接受 3000 到 15000 毫秒', async () => {
-  const { applyChange, SCHEMA } = await import('../src/settings.js');
+  const { applyChange, SCHEMA } = await import('../src/settings/settings.js');
   const field = 'rules.qqTiming.debounceMs';
   assert.equal(SCHEMA.find((item) => item.path === field)?.group, '时间间隔');
   for (const n of [2999, 15001]) assert.equal(applyChange({}, field, n).ok, false);
@@ -131,7 +131,7 @@ test('QQ 防抖设置只接受 3000 到 15000 毫秒', async () => {
 });
 
 test('QQ prompt 包装可复用并恢复原函数', async () => {
-  const { installQqPromptMerge } = await import('../src/qq-debounce.js');
+  const { installQqPromptMerge } = await import('../src/chat/qq-debounce.js');
   const original = () => 'original';
   const controller = { prompt: original };
   const offA = installQqPromptMerge(controller);
@@ -179,8 +179,8 @@ test('QQ 指令/提案早退分支同样记录 emotion/inbox.jsonl', async (t) =
   fs.writeFileSync(path.join(portraitDir, 'package.json'), JSON.stringify({ name: 'emotion-state-portrait', version: '1.0.5' }));
   fs.writeFileSync(path.join(portraitDir, 'qq-emotion.mjs'), 'export default {};');
 
-  const { prepareQqReplyContext } = await import('../src/qq-reply.js');
-  const { bindActionExecutor } = await import('../src/action-proposal.js');
+  const { prepareQqReplyContext } = await import('../src/chat/qq-reply.js');
+  const { bindActionExecutor } = await import('../src/chat/action-proposal.js');
   const drop = bindActionExecutor({ command: () => ({ ok: true }) });
   t.after(drop);
 

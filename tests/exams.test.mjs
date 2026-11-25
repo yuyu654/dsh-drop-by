@@ -1,9 +1,9 @@
 // exams.test.mjs —— 考试：一行一场；考前一周提复习（按天），考前几十分钟提快考了（按分钟）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseExams, examKey, reviewDue, soonDue, dayDiff } from '../src/exams.js';
-import { pickTopic } from '../src/topics.js';
-import { renderTemplate } from '../src/compose.js';
+import { parseExams, examKey, reviewDue, soonDue, dayDiff } from '../src/perception/exams.js';
+import { pickTopic } from '../src/decision/topics.js';
+import { renderTemplate } from '../src/decision/compose.js';
 
 const TZ = 'Asia/Shanghai';
 const at = (mo, d, h, m = 0) => Date.UTC(2026, mo - 1, d, h - 8, m);

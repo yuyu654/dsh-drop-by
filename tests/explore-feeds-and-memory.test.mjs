@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parseRssXml, createBuiltinExploreSources, syncBuiltinExploreFeeds } from '../src/explore-feeds.js';
-import { listExploreSources } from '../src/extensions.js';
-import { recordExplorationMemory, recallExplorationMemories } from '../src/exploration-memory.js';
-import { syncExplorationToMemory } from '../src/memorysource.js';
-import { noteSent, settle } from '../src/feedback.js';
-import { applyChange, listForUi } from '../src/settings.js';
-import { loadConfig } from '../src/config.js';
+import { parseRssXml, createBuiltinExploreSources, syncBuiltinExploreFeeds } from '../src/explore/explore-feeds.js';
+import { listExploreSources } from '../src/settings/extensions.js';
+import { recordExplorationMemory, recallExplorationMemories } from '../src/explore/exploration-memory.js';
+import { syncExplorationToMemory } from '../src/decision/memorysource.js';
+import { noteSent, settle } from '../src/decision/feedback.js';
+import { applyChange, listForUi } from '../src/settings/settings.js';
+import { loadConfig } from '../src/settings/config.js';
 
 test('parseRssXml：支持 RSS 2.0 与 Atom 格式并过滤非公网链接', () => {
   const rss = `

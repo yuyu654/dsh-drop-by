@@ -1,7 +1,7 @@
 // fish-parse.test.mjs —— 邮件摘要 → 数字。睡眠由头全靠这一层，抠错就全错。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseFishSummary, minsOf } from '../src/context.js';
+import { parseFishSummary, minsOf } from '../src/decision/context.js';
 
 // 真实邮件正文（构建 7 之后：只发解析结果，不发页面原文）
 const REAL = [

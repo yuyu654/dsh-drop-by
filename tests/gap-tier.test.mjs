@@ -1,9 +1,9 @@
 // gap-tier.test.mjs —— 阶段 1：间隔分档 + 「人不在」降级为信号。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { decide, checkTierGap, tierGapMs } from '../src/decide.js';
-import { SLOTS, tierOfSlot } from '../src/topics.js';
-import { buildSnapshot } from '../src/snapshot.js';
+import { decide, checkTierGap, tierGapMs } from '../src/decision/decide.js';
+import { SLOTS, tierOfSlot } from '../src/decision/topics.js';
+import { buildSnapshot } from '../src/decision/snapshot.js';
 
 const NOW = 1_700_000_000_000;
 const MIN = 60_000;

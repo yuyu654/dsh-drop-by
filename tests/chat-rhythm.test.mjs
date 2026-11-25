@@ -30,16 +30,16 @@ const {
   REPLY_PACING_RULE,
   CLOSING_EXPLICIT_HINT,
   CLOSING_SOFT_HINT,
-} = await import('../src/chat-rhythm.js');
-const { loadConfig } = await import('../src/config.js');
-const { applyChange, listForUi } = await import('../src/settings.js');
-const { decide } = await import('../src/decide.js');
-const { explainRun } = await import('../src/explain.js');
-const { buildDailyReport } = await import('../src/report.js');
-const { shadowEligible } = await import('../src/shadow.js');
-const { createQqContinuation } = await import('../src/qq-continuation.js');
-const { buildReplyContext } = await import('../src/qq-reply.js');
-const { exploreRound } = await import('../src/explore.js');
+} = await import('../src/chat/chat-rhythm.js');
+const { loadConfig } = await import('../src/settings/config.js');
+const { applyChange, listForUi } = await import('../src/settings/settings.js');
+const { decide } = await import('../src/decision/decide.js');
+const { explainRun } = await import('../src/decision/explain.js');
+const { buildDailyReport } = await import('../src/decision/report.js');
+const { shadowEligible } = await import('../src/decision/shadow.js');
+const { createQqContinuation } = await import('../src/chat/qq-continuation.js');
+const { buildReplyContext } = await import('../src/chat/qq-reply.js');
+const { exploreRound } = await import('../src/explore/explore.js');
 
 const MIN = 60_000;
 const BASE_TS = Date.parse('2026-11-22T15:00:00+08:00');

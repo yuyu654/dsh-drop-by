@@ -13,9 +13,9 @@
 //   --out-dir      缓存目录（默认 data/videos；headless 会话要写在自己工作目录里时用它）
 //
 // 退出码：0 看成功；1 看不了（原因打在 stderr）。
-import { loadConfig } from '../src/config.js';
-import { generate } from '../src/llm.js';
-import { CACHE_DIR, summarizeVideo } from '../src/videosum.js';
+import { loadConfig } from '../src/settings/config.js';
+import { generate } from '../src/decision/llm.js';
+import { CACHE_DIR, summarizeVideo } from '../src/perception/videosum.js';
 
 const argv = process.argv.slice(2);
 const has = (k) => argv.includes(k);

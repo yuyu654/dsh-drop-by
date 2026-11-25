@@ -1,7 +1,7 @@
 // time.test.mjs —— 时间/时长工具。--sleep-set 靠它把用户写的"6h30"变成分钟。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseDur, hmToMin, minToHm, healthDay } from '../src/time.js';
+import { parseDur, hmToMin, minToHm, healthDay } from '../src/settings/time.js';
 
 const TZ = 'Asia/Shanghai';
 

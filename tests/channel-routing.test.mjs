@@ -5,8 +5,8 @@
 // （2026-11-07 她问「抖音通道接上会不会和 QQ 冲突」，当场批准加这道闸）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { answerableOn } from '../src/topics.js';
-import { REASONS } from '../src/decide.js';
+import { answerableOn } from '../src/decision/topics.js';
+import { REASONS } from '../src/decision/decide.js';
 
 test('哪来哪回：她 QQ 上说的，reply/forward 都能回', () => {
   assert.equal(answerableOn('reply', 'qq'), true);

@@ -1,9 +1,9 @@
 // mood / seed 的硬约束：情绪脱敏、素材互斥、原话抄写拦截、专有名词锁定。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { toneOf, explorationToneHint } from '../src/explore.js';
-import { guard, buildChitchatPrompt } from '../src/compose.js';
-import { seedEntities } from '../src/seeds.js';
+import { toneOf, explorationToneHint } from '../src/explore/explore.js';
+import { guard, buildChitchatPrompt } from '../src/decision/compose.js';
+import { seedEntities } from '../src/decision/seeds.js';
 
 const RAW = '术语对上了，但人都还没进去，卡在这儿不上不下，有点闷。';
 

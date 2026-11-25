@@ -12,8 +12,8 @@ for (const [key, value] of Object.entries({
 })) process.env[key] = path.join(root, value);
 test.after(() => fs.rmSync(root, { recursive: true, force: true }));
 const { apply } = await import('../src/plugin.js');
-const { buildReplyContext } = await import('../src/qq-reply.js');
-const { loadConfig } = await import('../src/config.js');
+const { buildReplyContext } = await import('../src/chat/qq-reply.js');
+const { loadConfig } = await import('../src/settings/config.js');
 
 function deferred() {
   let resolve;

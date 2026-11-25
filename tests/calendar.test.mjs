@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { normalizeCalendar, refreshCalendar, loadYear, cachedSets } from '../src/calendar.js';
-import { busyNow, isHoliday } from '../src/holidays.js';
+import { normalizeCalendar, refreshCalendar, loadYear, cachedSets } from '../src/perception/calendar.js';
+import { busyNow, isHoliday } from '../src/perception/holidays.js';
 
 const dirs = [];
 const tmpCfg = (extra = {}) => {

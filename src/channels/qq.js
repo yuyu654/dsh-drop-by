@@ -2,8 +2,8 @@
 // 外加 qq-bridge 自己写的 last-out.json（driver 关着时，那是唯一能看见「桥刚回过」的地方）。
 import fs from 'node:fs';
 import path from 'node:path';
-import { dayKey } from '../time.js';
-import { bridgeLastIn, bridgeLastOut, dshHome } from '../outbound.js';
+import { dayKey } from '../settings/time.js';
+import { bridgeLastIn, bridgeLastOut, dshHome } from '../chat/outbound.js';
 
 const dir = () => path.join(dshHome(), 'autonomy');
 

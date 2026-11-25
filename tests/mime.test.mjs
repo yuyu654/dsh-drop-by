@@ -1,8 +1,8 @@
 // tests/mime.test.mjs —— 邮件解析：主题 RFC2047、base64 正文、摘要裁剪。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseMessage } from '../src/mime.js';
-import { summaryOf } from '../src/fishmail.js';
+import { parseMessage } from '../src/perception/mime.js';
+import { summaryOf } from '../src/perception/fishmail.js';
 import { buildFishMail, SUMMARY } from './fixtures.mjs';
 
 /** 按 RFC 2047 / QP 的规则把字节写成 =XX=XX。 */

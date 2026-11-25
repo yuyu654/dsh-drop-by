@@ -16,9 +16,9 @@ import {
   asrEndpoint,
   ensureAsr,
   stopAsr,
-} from '../src/videosum.js';
-import { withForwardContent, pickTopic } from '../src/topics.js';
-import { buildPrompt } from '../src/compose.js';
+} from '../src/perception/videosum.js';
+import { withForwardContent, pickTopic } from '../src/decision/topics.js';
+import { buildPrompt } from '../src/decision/compose.js';
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'pg-video-'));
 
@@ -376,7 +376,7 @@ test('QQ video replies use the current link rather than an older Douyin card', (
 });
 
 test('the downloader uses the Node runner supplied by the desktop plugin', async (t) => {
-  const { downloadVideo } = await import('../src/videosum.js');
+  const { downloadVideo } = await import('../src/perception/videosum.js');
   const dir = tmp();
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const fetchScript = path.join(dir, 'fetch.mjs');
@@ -388,7 +388,7 @@ test('the downloader uses the Node runner supplied by the desktop plugin', async
 });
 
 test('host observation calls the registered storyboard tool with the downloaded MP4', async () => {
-  const { observeDownloadedVideo } = await import('../src/videosum.js');
+  const { observeDownloadedVideo } = await import('../src/perception/videosum.js');
   const image = { attachmentId: 'storyboard-sheet' };
   const calls = [];
   const ctx = { get: (key) => key === 'tools' ? {

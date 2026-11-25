@@ -1,7 +1,7 @@
 // decide.test.mjs —— 判定纯函数。重点验证「全局静默压在所有轨道之上」。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { decide } from '../src/decide.js';
+import { decide } from '../src/decision/decide.js';
 
 const cfg = (over = {}) => ({
   enabled: true,

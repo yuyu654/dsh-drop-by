@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { recentTurns } from '../src/outbound.js';
-import { buildSnapshot } from '../src/snapshot.js';
+import { recentTurns } from '../src/chat/outbound.js';
+import { buildSnapshot } from '../src/decision/snapshot.js';
 
 function fakeHome(turns) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pg-dialogue-'));

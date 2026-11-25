@@ -2,9 +2,9 @@
 // 所以只要名单里的进程在跑，这一拍就不读窗口标题、不读浏览器标签、不截屏。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { anticheatRunning, ANTICHEAT_DEFAULT } from '../src/probe.js';
-import { loadConfig } from '../src/config.js';
-import { applyChange, listForUi } from '../src/settings.js';
+import { anticheatRunning, ANTICHEAT_DEFAULT } from '../src/perception/probe.js';
+import { loadConfig } from '../src/settings/config.js';
+import { applyChange, listForUi } from '../src/settings/settings.js';
 
 const cfg = (o = {}) => ({ perception: { anticheat: { skip: true, procs: ANTICHEAT_DEFAULT, ...o } } });
 

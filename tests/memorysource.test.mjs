@@ -5,8 +5,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { readMemory, listSessions, memoryFacts, memoryLine, memoryDir, MEMORY_PLUGINS, inspectMemory, mergeMemorySessions, restoreMemoryBackup } from '../src/memorysource.js';
-import { buildPrompt } from '../src/compose.js';
+import { readMemory, listSessions, memoryFacts, memoryLine, memoryDir, MEMORY_PLUGINS, inspectMemory, mergeMemorySessions, restoreMemoryBackup } from '../src/decision/memorysource.js';
+import { buildPrompt } from '../src/decision/compose.js';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pg-mem-'));
 

@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadConfig } from '../src/config.js';
-import { listForUi, explorationItemsForUi, SCHEMA, GROUP_ORDER, FOLDABLE_GROUPS } from '../src/settings.js';
+import { loadConfig } from '../src/settings/config.js';
+import { listForUi, explorationItemsForUi, SCHEMA, GROUP_ORDER, FOLDABLE_GROUPS } from '../src/settings/settings.js';
 
 const cfg = () => loadConfig({ env: { DSH_HOME: 'C:/Users/you/.dsh', PG_NO_CREDENTIALS: '1' }, fresh: true });
 const flat = (c) => listForUi(c).flatMap((g) => g.items);

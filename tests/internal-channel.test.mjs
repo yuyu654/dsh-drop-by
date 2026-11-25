@@ -25,7 +25,7 @@ test.after(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-const { loadConfig, saveConfig } = await import('../src/config.js');
+const { loadConfig, saveConfig } = await import('../src/settings/config.js');
 const { apply } = await import('../src/plugin.js');
 const { chatBinding } = await import('../src/channels/chat-switch.js');
 const { writeChatData } = await import('../src/channels/douyin-im.js');
@@ -34,8 +34,8 @@ const {
 } = await import('../src/channels/internal.js');
 const { readChannels } = await import('../src/channels/index.js');
 const { sendChatRound, activeChatChannel, canReadChat, chatPeer } = await import('../src/channels/external.js');
-const { recentTurns, outboundFor } = await import('../src/outbound.js');
-const { extractHandoffMessages } = await import('../src/session-rollover.js');
+const { recentTurns, outboundFor } = await import('../src/chat/outbound.js');
+const { extractHandoffMessages } = await import('../src/chat/session-rollover.js');
 
 function writeJson(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });

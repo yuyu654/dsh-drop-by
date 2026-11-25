@@ -15,7 +15,7 @@ test('Douyin mode does not use the QQ dialogue adapter', () => {
 });
 
 test('a Douyin reply does not settle a QQ message still awaiting an answer', async () => {
-  const { noteSent, settle } = await import('../src/feedback.js');
+  const { noteSent, settle } = await import('../src/decision/feedback.js');
   const st = {};
   const at = new Date('2026-11-16T12:00:00+08:00').getTime();
   noteSent(st, 'agenda', at, 'QQ 上说过', { channel: 'qq' });

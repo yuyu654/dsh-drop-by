@@ -4,7 +4,7 @@
 // 两件事：①主动由头里不许接她别的通道的话、更不许一句「另说」推开；②这种推开句直接判违规。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { guard, buildPrompt } from '../src/compose.js';
+import { guard, buildPrompt } from '../src/decision/compose.js';
 
 const cfgOf = (o = {}) => ({ content: { mode: 'llm', maxChars: 60, ...o } });
 const topicOf = (slot) => ({ slot, label: slot, why: '', evidence: { since: '12:22', day: '2026-11-08', satMin: 488 }, brief: `由头 ${slot}`, at: Date.now() });

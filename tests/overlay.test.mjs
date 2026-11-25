@@ -2,8 +2,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { ROOT } from '../src/config.js';
-import { materializeOverlayText } from '../src/llm.js';
+import { ROOT } from '../src/settings/config.js';
+import { materializeOverlayText } from '../src/decision/llm.js';
 
 const posixRoot = ROOT.replace(/\\/g, '/');
 
