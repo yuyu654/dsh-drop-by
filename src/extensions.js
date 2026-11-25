@@ -109,15 +109,17 @@ export function normalizeExploreItems(raw, fallbackEvidence = '外部扩展资�
   return out;
 }
 
-export async function runExploreSource(id, { mode = 'leisure', query = '', interest = '', now = Date.now(), timeoutMs } = {}) {
+export async function runExploreSource(id, { mode = 'leisure', query = '', interest = '', now = Date.now(), timeoutMs, signal: parentSignal } = {}) {
   const entry = exploreSources.get(String(id || '').trim());
   if (!entry) return [];
   const ms = Math.max(1000, Math.min(60_000, Number(timeoutMs) || entry.timeoutMs || 12_000));
-  const signal = AbortSignal.timeout(ms);
+  const timeoutSignal = AbortSignal.timeout(ms);
+  const signal = parentSignal ? AbortSignal.any([parentSignal, timeoutSignal]) : timeoutSignal;
+  if (signal.aborted) return [];
   let onAbort;
   try {
     const res = await Promise.race([
-      Promise.resolve().then(() => entry.browse({ mode, query, interest, now, signal })),
+      Promise.resolve().then(() => { signal.throwIfAborted(); return entry.browse({ mode, query, interest, now, signal }); }),
       new Promise((resolve) => {
         onAbort = () => resolve(null);
         signal.addEventListener('abort', onAbort, { once: true });

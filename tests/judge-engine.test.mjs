@@ -16,6 +16,8 @@ process.env.PG_LOG_DIR = path.join(dir, 'logs');
 process.env.PG_SECRETS_PATH = path.join(dir, 'secrets.json');
 process.env.PG_DSH_HOME = dir; // 记忆/课表/考试都别读真实的 ~/.dsh
 fs.mkdirSync(process.env.PG_LOG_DIR, { recursive: true });
+fs.mkdirSync(path.join(dir, 'node_modules', 'dsh-plugin-qq-bridge'), { recursive: true });
+fs.writeFileSync(path.join(dir, 'node_modules', 'dsh-plugin-qq-bridge', 'package.json'), JSON.stringify({ name: 'dsh-plugin-qq-bridge', version: '1.0.0' }));
 
 const { loadConfig, saveConfig, loadState, saveState } = await import('../src/config.js');
 const { tick: engineTick } = await import('../src/engine.js');
@@ -52,6 +54,7 @@ function writeConfig(patch = {}) {
     rules: { ...cfg.rules, judge: { enabled: true }, minGapMin: 0, dailyCap: 10, replyCooldownMin: 0 },
     channels: {
       ...cfg.channels,
+      primary: 'qq',
       qq: { ...cfg.channels.qq, read: false, send: false },
       main: { ...cfg.channels.main, enabled: false, read: false, send: false },
       douyin: { ...cfg.channels.douyin, enabled: false, read: false, send: false },
@@ -236,6 +239,7 @@ test('judge 打开且命中常规由头 → 快照后附带当前心情底色参
     '42': '心情：轻快Lv1；对她：熟悉；硬规则：别直念',
   }));
   const threeDaysAgo = Date.now() - 3 * 86_400_000;
+  fs.writeFileSync(path.join(qqDir, 'connection.json'), '{}');
   fs.writeFileSync(path.join(qqDir, 'last-in.json'), JSON.stringify({ peer: '42', peerKind: 'private', at: threeDaysAgo, text: '先去忙了' }));
   fs.writeFileSync(path.join(qqDir, 'last-out.json'), JSON.stringify({ peer: '42', firstAt: threeDaysAgo + 1000, lastAt: threeDaysAgo + 1000, count: 1, text: '嗯，回头聊。' }));
 
@@ -342,6 +346,7 @@ test('按约跟进生成期间收到取消就放弃旧提醒', async (t) => {
   const quote = '晚上帮我记得去交表';
   const inFile = path.join(qqDir, 'last-in.json');
   const incoming = { peer: '42', peerKind: 'private' };
+  fs.writeFileSync(path.join(qqDir, 'connection.json'), '{}');
   fs.writeFileSync(inFile, JSON.stringify({ ...incoming, at: sentAt - 1000, text: quote }));
   fs.writeFileSync(path.join(qqDir, 'last-out.json'), JSON.stringify({ peer: '42', firstAt: sentAt, lastAt: sentAt, count: 1, text: '好，到时喊你。' }));
   writeConfig({

@@ -1078,7 +1078,11 @@ async function main() {
       `  她 ${ctx.her.lastAgoSec == null ? '没有记录' : (ctx.her.lastAgoSec / 3600).toFixed(1) + ' 小时前说过话'}` +
         `  我 ${ctx.me.lastAgoSec == null ? '没有记录' : (ctx.me.lastAgoSec / 3600).toFixed(1) + ' 小时前说过话'}`
     );
-    console.log(`  对话条数 ${ctx.recent.length}   鱼鱼 ${ctx.fish.ok ? `有（${ctx.fish.ageMin} 分钟前取回）` : '没有'}`);
+    const fishFetchMin = ctx.fish.ok && ctx.fish.fetchedAt ? Math.round((now - ctx.fish.fetchedAt) / 60000) : null;
+    const fishText = !ctx.fish.ok
+      ? '没有'
+      : `有（数据距今 ${ctx.fish.ageMin ?? '?'} 分钟${fishFetchMin != null ? `，${fishFetchMin} 分钟前取回` : ''}）`;
+    console.log(`  对话条数 ${ctx.recent.length}   鱼鱼 ${fishText}`);
     if (cfg.rules?.replyGuard !== false) {
       const ob = outboundFor(ctx?.her?.lastChannel, { cfg });
       const hit = answeredAlready({ herTs: ctx.her.lastTs, out: ob });

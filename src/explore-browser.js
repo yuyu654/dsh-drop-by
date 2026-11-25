@@ -2,6 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { setTimeout as delay } from 'node:timers/promises';
+import { abortable } from './exploration-abort.js';
+import { isLoginPage } from './exploration-work-page.js';
 import { dshHome } from './detect.js';
 
 const execFileAsync = promisify(execFile);
@@ -70,7 +73,7 @@ export async function downloadImageBuffer(url, signal) {
   try {
     const res = await fetch(pub.href, {
       signal,
-      redirect: 'follow',
+      redirect: 'error',
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         Accept: 'image/webp,image/png,image/jpeg,*/*;q=0.8',
@@ -101,23 +104,25 @@ async function cdpReachable(port, timeoutMs = 1200) {
   } catch { return false; }
 }
 
-async function ensureCdpReady({ port = 9223, autostart = false, scriptPath = '' } = {}) {
+async function ensureCdpReady({ port = 9223, autostart = false, scriptPath = '', signal } = {}) {
   if (await cdpReachable(port)) return true;
-  if (!autostart) return false;
+  if (!autostart || signal?.aborted) return false;
   const candidate = scriptPath || path.join(dshHome(), 'edge-cdp.ps1');
   if (!fs.existsSync(candidate)) return false;
   try {
     await execFileAsync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', candidate], {
-      timeout: 15_000, windowsHide: true,
+      timeout: 15_000, windowsHide: true, signal,
     });
     return await cdpReachable(port, 2500);
   } catch { return false; }
 }
 
 /** 轻量无依赖 Edge CDP 会话（用 Node 内置 WebSocket 与 fetch，结束时自动关标签）。 */
-export async function openCdpTab({ port = 9223, autostart = false, scriptPath = '' } = {}) {
+export async function openCdpTab({ port = 9223, autostart = false, scriptPath = '', signal, allowDocumentUrl } = {}) {
   if (typeof WebSocket !== 'function' || typeof fetch !== 'function') return null;
-  if (!(await ensureCdpReady({ port, autostart, scriptPath }))) return null;
+  signal?.throwIfAborted();
+  if (!(await ensureCdpReady({ port, autostart, scriptPath, signal }))) return null;
+  signal?.throwIfAborted();
   let tab = null;
   try {
     const res = await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, {
@@ -128,7 +133,12 @@ export async function openCdpTab({ port = 9223, autostart = false, scriptPath = 
     if (!tab?.webSocketDebuggerUrl) return null;
   } catch { return null; }
 
-  const ws = new WebSocket(tab.webSocketDebuggerUrl);
+  const closeTab = () => fetch('http://127.0.0.1:' + port + '/json/close/' + tab.id, { signal: AbortSignal.timeout(2000) }).catch(() => {});
+  if (signal?.aborted) { await closeTab(); signal.throwIfAborted(); }
+  let ws;
+  try { ws = new WebSocket(tab.webSocketDebuggerUrl); }
+  catch { await closeTab(); return null; }
+  let blockedDocument = '';
   let seq = 1;
   const pending = new Map();
   const ready = new Promise((resolve, reject) => {
@@ -148,20 +158,22 @@ export async function openCdpTab({ port = 9223, autostart = false, scriptPath = 
       }
     } catch { /* ignore */ }
   });
-  ws.addEventListener('close', () => {
+  const rejectPending = () => {
     for (const { reject, timer } of pending.values()) {
       clearTimeout(timer);
       reject(new Error('CDP_CLOSED'));
     }
     pending.clear();
-  });
-  try { await ready; } catch {
+  };
+  ws.addEventListener('close', rejectPending);
+  try { await abortable(() => ready, signal); } catch {
     try { ws.close(); } catch {}
     await fetch(`http://127.0.0.1:${port}/json/close/${tab.id}`, { signal: AbortSignal.timeout(2000) }).catch(() => {});
     return null;
   }
 
   const send = (method, params = {}, ms = 12_000) => new Promise((resolve, reject) => {
+    signal?.throwIfAborted();
     const id = seq++;
     const timer = setTimeout(() => {
       pending.delete(id);
@@ -176,6 +188,35 @@ export async function openCdpTab({ port = 9223, autostart = false, scriptPath = 
     }
   });
 
+  let closing;
+  const detach = () => {
+    rejectPending();
+    try { ws.close(); } catch {}
+    signal?.removeEventListener('abort', close);
+  };
+  const close = () => {
+    if (closing) return closing;
+    detach();
+    closing = closeTab();
+    return closing;
+  };
+  signal?.addEventListener('abort', close, { once: true });
+  if (signal?.aborted) { await close(); signal.throwIfAborted(); }
+  if (allowDocumentUrl) {
+    ws.addEventListener('message', (ev) => {
+      try {
+        const event = JSON.parse(String(ev.data || ''));
+        if (event.method !== 'Fetch.requestPaused') return;
+        const { requestId, request } = event.params;
+        const allowed = allowDocumentUrl(request.url);
+        if (!allowed) blockedDocument = request.url;
+        void send(allowed ? 'Fetch.continueRequest' : 'Fetch.failRequest',
+          allowed ? { requestId } : { requestId, errorReason: 'BlockedByClient' }).catch(() => {});
+      } catch { /* The tab closes if its CDP connection is lost. */ }
+    });
+    try { await send('Fetch.enable', { patterns: [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }] }); }
+    catch { await close(); return null; }
+  }
   await send('Page.enable').catch(() => {});
   await send('Runtime.enable').catch(() => {});
   await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false }).catch(() => {});
@@ -209,27 +250,81 @@ export async function openCdpTab({ port = 9223, autostart = false, scriptPath = 
 
   return {
     async open(url) {
-      if (!isPublicUrl(url)) return null;
-      await send('Page.navigate', { url }, 15_000);
-      await new Promise((r) => setTimeout(r, 1800));
-      return snapshot();
+      if (!isPublicUrl(url) || (allowDocumentUrl && !allowDocumentUrl(url))) return null;
+      blockedDocument = '';
+      const result = await send('Page.navigate', { url }, 15_000);
+      if (result?.errorText && !blockedDocument) return null;
+      if (!result?.errorText) await delay(1800, undefined, { signal });
+      const view = result?.errorText ? null : await snapshot();
+      if (!allowDocumentUrl || (view && allowDocumentUrl(view.url))) return view;
+      return blockedDocument ? { blockedDocument } : null;
     },
     async scroll(direction = 'down') {
       const delta = direction === 'up' ? -720 : 720;
-      await send('Runtime.evaluate', { expression: `window.scrollBy(0, ${delta});` }).catch(() => {});
-      await new Promise((r) => setTimeout(r, 1000));
-      return snapshot();
-    },
-    async close() {
-      for (const { reject, timer } of pending.values()) {
-        clearTimeout(timer);
-        reject(new Error('CDP_CLOSED'));
+      const evalRes = await send('Runtime.evaluate', {
+        returnByValue: true,
+        expression: `(() => {
+          const delta = ${delta};
+          const beforeWin = window.scrollY;
+          window.scrollBy(0, delta);
+          if (window.scrollY !== beforeWin) return { moved: true, cx: Math.round(window.innerWidth / 2), cy: Math.round(window.innerHeight / 2) };
+          let best = null;
+          let bestArea = 0;
+          for (const el of document.querySelectorAll('div, main, section, article')) {
+            if (el.scrollHeight <= el.clientHeight + 20) continue;
+            const st = getComputedStyle(el);
+            if (!/auto|scroll|overlay/.test(st.overflowY || '')) continue;
+            const r = el.getBoundingClientRect();
+            const area = r.width * r.height;
+            if (r.width >= 240 && r.height >= 240 && area > bestArea) {
+              best = el;
+              bestArea = area;
+            }
+          }
+          if (best) {
+            const before = best.scrollTop;
+            best.scrollTop += delta;
+            if (best.scrollTop !== before) {
+              return { moved: true, cx: Math.round(window.innerWidth / 2), cy: Math.round(window.innerHeight / 2) };
+            }
+          }
+          return { moved: false, cx: Math.round(window.innerWidth / 2), cy: Math.round(window.innerHeight / 2) };
+        })()`,
+      }).catch(() => null);
+      const info = evalRes?.result?.value;
+      if (!info?.moved) {
+        await send('Input.dispatchMouseEvent', {
+          type: 'mouseWheel',
+          x: Number(info?.cx) || 640,
+          y: Number(info?.cy) || 400,
+          deltaX: 0,
+          deltaY: delta,
+        }).catch(() => {});
       }
-      pending.clear();
-      try { ws.close(); } catch {}
-      await fetch(`http://127.0.0.1:${port}/json/close/${tab.id}`, { signal: AbortSignal.timeout(2000) }).catch(() => {});
+      await delay(1000, undefined, { signal });
+      const view = await snapshot();
+      return !allowDocumentUrl || allowDocumentUrl(view.url) ? view : null;
     },
+    async show(url) {
+      if (!isPublicUrl(url) || allowDocumentUrl) return false;
+      const page = await send('Page.navigate', { url }, 15_000);
+      if (page?.errorText) return false;
+      await send('Page.bringToFront').catch(() => {});
+      detach();
+      return true;
+    },
+    close,
   };
+}
+
+export async function openExplorationLoginTab(url, forward = {}) {
+  if (!isPublicUrl(url)) return false;
+  const tab = await openCdpTab({ port: forward.edgePort ?? 9223, autostart: forward.edgeAutostart !== false,
+    scriptPath: forward.edgeScript || '' });
+  if (!tab) return false;
+  try { if (await tab.show(url)) return true; } catch { /* Use the ordinary desktop opener if CDP is unavailable. */ }
+  await tab.close();
+  return false;
 }
 
 /**
@@ -237,14 +332,15 @@ export async function openCdpTab({ port = 9223, autostart = false, scriptPath = 
  * 从已抓到的网页 HTML 提取封面/漫画图，或在 Edge CDP 已经就绪时快速截一帧公开页面，
  * 再交给已配置的识图模型产出简短画面描述。
  */
-export async function observeWebVisuals({ url, title, html = '', cdpPort = 9223, saveImage, observeImage, signal, calls = [] } = {}) {
+export async function observeWebVisuals({ url, title, html = '', cdpPort = 9223, saveImage, observeImage, signal, allowDocumentUrl, calls = [] } = {}) {
   if (typeof saveImage !== 'function' || typeof observeImage !== 'function') return null;
   const buffers = [];
   let via = '';
-  const tab = await openCdpTab({ port: cdpPort, autostart: false }).catch(() => null);
+  const tab = await openCdpTab({ port: cdpPort, autostart: false, signal, allowDocumentUrl }).catch(() => null);
   if (tab) {
     try {
       const view = await tab.open(url);
+      if (allowDocumentUrl && (isLoginPage(view?.blockedDocument) || isLoginPage(view?.url))) return { login: true };
       if (view?.screenshot) {
         buffers.push(view.screenshot);
         via = 'cdp-screenshot';
@@ -317,6 +413,8 @@ export async function runBrowserExploreLoop({
   openTab = openCdpTab,
   calls = [],
   timeoutMs = 180_000,
+  signal,
+  allowDocumentUrl,
 } = {}) {
   if (typeof generate !== 'function') return { sources: [], query: initialQuery, stepsUsed: 0 };
   const limit = Math.max(5, Math.min(80, Math.trunc(Number(maxSteps) || 40)));
@@ -329,7 +427,7 @@ export async function runBrowserExploreLoop({
   let stepsUsed = 0;
 
   const recordSource = (entry) => {
-    if (!entry?.url) return;
+    if (!entry?.url || (allowDocumentUrl && !allowDocumentUrl(entry.url))) return;
     const idx = collected.findIndex((s) => s.url === entry.url);
     if (idx >= 0) {
       const prev = collected[idx];
@@ -358,6 +456,7 @@ export async function runBrowserExploreLoop({
     }
 
     for (let step = 1; step <= limit; step++) {
+      signal?.throwIfAborted();
       if (Date.now() >= deadline) break;
       stepsUsed = step;
       const stepPrompt = [
@@ -383,7 +482,7 @@ export async function runBrowserExploreLoop({
       const reply = await generate({ prompt: stepPrompt, timeoutMs: 30_000, minOutputTokens: 1024 });
       const cmd = reply?.ok ? parseStepJson(reply.text) : null;
       if (!cmd || !cmd.action || cmd.action === 'done') {
-        if (cmd?.summary && currentView?.url) {
+        if (cmd?.summary && currentView?.url && (!allowDocumentUrl || currentView.text || currentView.sawImage)) {
           const prev = collected.find((x) => x.url === currentView.url);
           const merged = prev?.content
             ? `${String(cmd.summary).trim()}\n${prev.content}`.slice(0, 2800)
@@ -403,7 +502,7 @@ export async function runBrowserExploreLoop({
         if (!q) continue;
         lastQuery = q;
         calls.push('browser:search');
-        const hits = await search(q, { preferredSites: [] });
+        const hits = await search(q, { preferredSites: allowDocumentUrl ? preferredSites : [] });
         trace.push({ step, action: 'search', query: q, results: hits.slice(0, 5).map((s, i) => ({ index: i, url: s.url, title: s.title, snippet: s.snippet })) });
         continue;
       }
@@ -413,24 +512,34 @@ export async function runBrowserExploreLoop({
           ? currentView?.links?.[Number(cmd.index)]?.href
           : String(cmd.url || '').trim();
         const pub = isPublicUrl(targetUrl);
-        if (!pub) {
+        if (!pub || (allowDocumentUrl && !allowDocumentUrl(pub.href))) {
           trace.push({ step, action: cmd.action, error: '无效或非公开网址' });
           continue;
         }
+        if (allowDocumentUrl) currentView = null;
         calls.push('browser:' + cmd.action);
-        if (!tab) tab = await openTab({ port: cdpPort, autostart: edgeAutostart, scriptPath: edgeScript }).catch(() => null);
+        if (!tab) tab = await openTab({ port: cdpPort, autostart: edgeAutostart, scriptPath: edgeScript, signal, allowDocumentUrl }).catch(() => null);
         if (tab) {
           const view = await tab.open(pub.href).catch(() => null);
-          if (view) {
+          signal?.throwIfAborted();
+          if (allowDocumentUrl && (isLoginPage(view?.blockedDocument) || isLoginPage(view?.url))) {
+            return { sources: [{ url: pub.href, title: view.title || pinnedTopic, evidence: '需要登录',
+              content: '请在 DSH 打开来源链接并登录。' }], query: lastQuery, stepsUsed };
+          }
+          if (view && (!allowDocumentUrl || allowDocumentUrl(view.url))) {
             currentView = { ...view, sawImage: false };
-            recordSource({ url: view.url || pub.href, title: view.title || pub.href, evidence: '网页正文', content: view.text || '' });
+            if (view.text) recordSource({ url: view.url || pub.href, title: view.title || pub.href, evidence: '网页正文', content: view.text });
             trace.push({ step, action: cmd.action, url: view.url || pub.href, title: view.title, textChars: view.text.length, linksCount: view.links.length });
             continue;
           }
         }
         if (typeof fetchPage === 'function') {
           const page = await fetchPage(pub.href);
-          if (page) {
+          if (allowDocumentUrl && page?.login) {
+            return { sources: [{ url: pub.href, title: pinnedTopic, evidence: '需要登录',
+              content: '请在 DSH 打开来源链接并登录。' }], query: lastQuery, stepsUsed };
+          }
+          if (page && (!allowDocumentUrl || allowDocumentUrl(page.url))) {
             currentView = { url: page.url || pub.href, title: page.title || pub.href, text: page.body || '', html: page.html || '', links: [], screenshot: null, sawImage: false };
             if (page.body) recordSource({ url: currentView.url, title: currentView.title, evidence: '网页正文', content: page.body });
             trace.push({ step, action: cmd.action, url: currentView.url, title: currentView.title, textChars: currentView.text.length, via: 'http-fallback' });
@@ -468,9 +577,9 @@ export async function runBrowserExploreLoop({
         }
         const buffers = [];
         if (currentView.screenshot) buffers.push(currentView.screenshot);
-        else if (currentView.html) {
+        else if (currentView.html && !allowDocumentUrl) {
           for (const imgUrl of extractPageImageUrls(currentView.html, currentView.url, 2)) {
-            const buf = await downloadImageBuffer(imgUrl, AbortSignal.timeout(12_000));
+            const buf = await downloadImageBuffer(imgUrl, signal ? AbortSignal.any([signal, AbortSignal.timeout(12_000)]) : AbortSignal.timeout(12_000));
             if (buf) buffers.push(buf);
           }
         }

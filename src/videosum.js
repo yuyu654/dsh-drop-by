@@ -18,6 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
+import { abortable } from './exploration-abort.js';
 import { randomUUID } from 'node:crypto';
 import { ROOT } from './config.js';
 
@@ -111,23 +112,32 @@ export function writeCache(id, obj, { dir = CACHE_DIR } = {}) {
 }
 
 /** 跑一个子进程，收集 stdout/stderr；超时就 kill。 */
-function run(cmd, args, { timeoutMs = 120_000, env } = {}) {
+function run(cmd, args, { timeoutMs = 120_000, env, signal } = {}) {
   return new Promise((resolve) => {
     let out = '';
     let err = '';
     let done = false;
+    let timer;
+    const cancel = () => {
+      try { child?.kill(); } catch {}
+      fin({ ok: false, reason: 'CANCELLED' });
+    };
     const fin = (v) => {
       if (done) return;
       done = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', cancel);
       resolve(v);
     };
     let child;
+    if (signal?.aborted) return cancel();
     try {
       child = spawn(cmd, args, { windowsHide: true, env });
     } catch (e) {
       return fin({ ok: false, reason: 'SPAWN_FAILED', note: String(e?.message || e) });
     }
-    const timer = setTimeout(() => {
+    signal?.addEventListener('abort', cancel, { once: true });
+    timer = setTimeout(() => {
       try {
         child.kill();
       } catch {}
@@ -198,10 +208,11 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
  * 转写前调用：在就跑着（started:false，事后不关），不在就拉起（started:true，事后要关）。
  * 关掉 asrAutostart 时直接返回 NOT_RUNNING，由上层报错——不会偷偷起服务。
  */
-export async function ensureAsr({ cfg, spawnRun = run, tcp = tcpUp, sleep = wait } = {}) {
+export async function ensureAsr({ cfg, spawnRun = run, tcp = tcpUp, sleep = wait, signal } = {}) {
   const o = videoCfg(cfg);
   const { host, port } = asrEndpoint(cfg);
   if (await tcp(host, port, cfg?.content?.forward?.serviceConnectMs ?? 800)) return { ok: true, started: false, host, port };
+  signal?.throwIfAborted();
   if (!o.asrAutostart) return { ok: false, reason: 'ASR_NOT_RUNNING', note: `端口 ${port} 没人听，且 asrAutostart 关着` };
   if (!fs.existsSync(o.asrScript)) return { ok: false, reason: 'ASR_NO_SCRIPT', note: o.asrScript };
 
@@ -250,28 +261,30 @@ export async function stopAsr({ cfg, spawnRun = run } = {}) {
  * 下载脚本一上来就 ECONNREFUSED，它干脆只按标题说了一句。口子不在就按脚本起一个，
  * 起不来就如实说「没看」，不许装看过。
  */
-export async function ensureEdge({ cfg, tcp = tcpUp, spawnRun = run, sleep = wait } = {}) {
+export async function ensureEdge({ cfg, tcp = tcpUp, spawnRun = run, sleep = wait, signal } = {}) {
   const o = videoCfg(cfg);
   const port = o.edgePort;
   if (await tcp('127.0.0.1', port, cfg?.content?.forward?.serviceConnectMs ?? 800)) return { ok: true, started: false, port };
+  signal?.throwIfAborted();
   if (!o.edgeAutostart) return { ok: false, reason: 'EDGE_NOT_RUNNING', note: `调试口 ${port} 没人听，且 edgeAutostart 关着` };
   if (!fs.existsSync(o.edgeScript)) return { ok: false, reason: 'EDGE_NO_SCRIPT', note: o.edgeScript };
 
   await spawnRun('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', o.edgeScript, '-Port', String(port)], {
-    timeoutMs: cfg?.content?.forward?.serviceLaunchMs ?? 60_000,
+    timeoutMs: cfg?.content?.forward?.serviceLaunchMs ?? 60_000, signal,
   });
   const t0 = Date.now();
   while (Date.now() - t0 < o.edgeWaitMs) {
+    signal?.throwIfAborted();
     if (await tcp('127.0.0.1', port, cfg?.content?.forward?.serviceConnectMs ?? 800)) return { ok: true, started: true, port, ms: Date.now() - t0 };
-    await sleep(cfg?.content?.forward?.edgePollMs ?? 500);
+    await abortable(() => sleep(cfg?.content?.forward?.edgePollMs ?? 500), signal);
   }
   return { ok: false, reason: 'EDGE_START_FAILED', note: `跑了 ${o.edgeScript}，${port} 还是没人听` };
 }
 
-export async function downloadVideo(id, { cfg, timeoutMs, node, ensure = ensureEdge } = {}) {
+export async function downloadVideo(id, { cfg, timeoutMs, node, ensure = ensureEdge, signal } = {}) {
   const o = videoCfg(cfg);
   if (!o.fetchScript) return { ok: false, reason: 'NO_FETCH_SCRIPT', note: '没配 content.forward.fetchScript，取不到视频' };
-  const edge = await ensure({ cfg });
+  const edge = await abortable(() => ensure({ cfg, signal }), signal);
   if (!edge?.ok) return { ok: false, reason: edge?.reason || 'EDGE_NOT_RUNNING', note: edge?.note };
   const dir = path.join(ROOT, 'data', 'video-src');
   try {
@@ -281,7 +294,8 @@ export async function downloadVideo(id, { cfg, timeoutMs, node, ensure = ensureE
   const env = !node && process.versions.electron
     ? { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
     : undefined;
-  const r = await run(runner, [o.fetchScript, String(id), dir], { timeoutMs: timeoutMs || o.timeoutMs, env });
+  const r = await run(runner, [o.fetchScript, String(id), dir], { timeoutMs: timeoutMs || o.timeoutMs, env, signal });
+  signal?.throwIfAborted();
   if (!r.ok) {
     const note = String(r.stderr || r.stdout || r.reason || '').slice(-200);
     return { ok: false, reason: r.reason === 'TIMEOUT' ? 'FETCH_TIMEOUT' : 'FETCH_FAILED', note };
@@ -301,10 +315,10 @@ export async function downloadVideo(id, { cfg, timeoutMs, node, ensure = ensureE
 }
 
 /** 抽音轨：16k 单声道 wav（whisper 要的就是这个）。 */
-export async function extractAudio(mp4, wav, { cfg, timeoutMs } = {}) {
+export async function extractAudio(mp4, wav, { cfg, timeoutMs, signal } = {}) {
   const o = videoCfg(cfg);
   const r = await run(o.ffmpeg, ['-y', '-loglevel', 'error', '-i', mp4, '-vn', '-ac', '1', '-ar', '16000', '-f', 'wav', wav], {
-    timeoutMs: timeoutMs ?? cfg?.content?.forward?.extractAudioMs ?? 120_000,
+    timeoutMs: timeoutMs ?? cfg?.content?.forward?.extractAudioMs ?? 120_000, signal,
   });
   if (!r.ok || !fs.existsSync(wav)) return { ok: false, reason: 'FFMPEG_FAILED', note: String(r.stderr || '').slice(-200) };
   const size = fs.statSync(wav).size;
@@ -313,9 +327,10 @@ export async function extractAudio(mp4, wav, { cfg, timeoutMs } = {}) {
 }
 
 /** 转写：本机 whisper 服务（OpenAI 兼容）。 */
-export async function transcribe(wav, { cfg, timeoutMs } = {}) {
+export async function transcribe(wav, { cfg, timeoutMs, signal } = {}) {
   const o = videoCfg(cfg);
   try {
+    signal?.throwIfAborted();
     const buf = fs.readFileSync(wav);
     const form = new FormData();
     form.append('file', new Blob([buf], { type: 'audio/wav' }), 'a.wav');
@@ -325,7 +340,8 @@ export async function transcribe(wav, { cfg, timeoutMs } = {}) {
     const r = await fetch(o.asrUrl, {
       method: 'POST',
       body: form,
-      signal: AbortSignal.timeout(timeoutMs || o.timeoutMs),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs || o.timeoutMs)])
+        : AbortSignal.timeout(timeoutMs || o.timeoutMs),
     });
     if (!r.ok) return { ok: false, reason: 'ASR_HTTP_' + r.status, note: (await r.text()).slice(0, 160) };
     const j = await r.json();
@@ -341,7 +357,7 @@ export async function transcribe(wav, { cfg, timeoutMs } = {}) {
 }
 
 /** Call the installed plugin's registered tool on the already downloaded local MP4. */
-export async function observeDownloadedVideo({ file, desc, transcript }, { ctx, observe } = {}) {
+export async function observeDownloadedVideo({ file, desc, transcript }, { ctx, observe, signal } = {}) {
   let tool;
   try {
     const tools = ctx?.get?.('tools') || ctx?.tools;
@@ -351,13 +367,16 @@ export async function observeDownloadedVideo({ file, desc, transcript }, { ctx, 
 
   let board;
   try {
-    board = await tool.execute({ input: file, cells: 6, sheets: 1, transcript: 'off', ocr: false });
+    board = await abortable(() => tool.execute({ input: file, cells: 6, sheets: 1, transcript: 'off', ocr: false },
+      signal ? { signal } : undefined), signal);
   } catch (e) {
     return { ok: false, reason: 'VIDEO_STORYBOARD_FAILED', note: String(e?.message || e).slice(0, 160) };
   }
+  signal?.throwIfAborted();
   if (!Array.isArray(board?.images) || !board.images.length) return { ok: false, reason: 'VIDEO_NO_FRAMES' };
   if (typeof observe !== 'function') return { ok: false, reason: 'VIDEO_MODEL_UNVERIFIED' };
   return observe({
+    signal,
     images: board.images,
     prompt: [
       '按分镜时间顺序观察这些画面，用两三句中文写出能确认的具体细节。',
@@ -418,8 +437,10 @@ export async function summarizeVideo(
     llm = null,
     vision = null,
     visionMethod = null,
+    signal,
   } = {},
 ) {
+  signal?.throwIfAborted();
   const key = String(id || '').trim();
   if (!/^\d{6,30}$/.test(key)) return { ok: false, id: key, reason: 'BAD_ID', at: now };
   const o = videoCfg(cfg);
@@ -441,23 +462,26 @@ export async function summarizeVideo(
     return rec;
   };
 
-  const dl = await fetchVideo(key, { cfg });
+  const dl = await abortable(() => fetchVideo(key, { cfg, signal }), signal);
   if (!dl.ok) return fail(dl.reason || 'FETCH_FAILED', dl.note);
 
   // 顺序很关键：**先把转写服务拉起来（慢：加载模型），再抽音轨**。
   // 反过来做的话，等模型启动的这几十秒里要一直留着一个 6MB 的临时 wav，
   // 期间任何一次目录清理/杀毒扫描都会让它消失，转写报 ENOENT（踩过一次）。
-  const life = await ensure({ cfg });
+  // Wait for a launched ASR service to be identified so it can be cleaned up after cancellation.
+  const life = await ensure({ cfg, signal });
   let tr = { ok: false, reason: life?.reason || 'ASR_UNAVAILABLE', note: life?.note };
   if (life?.ok) {
     const base = path.join(ROOT, 'data', 'video-work');
     const wav = path.join(base, `${key}-${randomUUID()}.wav`);
     try {
+      signal?.throwIfAborted();
       fs.mkdirSync(base, { recursive: true });
-      const au = await extract(dl.file, wav, { cfg });
+      const au = await extract(dl.file, wav, { cfg, signal });
+      signal?.throwIfAborted();
       if (!au.ok) tr = { ok: false, reason: au.reason || 'FFMPEG_FAILED', note: au.note };
       else if (!fs.existsSync(wav)) tr = { ok: false, reason: 'AUDIO_GONE', note: wav };
-      else tr = await asr(wav, { cfg });
+      else tr = await asr(wav, { cfg, signal });
     } finally {
       if (life.started) {
         try {
@@ -470,15 +494,17 @@ export async function summarizeVideo(
     }
   }
 
+  signal?.throwIfAborted();
   const transcript = tr.ok ? tr.text : '';
   let visionReason;
   if (canSee) {
     let result;
     try {
-      result = await vision({ ...dl, transcript });
+      result = await abortable(() => vision({ ...dl, transcript }), signal);
     } catch {
       result = { ok: false, reason: 'VIDEO_VISION_FAILED' };
     }
+    signal?.throwIfAborted();
     const summary = String(result?.text || '').replace(/\s+/g, ' ').trim().slice(0, 200);
     if (result?.ok && summary && !/画面信息不足/.test(summary)) {
       const rec = {
@@ -499,7 +525,7 @@ export async function summarizeVideo(
   let source = 'asr-raw';
   if (typeof llm === 'function') {
     try {
-      const r = await llm({ prompt: summaryPrompt(tr.text, dl.desc), cfg });
+      const r = await abortable(() => llm({ prompt: summaryPrompt(tr.text, dl.desc), cfg, signal }), signal);
       const text = String(r?.text || '')
         .replace(/^["「“]|["」”]$/g, '')
         .replace(/\s+/g, ' ')
@@ -510,6 +536,7 @@ export async function summarizeVideo(
       }
     } catch {}
   }
+  signal?.throwIfAborted();
   if (!summary) summary = firstLines(tr.text);
 
   const rec = {

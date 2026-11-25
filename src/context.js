@@ -74,7 +74,7 @@ function readDouyinDialogue(limit = 6) {
 }
 
 /** QQ：autonomy/qq-history.json 的 turns[{user, reply, at}]，并合并 qq-bridge/last-in.json & last-out.json。 */
-function readQqDialogue(limit = 6) {
+function readQqDialogue(limit = 6, peer = '') {
   const j = readJson(path.join(DSH, 'autonomy', 'qq-history.json'), null);
   const turns = Array.isArray(j?.turns) ? j.turns : [];
   const all = [];
@@ -86,11 +86,11 @@ function readQqDialogue(limit = 6) {
     if (t.user) all.push({ ts, from: 'her', text: String(t.user).slice(0, 300), kind: 'text', channel: 'qq' });
     if (t.reply) all.push({ ts: ts + 1, from: 'me', text: String(t.reply).slice(0, 300), kind: 'text', channel: 'qq' });
   }
-  const bi = bridgeLastIn({ dsh: DSH });
+  const bi = bridgeLastIn({ dsh: DSH, peer });
   if (bi.ts && !all.some((m) => m.from === 'her' && Math.abs(m.ts - bi.ts) <= 2000)) {
     all.push({ ts: bi.ts, from: 'her', text: bi.text, kind: 'text', channel: 'qq' });
   }
-  const bo = bridgeLastOut({ dsh: DSH });
+  const bo = bridgeLastOut({ dsh: DSH, peer });
   if (bo.ts && !all.some((m) => m.from === 'me' && Math.abs(m.ts - bo.ts) <= 2000)) {
     all.push({ ts: bo.ts, from: 'me', text: bo.text, kind: 'text', channel: 'qq' });
   }
@@ -116,7 +116,8 @@ function primaryDialogue(cfg) {
     ];
     return rows.map(item => ({ ...item, from: item.who, channel: 'douyin' }));
   }
-  return [...(readQqDialogue() || []), ...(cfg?.channels?.primary === 'qq' ? [] : readDouyinDialogue() || [])];
+  const qqPeer = String(cfg?.channels?.qq?.peerId || '').trim();
+  return [...(readQqDialogue(6, qqPeer) || []), ...(cfg?.channels?.primary === 'qq' ? [] : readDouyinDialogue() || [])];
 }
 
 export function lastHerMessage(cfg) {

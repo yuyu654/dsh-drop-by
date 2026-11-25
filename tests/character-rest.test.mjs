@@ -100,7 +100,7 @@ test('主动草稿跨入睡边界时不送出，睡着后的下一拍也不生�
     ...cfg, quietHours: [], busyHours: [],
     sources: { phone: { enabled: false }, memory: { enabled: false } },
     perception: { l2: { enabled: false }, l3: { enabled: false }, signals: { enabled: false } },
-    channels: { qq: { peerId: '10001' } },
+    channels: { primary: 'qq', qq: { enabled: true, read: false, peerId: '10001' } },
     content: { mode: 'llm', exams: { text: '2026-11-22 22:15 电机学' } },
   });
   const result = await tick({ preview: true, probeSystem: async () => ({ idle_ms: 0 }), generate: async ({ prompt }) => {

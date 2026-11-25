@@ -127,6 +127,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         var item = props.item;
         var [draft, setDraft] = useState(String(props.value == null ? '' : props.value));
         var [focus, setFocus] = useState(false);
+        var cancelBlur = useRef(false);
         useEffect(
           function () {
             if (!focus) setDraft(String(props.value == null ? '' : props.value));
@@ -134,12 +135,27 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           [props.value, focus]
         );
 
-        var commit = function () {
-          if (String(props.value) === String(draft)) return;
+        function onBlur() {
+          setFocus(false);
+          if (cancelBlur.current) {
+            cancelBlur.current = false;
+            return;
+          }
+          if (String(props.value == null ? '' : props.value) === draft) return;
           props.onSave(item.path, draft);
           // 凭据存进去之后就清空输入框（服务端不会把值读回来，留着只会像没保存）
           if (item.type === 'secret') setDraft('');
-        };
+        }
+
+        function onKeyDown(e) {
+          if (e.nativeEvent && e.nativeEvent.isComposing) return;
+          if (e.key === 'Escape') {
+            cancelBlur.current = true;
+            e.target.blur();
+          } else if (e.key === 'Enter' && item.type !== 'text') {
+            e.target.blur();
+          }
+        }
 
         // 多行文本（课表）：回车不提交，失焦才存；整张表粘进来就行
         if (item.type === 'text') {
@@ -147,16 +163,12 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
             className: 'pg-input pg-textarea',
             rows: item.rows || 6,
             value: draft,
+            'aria-label': item.label,
             disabled: props.busy,
             onFocus: function () { setFocus(true); },
             onChange: function (e) { setDraft(e.target.value); },
-            onBlur: function () { setFocus(false); commit(); },
-            onKeyDown: function (e) {
-              if (e.key === 'Escape') {
-                setDraft(String(props.value == null ? '' : props.value));
-                e.target.blur();
-              }
-            },
+            onBlur: onBlur,
+            onKeyDown: onKeyDown,
           });
         }
         var wide = item.type === 'str' || item.type === 'secret' || item.type === 'windows';
@@ -170,6 +182,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           inputMode: item.type === 'num' ? 'decimal' : item.type === 'int' ? 'numeric' : undefined,
           placeholder: item.type === 'secret' ? (item.set ? '已设置，留空不改' : '还没有，填一次就好') : item.type === 'windows' ? '22:30-07:30,12:00-13:00' : item.type === 'hm' ? '00:30' : '',
           autoComplete: item.type === 'secret' ? 'off' : undefined,
+          'aria-label': item.label,
           disabled: props.busy,
           onFocus: function () {
             setFocus(true);
@@ -177,17 +190,8 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           onChange: function (e) {
             setDraft(e.target.value);
           },
-          onBlur: function () {
-            setFocus(false);
-            commit();
-          },
-          onKeyDown: function (e) {
-            if (e.key === 'Enter') e.target.blur();
-            if (e.key === 'Escape') {
-              setDraft(String(props.value == null ? '' : props.value));
-              e.target.blur();
-            }
-          },
+          onBlur: onBlur,
+          onKeyDown: onKeyDown,
         });
       }
 
@@ -277,6 +281,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
             { className: 'pg-switch' },
             h('input', {
               type: 'checkbox',
+              'aria-label': item.label,
               checked: item.value === true,
               disabled: props.busy,
               onChange: function (e) {
@@ -292,6 +297,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
             'select',
             {
               className: 'pg-input pg-select',
+              'aria-label': item.label,
               value: item.value == null ? '' : item.value,
               disabled: props.busy,
               onChange: function (e) {
@@ -410,8 +416,221 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
               value: query,
               onChange: function (e) { setQuery(e.target.value); }
             }) : null,
+            props.extra || null,
             visible.length ? rows : h('div', { className: 'pg-note' }, '没有匹配的设置')
           )
+        );
+      }
+
+      // ------------------------------------------------------------ 一键节奏套餐
+
+      function formatPresetVal(field, val) {
+        if (field.type === 'bool') return val ? '开' : '关';
+        if (field.type === 'select' && Array.isArray(field.options)) {
+          var hit = field.options.find(function (o) { return o[0] === val; });
+          return hit ? hit[1] : String(val);
+        }
+        return String(val) + (field.unit ? ' ' + field.unit : '');
+      }
+
+      function PresetCard(props) {
+        var data = props.data;
+        if (!data || !Array.isArray(data.presets)) return null;
+        var active = data.active || 'custom';
+        var activeObj = data.presets.find(function (p) { return p.id === active; });
+        var activeLabel = active === 'custom' ? '自定义' : (activeObj ? activeObj.label : active);
+        var activeDesc = active === 'custom'
+          ? (data.hasCustomSnapshot
+              ? '当前使用你自己的个性化参数。切换到任意套餐后，随时点「自定义」可一键恢复你原来的参数。'
+              : '当前使用你自己的个性化参数（手动修改下方节奏或探索参数时会自动保持为「自定义」）。')
+          : (activeObj ? activeObj.desc : '');
+        return h(
+          'details',
+          { className: 'pg-card pg-card-fold', open: true },
+          h(
+            'summary',
+            { className: 'pg-card-title pg-card-sum' },
+            h('span', { className: 'pg-card-sum-name' }, '一键节奏套餐'),
+            h('span', { className: 'pg-card-sub' }, '快速切换主动频率与探索节奏'),
+            h('span', { className: 'pg-badge' + (active === 'custom' ? '' : ' pg-badge-live') }, '当前：' + activeLabel)
+          ),
+          h(
+            'div',
+            { className: 'pg-chips', role: 'group', 'aria-label': '一键节奏套餐', style: { marginTop: '8px' } },
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'pg-chip' + (active === 'custom' ? ' pg-chip-on' : ''),
+                disabled: props.busy || active === 'custom',
+                onClick: function () { props.onApply('custom'); },
+              },
+              data.hasCustomSnapshot && active !== 'custom' ? '自定义（恢复原参数）' : '自定义'
+            ),
+            data.presets.map(function (p) {
+              var on = active === p.id;
+              return h(
+                'button',
+                {
+                  key: p.id,
+                  type: 'button',
+                  className: 'pg-chip' + (on ? ' pg-chip-on' : ''),
+                  disabled: props.busy,
+                  onClick: function () { props.onApply(p.id); },
+                },
+                p.label + (p.customized ? ' · 已微调' : '')
+              );
+            })
+          ),
+          h('div', { className: 'pg-note', style: { marginTop: '8px' } }, activeDesc),
+          h('div', { className: 'pg-row-hint', style: { marginTop: '4px' } }, '只调主动节奏与探索参数，不改静默/忙碌、课表、人设、通道或真实发送开关；手动改下方对应参数后自动变为「自定义」，各套餐默认参数可在「高级」里自定义。')
+        );
+      }
+
+      function PresetEditor(props) {
+        var data = props.data;
+        var [presetId, setPresetId] = useState('daily');
+        var [fieldPath, setFieldPath] = useState('');
+        var [draftVal, setDraftVal] = useState('');
+        if (!data || !Array.isArray(data.presets) || !Array.isArray(data.fields)) return null;
+        var chosen = data.presets.find(function (p) { return p.id === presetId; }) || data.presets[0];
+        var chosenField = fieldPath ? data.fields.find(function (f) { return f.path === fieldPath; }) : null;
+        var currentVal = chosen && chosenField ? chosen.values[chosenField.path] : undefined;
+
+        function selectPreset(id) {
+          setPresetId(id);
+          if (chosenField) {
+            var nextP = data.presets.find(function (p) { return p.id === id; });
+            var nv = nextP ? nextP.values[chosenField.path] : '';
+            setDraftVal(nv === undefined ? '' : String(nv));
+          }
+        }
+
+        function selectField(path) {
+          setFieldPath(path);
+          var f = data.fields.find(function (x) { return x.path === path; });
+          if (f && chosen) {
+            var v = chosen.values[f.path];
+            setDraftVal(v === undefined ? '' : String(v));
+          } else {
+            setDraftVal('');
+          }
+        }
+
+        return h(
+          'div',
+          { style: { borderBottom: '1px solid var(--pg-line)', padding: '10px 0 12px', marginBottom: '6px' } },
+          h('div', { className: 'pg-row-label', style: { marginBottom: '6px' } }, '自定义各套餐参数'),
+          h('div', { className: 'pg-row-hint', style: { marginBottom: '8px' } }, '先选要修改的套餐，再选子参数进行调整。若修改的正是当前激活套餐，保存后会立即同步生效到当前配置。'),
+          h(
+            'div',
+            { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', marginBottom: '8px' } },
+            h(
+              'select',
+              {
+                className: 'pg-input',
+                'aria-label': '选择要修改参数的套餐',
+                value: chosen ? chosen.id : '',
+                disabled: props.busy,
+                onChange: function (e) { selectPreset(e.target.value); },
+              },
+              data.presets.map(function (p) {
+                return h('option', { key: p.id, value: p.id }, p.label + (p.customized ? '（已修改）' : ''));
+              })
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'pg-btn',
+                disabled: props.busy || !chosen || !chosen.customized,
+                onClick: function () { if (chosen) props.onReset(chosen.id); },
+              },
+              '恢复该套餐默认'
+            )
+          ),
+          chosen ? h(
+            'div',
+            { style: { marginBottom: chosenField ? '8px' : '0' } },
+            h(
+              'select',
+              {
+                className: 'pg-input',
+                style: { width: '100%' },
+                'aria-label': '选择要调整的套餐参数',
+                value: fieldPath,
+                disabled: props.busy,
+                onChange: function (e) { selectField(e.target.value); },
+              },
+              h('option', { value: '' }, '—— 请选择「' + chosen.label + '」要调整的参数 ——'),
+              data.fields.map(function (f) {
+                return h(
+                  'option',
+                  { key: f.path, value: f.path },
+                  f.label + '（当前：' + formatPresetVal(f, chosen.values[f.path]) + '）'
+                );
+              })
+            )
+          ) : null,
+          chosen && chosenField ? h(
+            'div',
+            { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', paddingTop: '4px' } },
+            h('span', { className: 'pg-row-hint' }, chosenField.label + '：'),
+            chosenField.type === 'bool'
+              ? h(
+                  'select',
+                  {
+                    className: 'pg-input',
+                    value: currentVal ? 'true' : 'false',
+                    disabled: props.busy,
+                    onChange: function (e) { props.onOverride(chosen.id, chosenField.path, e.target.value === 'true'); },
+                  },
+                  h('option', { value: 'true' }, '开'),
+                  h('option', { value: 'false' }, '关')
+                )
+              : chosenField.type === 'select'
+              ? h(
+                  'select',
+                  {
+                    className: 'pg-input',
+                    value: String(currentVal ?? ''),
+                    disabled: props.busy,
+                    onChange: function (e) { props.onOverride(chosen.id, chosenField.path, e.target.value); },
+                  },
+                  (chosenField.options || []).map(function (o) {
+                    return h('option', { key: o[0], value: o[0] }, o[1]);
+                  })
+                )
+              : h(
+                  React.Fragment,
+                  null,
+                  h('input', {
+                    className: 'pg-input',
+                    type: 'number',
+                    style: { width: '96px' },
+                    min: chosenField.min,
+                    max: chosenField.max,
+                    step: chosenField.type === 'num' ? 0.01 : 1,
+                    value: draftVal,
+                    disabled: props.busy,
+                    onChange: function (e) { setDraftVal(e.target.value); },
+                  }),
+                  chosenField.unit ? h('span', { className: 'pg-unit' }, chosenField.unit) : null,
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'pg-btn',
+                      disabled: props.busy,
+                      onClick: function () { props.onOverride(chosen.id, chosenField.path, Number(draftVal)); },
+                    },
+                    '保存参数'
+                  ),
+                  chosenField.min != null && chosenField.max != null
+                    ? h('span', { className: 'pg-row-hint' }, '范围 ' + chosenField.min + '–' + chosenField.max + (chosenField.unit ? ' ' + chosenField.unit : ''))
+                    : null
+                )
+          ) : null
         );
       }
 
@@ -463,11 +682,11 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
               {
                 className: 'pg-btn pg-btn-primary',
                 type: 'button',
-                disabled: props.busy || st.running,
+                disabled: props.busy || st.running || !st.enabled,
                 onClick: props.onTick,
-                title: st.running ? '上一拍还在跑' : '立刻按现在的时间跑一拍（演练模式下不会发出去）',
+                title: !st.enabled ? '请先开启总开关' : st.running ? '上一拍还在跑' : '立刻按现在的时间跑一拍（演练模式下不会发出去）',
               },
-              props.busy ? '跑着呢…' : '立刻跑一拍'
+              props.tickPending || st.running ? '跑着呢…' : '立刻跑一拍'
             )
           )
         );
@@ -696,11 +915,54 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           }));
       }
 
+      var EXPLORE_NOTICE = {
+        CANCELLED: '探索已停止，本轮结果未保存',
+        EXPLORATION_TIMEOUT: '探索超时，本轮结果未保存'
+      };
+
+      function ExplorationTopicIssue(props) {
+        var issue = props.issue;
+        var [sourceUrl, setSourceUrl] = useState('');
+        var ambiguous = issue.reason === 'TOPIC_AMBIGUOUS';
+        var canChooseKind = ambiguous && (issue.field === 'nextTopic' || issue.field === 'interest');
+        var candidates = Array.isArray(issue.candidates) ? issue.candidates : [];
+        var title = '「' + (issue.title || issue.input) + '」';
+        var hint = ambiguous ? '这个标题可能是作品，也可能是普通主题。'
+          : issue.reason === 'WORK_SOURCE_UNAVAILABLE' ? '暂时读不到已选来源，请换一个公开页面。'
+            : '请选择一个能确认这部作品的公开页面。';
+        return h('section', { className: 'pg-exp-details', 'aria-label': '探索主题待确认' },
+          h('strong', { className: 'pg-row-label' }, ambiguous ? '确认' + title + '的探索方式' : '为' + title + '选择来源'),
+          h('div', { className: 'pg-row-hint' }, hint),
+          canChooseKind ? h('div', { className: 'pg-exp-actions' },
+            h('button', { className: 'pg-btn', type: 'button', disabled: props.busy,
+              onClick: function () { props.onResolve(issue, 'work'); } }, '按作品探索'),
+            h('button', { className: 'pg-btn', type: 'button', disabled: props.busy,
+              onClick: function () { props.onResolve(issue, 'topic'); } }, '按普通主题探索')
+          ) : null,
+          candidates.length ? h('ul', { className: 'pg-check-rows pg-notebook-list' }, candidates.map(function (candidate) {
+            return h('li', { key: candidate.url },
+              h('div', null, candidate.label || candidate.url,
+                candidate.label ? h('div', { className: 'pg-row-hint' }, candidate.url) : null),
+              h('button', { className: 'pg-btn', type: 'button', disabled: props.busy,
+                'aria-label': '使用来源 ' + (candidate.label || candidate.url),
+                onClick: function () { props.onResolve(issue, 'source', candidate.url); } }, '使用此来源'));
+          })) : null,
+          h('form', { className: 'pg-exp-actions', onSubmit: function (event) {
+            event.preventDefault();
+            if (!props.busy && sourceUrl.trim()) props.onResolve(issue, 'source', sourceUrl.trim());
+          } },
+            h('input', { className: 'pg-input pg-input-wide', type: 'url', value: sourceUrl,
+              'aria-label': '作品的公开来源网址', placeholder: 'https://…', required: true, disabled: props.busy,
+              onChange: function (event) { setSourceUrl(event.target.value); } }),
+            h('button', { className: 'pg-btn', type: 'submit', disabled: props.busy || !sourceUrl.trim() }, '保存网址')));
+      }
+
       // ------------------------------------------------------------ 页面
 
       function Panel() {
         var [state, setState] = useState(null);
         var [groups, setGroups] = useState([]);
+        var [presets, setPresets] = useState(null);
         var [explorationItems, setExplorationItems] = useState([]);
         var [channelItems, setChannelItems] = useState([]);
         var [hiddenItems, setHiddenItems] = useState([]);
@@ -709,8 +971,10 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         var [searchTag, setSearchTag] = useState('');
         var [error, setError] = useState('');
         var [toast, setToast] = useState(null);
-        var [busy, setBusy] = useState(false);
+        var [actionBusy, setBusy] = useState(false);
         var [explorePending, setExplorePending] = useState(false);
+        var [exploreStopPending, setExploreStopPending] = useState(false);
+        var [exploreTopicPending, setExploreTopicPending] = useState(false);
         var [smallActionPending, setSmallActionPending] = useState(false);
         var [exploreResult, setExploreResult] = useState(null);
         var [showExplorationDetails, setShowExplorationDetails] = useState(false);
@@ -732,9 +996,13 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         var [guidePending, setGuidePending] = useState('');
         var [connectivity, setConnectivity] = useState(null);
         var [preview, setPreview] = useState(null);
+        var [refreshing, setRefreshing] = useState(false);
+        var [tickPending, setTickPending] = useState(false);
+        var busy = actionBusy || refreshing || tickPending;
         var guideAnchor = useRef(null);
         var diagnosticRequest = useRef(0);
         var stateRequest = useRef(0);
+        var manualExploreRequest = useRef(null);
         var mounted = useRef(true);
         var toastTimer = useRef(null);
 
@@ -749,12 +1017,13 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         var load = useCallback(
           function (silent) {
             var request = ++stateRequest.current;
-            if (!silent) setBusy(true);
+            if (!silent) setRefreshing(true);
             return Promise.all([apiGet('/state'), apiGet('/config')])
               .then(function (r) {
                 if (!mounted.current || request !== stateRequest.current) return;
                 setState(r[0]);
                 setGroups(r[1].groups || []);
+                if (r[1].presets) setPresets(r[1].presets);
                 setExplorationItems(r[1].explorationItems || []);
                 setChannelItems(r[1].channelItems || []);
                 setHiddenItems(r[1].hiddenItems || []);
@@ -767,12 +1036,26 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
               })
               .then(function () {
                 if (!mounted.current || request !== stateRequest.current) return;
-                setBusy(false);
+                setRefreshing(false);
                 setLoading(false);
               });
           },
           []
         );
+
+        var applySavedConfig = useCallback(function (data) {
+          // 这次写入的回显更新后，之前发出的读取不能再覆盖它。
+          stateRequest.current += 1;
+          setRefreshing(false);
+          if (data.state) setState(data.state);
+          if (Array.isArray(data.groups)) setGroups(data.groups);
+          if (data.presets) setPresets(data.presets);
+          if (Array.isArray(data.explorationItems)) setExplorationItems(data.explorationItems);
+          if (Array.isArray(data.channelItems)) setChannelItems(data.channelItems);
+          if (Array.isArray(data.hiddenItems)) setHiddenItems(data.hiddenItems);
+          if (Array.isArray(data.searchTags)) setSearchTags(data.searchTags);
+          setError('');
+        }, []);
 
         useEffect(function () {
           mounted.current = true;
@@ -860,16 +1143,10 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
                   load(true);
                   return;
                 }
-                setState(r.state);
+                applySavedConfig(r);
                 setConnectivity(null);
                 setPreview(null);
                 loadDiagnostics();
-                setGroups(r.groups || []);
-                if (Array.isArray(r.explorationItems)) setExplorationItems(r.explorationItems);
-                if (Array.isArray(r.channelItems)) setChannelItems(r.channelItems);
-                if (Array.isArray(r.hiddenItems)) setHiddenItems(r.hiddenItems);
-                if (Array.isArray(r.searchTags)) setSearchTags(r.searchTags);
-                setError('');
                 var note = r.notes && r.notes.length ? r.notes[0] : '已保存，下一拍生效';
                 flash(note, 'ok');
               })
@@ -883,16 +1160,23 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
                 if (mounted.current) setBusy(false);
               });
           },
-          [flash, load, loadDiagnostics]
+          [applySavedConfig, flash, load, loadDiagnostics]
         );
 
         var onTick = useCallback(
           function () {
-            setBusy(true);
+            setTickPending(true);
             apiPost('/tick')
               .then(function (r) {
                 if (!mounted.current) return;
-                setState(r.state);
+                if (r && r.state) setState(r.state);
+                if (!r || r.ok !== true) {
+                  var message = r && r.skipped === 'disabled'
+                    ? '总开关已关闭，这一拍未运行'
+                    : (r && r.error) || '这一拍未能完成';
+                  flash(message, 'err');
+                  return;
+                }
                 var run = r.run;
                 var dl = run && run.delivery;
                 var msg = run && run.explanation ? run.explanation.summary : !run
@@ -909,7 +1193,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
                 flash(e && e.status === 409 ? '上一拍还在跑，等它跑完' : (e && e.message) || '跑不起来', 'err');
               })
               .then(function () {
-                if (mounted.current) setBusy(false);
+                if (mounted.current) setTickPending(false);
                 load(true);
               });
           },
@@ -931,13 +1215,29 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           });
         }
 
+        function applyPresetAction(endpoint, body) {
+          setBusy(true);
+          apiPost(endpoint, body).then(function (r) {
+            if (!mounted.current) return;
+            if (!r || r.ok !== true) throw new Error((r && r.error) || '套餐保存失败');
+            applySavedConfig(r);
+            flash((r.notes && r.notes[0]) || '已更新套餐', 'ok');
+          }).catch(function (e) {
+            if (mounted.current) flash((e && e.message) || '套餐保存失败', 'err');
+          }).finally(function () {
+            if (mounted.current) setBusy(false);
+          });
+        }
+
         function onExplore() {
+          if (manualExploreRequest.current || exploreStopPending) return;
+          var request = {};
+          manualExploreRequest.current = request;
           setExplorePending(true);
           setExploreResult(null);
-          var topic = String((state && state.exploration && state.exploration.nextTopic) || '').trim();
-          apiPost('/explore', topic ? { topic: topic } : {}).then(function (r) {
-            if (!mounted.current) return;
-            setState(r.state);
+          apiPost('/explore', {}).then(function (r) {
+            if (!mounted.current || manualExploreRequest.current !== request) return;
+            if (r.state) setState(r.state);
             var labels = {
               NO_PERSONA: '请先配置角色人设',
               QUIET_OR_BUSY: '当前是静默或忙碌时段，本轮未运行',
@@ -952,19 +1252,93 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
               HOST_LLM_EMPTY: '模型没有返回内容',
               INVALID_OUTPUT: '重试后模型仍未返回完整的探索 JSON，上轮进展已保留',
               INVALID_FIELDS: '重试后探索结果仍缺少有效的主题、进展或下一步，上轮进展已保留',
-              CANCELLED: '探索已取消，结果未保存'
+              TOPIC_AMBIGUOUS: '请先确认这个标题的探索方式',
+              WORK_SOURCE_REQUIRED: '请先为作品选择公开来源',
+              WORK_SOURCE_UNAVAILABLE: '暂时读不到作品来源，请更换来源'
             };
             var detail = r.note ? '（' + r.note + '）' : '';
             var message = r.ok
               ? (r.action === 'skip' ? '本轮已结束，角色选择跳过' : '本轮已结束，探索进展已保存')
-              : ((labels[r.reason] || r.reason || '探索失败') + detail);
-            setExploreResult({ text: message, error: !r.ok });
+              : ((EXPLORE_NOTICE[r.reason] || labels[r.reason] || r.reason || '探索失败') + detail);
+            var nextExploration = r.state && r.state.exploration;
+            setExploreResult({ text: message, error: !r.ok && r.reason !== 'CANCELLED',
+              runNotice: nextExploration && nextExploration.runNotice });
             if (r.ok && r.action !== 'skip') setShowExplorationDetails(true);
             load(true);
           }).catch(function (e) {
-            if (mounted.current) setExploreResult({ text: e.message || '探索请求失败', error: true });
+            if (!mounted.current || manualExploreRequest.current !== request) return;
+            setExploreResult({ text: e.message || '探索请求失败', error: true, runNotice: exploration && exploration.runNotice });
+            load(true);
           }).finally(function () {
-            if (mounted.current) setExplorePending(false);
+            if (manualExploreRequest.current === request) {
+              manualExploreRequest.current = null;
+              if (mounted.current) setExplorePending(false);
+            }
+          });
+        }
+
+        function onExploreStop() {
+          if (!exploring || exploreStopPending) return;
+          var pendingRequest = manualExploreRequest.current;
+          var runId = exploration && exploration.running && exploration.runId;
+          setExploreStopPending(true);
+          setExploreResult(null);
+          apiPost('/explore/stop', runId ? { runId: runId } : {}).then(function (r) {
+            if (!mounted.current) return;
+            var nextExploration = r.state && r.state.exploration;
+            if (r.ok && r.reason === 'CANCELLED') {
+              // 停止确认可以先于试跑响应到达，后到的试跑响应不再更新界面。
+              if (manualExploreRequest.current === pendingRequest) {
+                manualExploreRequest.current = null;
+                setExplorePending(false);
+              }
+              if (r.state) setState(r.state);
+              setExploreResult({ text: EXPLORE_NOTICE.CANCELLED, error: false,
+                runNotice: nextExploration && nextExploration.runNotice });
+            } else if (!pendingRequest || manualExploreRequest.current === pendingRequest) {
+              if (r.state) setState(r.state);
+              var notRunning = pendingRequest ? '试跑请求仍在等待，可以稍后再试停止' : '当前没有正在运行的探索';
+              var message = r.reason === 'STALE_RUN' ? '当前探索轮次已更换，请重新确认后停止'
+                : r.reason === 'NOT_RUNNING' ? notRunning : '暂时无法停止探索';
+              setExploreResult({ text: message, error: r.reason !== 'NOT_RUNNING',
+                runNotice: nextExploration && nextExploration.runNotice });
+            }
+            load(true);
+          }).catch(function (e) {
+            if (!mounted.current) return;
+            setExploreResult({ text: e.message || '停止请求失败，请重试', error: true,
+              runNotice: exploration && exploration.runNotice });
+            load(true);
+          }).finally(function () {
+            if (mounted.current) setExploreStopPending(false);
+          });
+        }
+
+        function onExploreTopic(issue, choice, url) {
+          if (exploreTopicPending) return;
+          setExploreTopicPending(true);
+          var body = { input: issue.input, field: issue.field, choice: choice };
+          if (url) body.url = url;
+          function applyResult(r) {
+            if (!mounted.current) return;
+            if (r.state) setState(r.state);
+            if (Array.isArray(r.explorationItems)) setExplorationItems(r.explorationItems);
+            var labels = {
+              TOPIC_CHANGED: '探索主题已更换，请重新确认',
+              INVALID_SOURCE: '请输入可公开访问的作品网址',
+              INVALID_CHOICE: '当前主题无法使用这个选项'
+            };
+            var message = r.ok ? ((r.notes && r.notes[0]) || (choice === 'source' ? '已保存作品来源' : '已保存探索方式'))
+              : (labels[r.reason] || r.error || '暂时无法保存，请重试');
+            var nextExploration = r.state && r.state.exploration;
+            setExploreResult({ text: message, error: !r.ok,
+              runNotice: nextExploration ? nextExploration.runNotice : exploration && exploration.runNotice });
+            load(true);
+          }
+          apiPost('/explore/topic', body).then(applyResult).catch(function (e) {
+            applyResult(e.body || { ok: false, error: e.message });
+          }).finally(function () {
+            if (mounted.current) setExploreTopicPending(false);
           });
         }
 
@@ -1196,6 +1570,12 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         var memory = state && state.memory;
         var exploration = state && state.exploration;
         var exploring = explorePending || Boolean(exploration && exploration.running);
+        var topicIssue = exploration && exploration.topicIssue;
+        var runNotice = exploration && exploration.runNotice;
+        var explorationStatus = exploreResult && (!exploreResult.runNotice || exploreResult.runNotice === runNotice) ? exploreResult : null;
+        if (!exploring && !exploreStopPending && EXPLORE_NOTICE[runNotice] && (!exploreResult || exploreResult.runNotice !== runNotice)) {
+          explorationStatus = { text: EXPLORE_NOTICE[runNotice], error: runNotice === 'EXPLORATION_TIMEOUT' };
+        }
         var thread = exploration && exploration.thread;
         var leisure = exploration && exploration.leisure;
         var lightExp = exploration && exploration.light;
@@ -1326,7 +1706,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         return h(
           'div',
           { className: 'pg-root' },
-          state ? h(Head, { state: state, busy: busy || guidePending === 'preview', onGuide: openGuide,
+          state ? h(Head, { state: state, busy: busy || guidePending === 'preview', tickPending: tickPending, onGuide: openGuide,
             onRefresh: function () { load(false); loadDiagnostics(); }, onTick: onTick }) : null,
           h(AlertBar, { items: diagnostic && diagnostic.alerts || [] }),
           toast
@@ -1342,6 +1722,11 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           error ? h('div', { className: 'pg-error' }, '取不到状态：' + error) : null,
           state ? h(Facts, { state: state }) : null,
           state ? h(LastWords, { state: state }) : null,
+          presets ? h(PresetCard, {
+            data: presets,
+            busy: busy,
+            onApply: function (id) { applyPresetAction('/presets/apply', { id: id }); },
+          }) : null,
           state && state.last && state.last.decision === 'skip' && state.last.explanation &&
             (state.last.explanation.detail || state.last.explanation.actionHint)
             ? h('details', { className: 'pg-card pg-card-fold' },
@@ -1761,6 +2146,12 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
               )
             ),
             h('div', { className: 'pg-exp-body' },
+              topicIssue ? h(ExplorationTopicIssue, {
+                key: topicIssue.field + '\n' + topicIssue.input,
+                issue: topicIssue,
+                busy: busy || exploring || exploreStopPending || exploreTopicPending,
+                onResolve: onExploreTopic
+              }) : null,
               exploration.lastRun ? (function () {
                 var calls = Array.isArray(exploration.lastRun.calls) ? exploration.lastRun.calls : [];
                 return h('details', { className: 'pg-exp-details' },
@@ -1804,10 +2195,13 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
                         onClick: function () { applySmallAction('/exploration/feedback', { id: item.id, action: 'delete' }); } }, '删除'));
                   }))) : null,
               h('div', { className: 'pg-exp-actions' },
-                h('button', { className: 'pg-btn', type: 'button', disabled: busy || exploring || !state.enabled, onClick: onExplore },
-                  exploring ? '探索进行中…' : '试跑一轮（不发送）')
+                h('button', { className: 'pg-btn', type: 'button',
+                  disabled: busy || exploring || exploreStopPending || exploreTopicPending || !state.enabled, onClick: onExplore },
+                  exploring ? '探索进行中…' : '试跑一轮（不发送）'),
+                exploring || exploreStopPending ? h('button', { className: 'pg-btn', type: 'button', disabled: exploreStopPending,
+                  onClick: onExploreStop }, exploreStopPending ? '正在中止…' : '中止本轮') : null
               ),
-              exploreResult ? h('div', { role: 'status', className: 'pg-toast' + (exploreResult.error ? ' pg-toast-err' : ' pg-toast-ok') }, exploreResult.text) : null
+              explorationStatus ? h('div', { role: 'status', className: 'pg-toast' + (explorationStatus.error ? ' pg-toast-err' : ' pg-toast-ok') }, explorationStatus.text) : null
             ),
             explorationItems.length ? h(
               'div',
@@ -1831,6 +2225,14 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
             var badgeCls = p === 'internal'
               ? (ec.sessionId ? 'pg-badge-live' : 'pg-badge-dry')
               : p === 'douyin' ? 'pg-badge-dry' : 'pg-badge-live';
+            var toolScope = state && state.compactChatTools;
+            var toolScopeNote = toolScope && ({
+              active: '已从当前陪聊会话隐藏 ' + toolScope.hiddenCount + ' 个工具',
+              waiting: '精简陪聊工具已开启，等待绑定会话启动',
+              unbound: '精简陪聊工具已开启，等待绑定会话',
+              unsupported: '当前 DSH 尚不支持按会话精简工具，继续使用完整工具',
+              error: '精简陪聊工具暂未生效，继续使用完整工具',
+            })[toolScope.state];
             var boundLabel = ec.sessionId
               ? (ec.sessionTitle ? '「' + ec.sessionTitle + '」' : '') + ec.sessionId.slice(0, 8)
               : '';
@@ -1860,6 +2262,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
                   (ec.retryAt && ec.status ? ' · 下次重试 ' + clockOf(new Date(ec.retryAt).toISOString()) : '') +
                   (ec.gap ? ' · 抖音历史窗口可能有缺口' : '')
               ) : null,
+              toolScopeNote ? h('div', { className: 'pg-row-hint', role: 'status' }, toolScopeNote) : null,
               channelItems.length ? h(
                 'div',
                 { className: 'pg-rows' },
@@ -1919,7 +2322,18 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           })() : null,
           groups.length ? h('div', { className: 'pg-sec-label' }, '参数设置') : null,
           groups.map(function (g) {
-            return h(Group, { key: g.name, group: g, busy: busy, onSave: onSave });
+            return h(Group, {
+              key: g.name,
+              group: g,
+              busy: busy,
+              onSave: onSave,
+              extra: g.name === '高级' && presets ? h(PresetEditor, {
+                data: presets,
+                busy: busy,
+                onOverride: function (presetId, path, value) { applyPresetAction('/presets/override', { presetId: presetId, path: path, value: value }); },
+                onReset: function (presetId) { applyPresetAction('/presets/reset', { presetId: presetId }); },
+              }) : null,
+            });
           })) : null,
           h(
             'div',
@@ -2090,7 +2504,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         '.pg-exp-list{display:flex;flex-direction:column;gap:5px;padding-top:8px;margin-top:6px;border-top:1px solid var(--pg-line-soft);}',
         '.pg-exp-item{font-size:11.5px;color:var(--pg-muted);line-height:1.55;overflow-wrap:anywhere;}',
         '.pg-exp-highlight{font-size:12.5px;color:var(--pg-fg);line-height:1.6;padding:4px 8px;background:var(--pg-card);border-radius:7px;border:1px solid var(--pg-line-soft);}',
-        '.pg-exp-actions{display:flex;align-items:center;gap:8px;padding-top:2px;}',
+        '.pg-exp-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding-top:2px;}',
         '.pg-link{color:var(--pg-brand);text-decoration:underline;text-underline-offset:2px;}',
         '.pg-link-btn{font:inherit;font-size:11.5px;border:0;background:transparent;color:var(--pg-brand);cursor:pointer;padding:2px 4px;text-decoration:underline;text-underline-offset:2px;}',
         '.pg-link-btn:disabled{opacity:.45;cursor:default;text-decoration:none;}',

@@ -16,7 +16,9 @@
 //   4) mail.intervalMinutes  到点才连服务器（状态记在 state.json，重启不清零）
 //   5) 邮箱口令不从 config.json 走，单独存 credentials.json（建议 600 权限、别提交）
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto';
 import { ROOT, LOG_DIR } from './config.js';
 import { ImapClient } from './imap.js';
 import { parseMessage } from './mime.js';
@@ -54,37 +56,81 @@ export function hostFor(user, override) {
   return HOSTS[domain] || `imap.${domain}`;
 }
 
-// ---------------------------------------------------------------- 凭据
+// ---------------------------------------------------------------- 凭据（本机 AES-256-GCM 加密落盘，兼容旧明文）
 
-/** 只存邮箱和授权码，别的一概不落这里。 */
-export function loadSecrets() {
+const ENC_PREFIX = 'enc:v1:';
+let cachedKey = null;
+
+function secretsKey() {
+  if (cachedKey) return cachedKey;
+  let user = '';
+  try { user = os.userInfo().username || ''; } catch { /* ignore */ }
+  const material = `${os.hostname()}|${user}|${os.homedir()}|dsh-drop-by`;
+  cachedKey = scryptSync(material, 'dsh-drop-by:credentials:v1', 32);
+  return cachedKey;
+}
+
+export function encryptSecret(plain) {
+  const s = String(plain || '');
+  if (!s) return '';
+  if (s.startsWith(ENC_PREFIX)) return s;
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', secretsKey(), iv);
+  const enc = Buffer.concat([cipher.update(s, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `${ENC_PREFIX}${iv.toString('base64url')}.${tag.toString('base64url')}.${enc.toString('base64url')}`;
+}
+
+export function decryptSecret(raw) {
+  const s = String(raw || '');
+  if (!s) return '';
+  if (!s.startsWith(ENC_PREFIX)) return s; // 兼容旧版明文 credentials.json
   try {
-    const j = JSON.parse(fs.readFileSync(SECRETS_PATH, 'utf8'));
+    const parts = s.slice(ENC_PREFIX.length).split('.');
+    if (parts.length !== 3) return '';
+    const iv = Buffer.from(parts[0], 'base64url');
+    const tag = Buffer.from(parts[1], 'base64url');
+    const enc = Buffer.from(parts[2], 'base64url');
+    const decipher = createDecipheriv('aes-256-gcm', secretsKey(), iv);
+    decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(enc), decipher.final()]).toString('utf8');
+  } catch {
+    return '';
+  }
+}
+
+/** 只存邮箱和授权码，别的一概不落这里；读取时自动解密（兼容旧明文）。 */
+export function loadSecrets(filePath = SECRETS_PATH) {
+  try {
+    const j = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const rawAuth = String(j.authCode || j.mail?.authCode || '');
     return {
       user: String(j.user || j.mail?.user || ''),
-      authCode: String(j.authCode || j.mail?.authCode || ''),
+      authCode: decryptSecret(rawAuth),
     };
   } catch {
     return { user: '', authCode: '' };
   }
 }
 
-export function saveSecrets({ user, authCode }) {
-  const prev = loadSecrets();
-  const next = {
-    ...prev,
-    ...(user !== undefined ? { user: String(user).trim() } : {}),
-    ...(authCode !== undefined ? { authCode: String(authCode).trim() } : {}),
+export function saveSecrets({ user, authCode }, filePath = SECRETS_PATH) {
+  const prev = loadSecrets(filePath);
+  const plainAuth = authCode !== undefined ? String(authCode).trim() : prev.authCode;
+  const nextUser = user !== undefined ? String(user).trim() : prev.user;
+  const stored = {
+    user: nextUser,
+    authCode: plainAuth ? encryptSecret(plainAuth) : '',
+    encrypted: Boolean(plainAuth),
     updatedAt: new Date().toISOString(),
   };
-  fs.mkdirSync(ROOT, { recursive: true });
-  fs.writeFileSync(SECRETS_PATH, JSON.stringify(next, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, JSON.stringify(stored, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
   try {
-    fs.chmodSync(SECRETS_PATH, 0o600); // Windows 上无效，忽略即可
+    fs.chmodSync(filePath, 0o600); // Windows 上无效，忽略即可
   } catch {
     /* ignore */
   }
-  return next;
+  return { user: nextUser, authCode: plainAuth, encrypted: stored.encrypted, updatedAt: stored.updatedAt };
 }
 
 export function maskUser(user) {
@@ -146,9 +192,9 @@ export function readLatest() {
 }
 
 /** 配置 + 凭据合起来看「能不能读」。给 --status / --mail-status 用。 */
-export function mailReady(cfg) {
+export function mailReady(cfg, opts = {}) {
   const m = cfg?.mail || {};
-  const sec = loadSecrets();
+  const sec = loadSecrets(opts.secretsPath);
   const user = String(m.user || sec.user || '').trim();
   const auth = String(sec.authCode || m.authCode || process.env.PRESENCE_MAIL_AUTH || '').trim();
   if (m.enabled !== true) return { ok: false, reason: 'MAIL_DISABLED', user, auth };

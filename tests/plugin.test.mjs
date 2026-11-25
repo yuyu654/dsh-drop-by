@@ -243,6 +243,71 @@ test('状态接口：webServer 晚一步就绪也能挂上（ctx.inject 延迟�
   }
 });
 
+test('状态接口：宿主替换 webServer 后旧路由卸载且新服务重新挂载', async () => {
+  let pending = null;
+  const ctx = fakeCtx();
+  ctx.inject = (deps, cb) => {
+    pending = { deps, cb };
+    return { dispose() {} };
+  };
+  const api = apply(ctx, { enabled: false, startupDelaySec: 3600, tool: false });
+  try {
+    let route1 = null;
+    let disposed1 = false;
+    const child1 = fakeCtx({
+      webServer: {
+        register: (r) => {
+          route1 = r;
+          return () => {
+            disposed1 = true;
+            route1 = null;
+          };
+        },
+      },
+    });
+    pending.cb(child1);
+    assert.ok(route1, '首次挂载应成功');
+
+    // 模拟宿主卸载旧 webServer 作用域
+    for (const d of child1.disposers) d();
+    assert.equal(disposed1, true, '旧路由清理函数应被调用');
+    assert.equal(route1, null);
+
+    // 模拟宿主提供新 webServer 实例
+    let route2 = null;
+    const child2 = fakeCtx({
+      webServer: {
+        register: (r) => {
+          route2 = r;
+          return () => {
+            route2 = null;
+          };
+        },
+      },
+    });
+    pending.cb(child2);
+    assert.ok(route2, '新 webServer 就绪后应重新挂上路由');
+    assert.equal(route2.path, '/api/dsh-drop-by');
+
+    // 验证新路由可正常响应 /state 200
+    let statusCode = 0;
+    let body = '';
+    await route2.handler(
+      { url: '/api/dsh-drop-by/state', method: 'GET', headers: { host: '127.0.0.1:3000' }, socket: { remoteAddress: '127.0.0.1' } },
+      {
+        set statusCode(v) { statusCode = v; },
+        get statusCode() { return statusCode; },
+        setHeader() {},
+        end(s) { body = String(s || ''); },
+      }
+    );
+    assert.equal(statusCode, 200);
+    assert.equal(typeof JSON.parse(body).enabled, 'boolean');
+  } finally {
+    api.stop();
+  }
+});
+
 test('工具：必须声明 output（DSH 的 tools.register 缺了直接 TypeError）', async () => {
   const ctx = fakeCtx();
   ctx.registered.tools = [];

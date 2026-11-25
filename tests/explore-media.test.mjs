@@ -274,9 +274,9 @@ test('retries with clean anchorQuery and filters unrelated site padding when ext
 
 test('falls back to global fetch when webService.fetch rejects due to Fake-IP 198.18.x.x SSRF block', async () => {
   const origFetch = globalThis.fetch;
-  const directUrls = [];
-  globalThis.fetch = async (url) => {
-    directUrls.push(url);
+  const directRequests = [];
+  globalThis.fetch = async (url, options) => {
+    directRequests.push({ url, redirect: options.redirect });
     return {
       url,
       status: 200,
@@ -298,7 +298,7 @@ test('falls back to global fetch when webService.fetch rejects due to Fake-IP 19
       },
     });
     const results = await media.collect('web', '哆哆嗦嗦逃离你 site:manga.bilibili.com', { preferredSites: ['manga.bilibili.com'] });
-    assert.deepEqual(directUrls, ['https://manga.bilibili.com/m/detail/mc38749']);
+    assert.deepEqual(directRequests, [{ url: 'https://manga.bilibili.com/m/detail/mc38749', redirect: 'error' }]);
     assert.equal(results.length, 1);
     assert.equal(results[0].evidence, '网页正文');
     assert.match(results[0].content, /Fake-IP 兜底抓到的简介/);
@@ -311,8 +311,10 @@ test('Route A (vision_light) extracts page image and upgrades evidence to 网页
   const origFetch = globalThis.fetch;
   const saved = [];
   const observed = [];
-  globalThis.fetch = async (url) => {
+  const imageRedirects = [];
+  globalThis.fetch = async (url, options) => {
     if (String(url).includes('cover.jpg')) {
+      imageRedirects.push(options.redirect);
       const bytes = new Uint8Array(2048);
       bytes.set([0xff, 0xd8, 0xff, 0xe0]);
       return {
@@ -350,6 +352,7 @@ test('Route A (vision_light) extracts page image and upgrades evidence to 网页
       }),
     });
     const results = await media.collect('web', '哆哆嗦嗦逃离你 site:manga.bilibili.com', { preferredSites: ['manga.bilibili.com'] });
+    assert.deepEqual(imageRedirects, ['error']);
     assert.equal(saved.length, 1);
     assert.equal(observed.length, 1);
     assert.equal(results[0].evidence, '网页画面');

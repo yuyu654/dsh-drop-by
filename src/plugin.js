@@ -23,11 +23,14 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { abortable } from './exploration-abort.js';
 import { loadConfig, saveConfig, loadState, CONFIG_PATH, LOG_DIR } from './config.js';
 import { tick, tickDueAgreement, tickQqContinuation, qqContinuationEnabled } from './engine.js';
 import { listAgreements, dueAgreement, dismissAgreement, flushAgreementIntake, pruneAgreements } from './agreements.js';
 import { applyExplorationFeedback, explorationFeedbackForUi, explorationFeedbackHints, consumeExplorationFeedback, topicInExplorationFeedback } from './exploration-feedback.js';
 import { createQqContinuation } from './qq-continuation.js';
+import { createCompactChatTools } from './compact-chat-tools.js';
 import { characterRestAt } from './character-rest.js';
 import { minutesOfDayOf } from './time.js';
 import { inQuiet } from './schedule.js';
@@ -35,21 +38,24 @@ import { busyNow, builtinYears, deepseekPeakStatus, offPeakNow } from './holiday
 import { calendarStatus, refreshCalendar } from './calendar.js';
 import { loadPersona } from './persona.js';
 import { exploreRound, explorationStatus, explorationMood, loadExploration, saveExploration } from './explore.js';
-import { makeHostLlm, setHostLlmContext, refreshHostModelCatalog } from './hostllm.js';
+import { makeHostLlm, setHostLlmContext, setHostLlmTrace, refreshHostModelCatalog } from './hostllm.js';
 import { listForUi, explorationItemsForUi, channelItemsForUi, hiddenItemsForSearch, SEARCH_TAGS, applyChange, saveSecret } from './settings.js';
 import { detectSources, detectEmotionPortrait } from './detect.js';
 import { inspectEmotionPlugin, repairEmotionConfig, appendEmotionInbox, recordExplorationEmotion } from './emotion-sync.js';
 import { inspectMemory, mergeMemorySessions, restoreMemoryBackup } from './memorysource.js';
 import { updatePortraitMood } from './emotion-portrait.js';
 import { watchVideo } from './video-host.js';
-import { bindActionExecutor, isHandledActionMessage } from './action-proposal.js';
+import { bindActionExecutor, isHandledActionMessage, tryStopExplorationCommand } from './action-proposal.js';
 import { sendQqText } from './qq-send.js';
 import { sendQQPrivate } from './send.js';
 import { createSessionRollover, pendingRollovers, dismissRollover } from './session-rollover.js';
 import { qqRolloverAdapter } from './qq-rollover-adapter.js';
 import { installQqPromptMerge, isBridgeManagedMessage } from './qq-debounce.js';
 import { executeQqCommand } from './qq-command.js';
-import { createExplorationMedia } from './explore-media.js';
+import { createExplorationMedia, pickInterestItem, publicExplorationUrl, splitInterestItems } from './explore-media.js';
+import { classifyExplorationTarget, resolveExplorationTarget, setExplorationWorkSource, TRUSTED_WORK_CATALOGS } from './exploration-target.js';
+import { syncBuiltinExploreFeeds } from './explore-feeds.js';
+import { applyPresetToConfig, updatePresetOverride, resetPresetOverride, presetsForUi } from './presets.js';
 import {
   registerExploreSource, registerMoodSource, registerMemorySource, registerTopicProvider,
   listExtensions, listExploreSources, notifyExternalMoodMessage, shouldUseBuiltinEmotion, inspectActiveMood,
@@ -64,7 +70,7 @@ import {
 } from './channels/internal.js';
 import { createDouyinSession } from './channels/douyin-session.js';
 import { activeChatChannel, canReadChat, chatDialogue, chatPeer, emotionPeer } from './channels/external.js';
-import { buildReplyContext, observePrivateMessage } from './qq-reply.js';
+import { agreementLlm, buildReplyContext, observePrivateMessage } from './qq-reply.js';
 import { readChatData } from './channels/douyin-im.js';
 import { connectivity, diagnostics, feedbackSlotsForUi } from './diagnostics.js';
 import { setFeedbackReceipt } from './feedback.js';
@@ -329,6 +335,8 @@ export function apply(ctx, config = {}) {
   const opt = { ...DEFAULTS, ...(config && typeof config === 'object' ? config : {}) };
   setHostLlmContext(ctx);
   const log = makeLog(ctx);
+  setHostLlmTrace((msg) => { noteMount(msg); log.info(msg); });
+  syncBuiltinExploreFeeds(loadConfig);
   let controllerService, projectionsService, registryService, sessionsService, persistenceService;
   const sessionController = () => controllerService || serviceOf(ctx, 'sessionController');
   const workspaceRegistry = () => registryService || serviceOf(ctx, 'workspaceRegistry');
@@ -341,7 +349,9 @@ export function apply(ctx, config = {}) {
   let previewRunning = false;
   let timer = null;
   let continuationTimer = null;
-  let exploring = false;
+  let explorationRun = null;
+  let explorationRunNotice = null;
+  let explorationTopicIssue = null;
   let explorationToolsCtx = null;
   let explorationWebCtx = null;
   let lastExploreAttempt = 0;
@@ -393,7 +403,9 @@ export function apply(ctx, config = {}) {
   const douyin = createDouyinSession({
     getConfig: loadConfig, controller: sessionController, log,
     onIncoming({ cfg, peer, text, ts, item, title }) {
-      if (!disposed && opt.enabled !== false) observePrivateMessage(ctx, { cfg, peer, text, at: ts, item, title });
+      if (disposed || opt.enabled === false) return;
+      tryStopExplorationCommand({ cfg, peer, kind: 'private', text, at: ts });
+      observePrivateMessage(ctx, { cfg, peer, text, at: ts, item, title });
     },
     async prepare({ cfg, peer, text, at, items }) {
       const context = await buildReplyContext(ctx, { cfg, peer, kind: 'private', text, at, bridgeText: items.at(-1)?.text,
@@ -513,8 +525,23 @@ export function apply(ctx, config = {}) {
     return base + (jitter ? Math.floor(Math.random() * jitter) : 0);
   }
 
+  function stopExploration(runId, reason = 'CANCELLED') {
+    const run = explorationRun;
+    if (!run) return { ok: false, reason: 'NOT_RUNNING' };
+    if (runId && run.id !== runId) return { ok: false, reason: 'STALE_RUN' };
+    explorationRun = null;
+    explorationRunNotice = reason;
+    clearTimeout(run.timer);
+    run.controller.abort(new Error(reason));
+    return { ok: true, reason };
+  }
+
+  function stopDisabledAutoExploration(cfg) {
+    if (cfg.exploration.auto !== true && explorationRun && !explorationRun.manual) stopExploration();
+  }
+
   async function runExploration(manual = false, retry = null, onRetryEvidence, requestedResearch, manualTopic = '') {
-    if (disposed || opt.enabled === false || exploring) return { ok: false, reason: 'UNAVAILABLE' };
+    if (disposed || opt.enabled === false || explorationRun) return { ok: false, reason: 'UNAVAILABLE' };
     const cfg = loadConfig();
     const now = Date.now();
     if (cfg.enabled === false || (!manual && cfg.exploration.auto !== true)) return { ok: false, reason: 'DISABLED' };
@@ -540,35 +567,84 @@ export function apply(ctx, config = {}) {
     const focusTopic = requestedResearch ? '' : (explicitTopic || (!retry ? configuredTopic : ''));
     const initialFeedback = retry || requestedResearch ? null : explorationFeedbackHints(cfg, status, now);
     const feedback = focusTopic ? null : initialFeedback;
-    exploring = true;
+    const job = { id: randomUUID(), manual, controller: new AbortController() };
+    const { signal } = job.controller;
+    const budget = Math.max(10_000, Math.min(1_800_000, Number(cfg.exploration.roundBudgetMs) || 300_000));
+    job.timer = setTimeout(() => stopExploration(job.id, 'EXPLORATION_TIMEOUT'), budget);
+    explorationRun = job;
+    explorationRunNotice = null;
     lastExploreAttempt = now;
+    const generate = (args) => abortable(() => host.generate({ ...args, signal }), signal);
     try {
-      const media = createExplorationMedia({ timing: cfg.exploration,
+      const media = createExplorationMedia({ timing: cfg.exploration, signal,
         tools: serviceOf(explorationToolsCtx || ctx, 'tools'),
         webService: serviceOf(explorationWebCtx || explorationToolsCtx || ctx, 'web'),
         web: cfg.exploration.web === true, video: cfg.exploration.video === true,
         extraTools: cfg.exploration.extraTools || '',
         exploreSources: listExploreSources(),
-        observeVideo: host.observeVideo,
-        saveImage: host.saveImage,
+        observeVideo: host.observeVideo && ((args) => abortable(() => host.observeVideo({ ...args, signal }), signal)),
+        saveImage: host.saveImage && ((args) => abortable(() => host.saveImage(args), signal)),
         browseMode: cfg.exploration?.browseMode || 'vision_light',
         browseMaxSteps: cfg.exploration?.browseMaxSteps ?? 40,
         edgePort: cfg.content?.forward?.edgePort ?? 9223,
         edgeAutostart: cfg.content?.forward?.edgeAutostart !== false,
         edgeScript: cfg.content?.forward?.edgeScript || '',
-        watchDouyin: (id) => watchVideo(id, { cfg, host, llm: host.generate, ctx: explorationToolsCtx || ctx }),
+        watchDouyin: (id) => watchVideo(id, { cfg, host, llm: generate, ctx: explorationToolsCtx || ctx, signal }),
       });
+      const sourceUrl = publicExplorationUrl(requestedResearch?.sourceUrl || '');
+      const issues = [];
+      let workTarget = sourceUrl ? { title: requestedResearch.topic || sourceUrl.hostname,
+        hosts: [sourceUrl.hostname], url: sourceUrl.href, useBrowser: requestedResearch.resumedAfterLogin === true } : null;
+      if (retry && previous?.lastRun?.workScope) {
+        workTarget = previous.lastRun.workScope;
+      }
+      let selectedFocus = focusTopic;
+      let selectedInterest = cfg.exploration.interest;
+      if (!retry && !requestedResearch) {
+        const items = splitInterestItems(selectedInterest);
+        const first = items.length === 1 ? items[0] : pickInterestItem(selectedInterest, { roundCount: previous?.roundCount,
+          recentTopics: [status.thread?.topic, status.leisure?.topic, status.light?.topic] });
+        const field = focusTopic ? (explicitTopic ? '' : 'nextTopic') : 'interest';
+        const inputs = focusTopic ? [focusTopic] : [...new Set([first, ...items])].filter(item => item.trim());
+        for (const input of inputs) {
+          const target = await abortable(() => resolveExplorationTarget(input, { workSources: cfg.exploration.workSources,
+            lookup: media?.lookupWork && ((title) => media.lookupWork(title, TRUSTED_WORK_CATALOGS)), signal }), signal);
+          signal.throwIfAborted();
+          if (target.reason || (target.kind === 'work' && !media?.workWeb)) {
+            issues.push({ input, title: target.title, field, reason: target.reason || 'WORK_SOURCE_UNAVAILABLE',
+              candidates: target.candidates || [] });
+            continue;
+          }
+          if (focusTopic) selectedFocus = target.title;
+          else selectedInterest = target.title;
+          if (target.kind === 'work') workTarget = { ...target, field };
+          break;
+        }
+        const current = loadConfig().exploration;
+        if (current.interest !== cfg.exploration.interest || current.nextTopic !== cfg.exploration.nextTopic ||
+            current.workSources !== cfg.exploration.workSources) return { ok: false, reason: 'CANCELLED' };
+        explorationTopicIssue = issues[0] || null;
+        if (inputs.length && issues.length === inputs.length) return { ok: false, reason: issues[0].reason };
+      }
       const minuteNow = minutesOfDayOf(now, cfg.timezone);
       const nightShare = characterRestAt(cfg, now).windDown || minuteNow >= 21 * 60 + 30 || minuteNow < 6 * 60;
-      const r = await exploreRound({ persona, previous, interest: cfg.exploration.interest, focusTopic, now, generate: host.generate,
-        includeMood: cfg.exploration.mood === true, media, bias: cfg.exploration.bias, leisureEvery: cfg.exploration.leisureEvery,
-        timing: cfg.exploration, retry, onRetryEvidence, requestedResearch, topicFeedback: feedback, night: nightShare });
+      const roundMedia = workTarget || media?.web || media?.video || media?.extSources.length ? media : null;
+      const r = await abortable(() => exploreRound({ persona, previous, interest: selectedInterest, focusTopic: selectedFocus, workTarget, now, generate,
+        includeMood: cfg.exploration.mood === true, media: roundMedia, bias: cfg.exploration.bias, leisureEvery: cfg.exploration.leisureEvery,
+        timing: cfg.exploration, retry, requestedResearch, topicFeedback: feedback, night: nightShare }), signal);
+      signal.throwIfAborted();
       const fresh = loadConfig();
       if (disposed || fresh.enabled === false || (!manual && fresh.exploration.auto !== true) ||
           (retry && (fresh.rules?.actionGate?.enabled !== true || fresh.exploration.web !== true)) ||
           (requestedResearch && fresh.rules?.qqCommands?.enabled !== true) ||
           loadPersona({ cfg: fresh }).text !== persona.text) return { ok: false, reason: 'CANCELLED' };
+      if (workTarget?.field !== undefined && (fresh.exploration.workSources !== cfg.exploration.workSources ||
+          fresh.exploration[workTarget.field] !== cfg.exploration[workTarget.field])) return { ok: false, reason: 'CANCELLED' };
       if (!r.ok) {
+        if (r.reason === 'WORK_SOURCE_UNAVAILABLE' && workTarget?.input) {
+          explorationTopicIssue = { input: workTarget.input, title: workTarget.title, field: workTarget.field,
+            reason: r.reason, candidates: [] };
+        }
         log.warn(`自主探索未完成：${r.reason || 'UNKNOWN'}${r.note ? `（${r.note}）` : ''}`);
         return r;
       }
@@ -584,13 +660,14 @@ export function apply(ctx, config = {}) {
       saveExploration(r.state);
       if (r.action !== 'skip') consumeExplorationFeedback(fresh, feedback);
       // 仅在「近一轮探索主题」确实在本轮产生非跳过结果后自动消费清空，避免用户误卡死未来探索。
-      if (focusTopic && r.action !== 'skip' && freshTopic === focusTopic) {
+      const resumedTopic = sourceUrl && classifyExplorationTarget(freshTopic, fresh.exploration.workSources).title === workTarget.title;
+      if (r.action !== 'skip' && freshTopic && ((focusTopic && !explicitTopic && freshTopic === focusTopic) || resumedTopic)) {
         saveConfig({ ...fresh, exploration: { ...fresh.exploration, nextTopic: '' } });
       }
       if (r.action !== 'skip') {
         const explorationText = recordExplorationEmotion({ state: r.state, cfg: fresh });
         if (explorationText && shouldUseBuiltinEmotion(fresh, now) && emotionPeer(fresh) && host.ready) {
-          await updatePortraitMood({
+          void updatePortraitMood({
             cfg: fresh,
             persona,
             peer: emotionPeer(fresh),
@@ -599,24 +676,28 @@ export function apply(ctx, config = {}) {
             generate: host.generate,
             exploration: r.state.mood?.text || '',
             sourceLabel: '当前自主探索记录',
-          });
+          }).catch((e) => log.warn('探索情绪更新失败：' + String(e?.message || e).slice(0, 120)));
         }
       }
-      return { ok: true, action: r.action, ...explorationStatus(r.state, persona),
-        ...(retry ? { foundBody: r.state.lastRun?.sources?.some((source) => source.evidence === '网页正文') === true } : {}) };
+      const foundBody = retry && r.state.lastRun?.sources?.some((source) => source.evidence === '网页正文') === true;
+      if (retry) onRetryEvidence?.({ ok: true, foundBody });
+      return { ok: true, action: r.action, ...explorationStatus(r.state, persona), ...(retry ? { foundBody } : {}) };
     } catch (e) {
+      if (signal.aborted) return { ok: false, reason: signal.reason.message };
       log.warn(`自主探索失败：${String(e?.message || e).slice(0, 160)}`);
       return { ok: false, reason: 'EXPLORATION_ERROR' };
     } finally {
-      exploring = false;
+      clearTimeout(job.timer);
+      if (explorationRun === job) explorationRun = null;
     }
   }
 
   const actionExecutor = {
+    stopExploration,
     run: ({ params }, onRetryEvidence) => runExploration(true, params, onRetryEvidence),
     command: (cmd, cfg) => executeQqCommand({
       cmd, cfg,
-      media: cmd.type === 'explore_query' ? createExplorationMedia({
+      media: (cmd.type === 'explore_query' || cmd.type === 'browse_url') ? createExplorationMedia({
         tools: serviceOf(explorationToolsCtx || ctx, 'tools'),
         webService: serviceOf(explorationWebCtx || explorationToolsCtx || ctx, 'web'),
         web: cfg.exploration.web === true, timing: cfg.exploration,
@@ -698,7 +779,8 @@ export function apply(ctx, config = {}) {
     if (running || !dueAgreement(cfg, now, source)) return false;
     running = true;
     try {
-      const result = await tickDueAgreement({ active: () => !disposed && opt.enabled !== false });
+      const generate = opt.hostLlm === false ? null : agreementLlm(ctx, cfg, { temperature: 0.75, maxTokens: 256 });
+      const result = await tickDueAgreement({ active: () => !disposed && opt.enabled !== false, generate });
       if (result && !result.ok) log.warn('小本本约定发送回执未确认');
       return Boolean(result);
     } finally {
@@ -758,6 +840,19 @@ export function apply(ctx, config = {}) {
     return binding;
   }
 
+  const compactChatTools = createCompactChatTools({
+    getConfig: () => disposed || opt.enabled === false ? null : loadConfig(),
+    getSessionId: (cfg) => {
+      if (chatChanging()) return '';
+      if (internalPrimary(cfg)) return internalSessionId();
+      if (douyinPrimary(cfg)) return readyDouyinBinding({ readOnly: true })?.sessionId || '';
+      return qqAdapter.activeSessionForPeer(cfg.channels?.qq?.peerId)?.sessionId || '';
+    },
+    getHost: () => ({ agents: serviceOf(ctx, 'agents'), tools: serviceOf(ctx, 'tools') }),
+    getTools: (agent) => serviceOf(agent.ctx, 'tools'),
+    warn: log.warn,
+  });
+
   /** 状态快照：状态接口、工具、以及 --status 之外的自检都用它。 */
   function snapshot() {
     const cfg = loadConfig();
@@ -783,6 +878,7 @@ export function apply(ctx, config = {}) {
       nextAt: nextAt ? new Date(nextAt).toISOString() : null,
       lastError,
       last: lastRun,
+      compactChatTools: compactChatTools.status(),
       agreements: { enabled: cfg.agreements?.enabled === true, timezone: cfg.timezone, items: listAgreements(cfg).map(
         ({ id, title, dueAt, explicit }) => ({ id, title, dueAt, explicit })) },
       exploration: (() => {
@@ -790,7 +886,8 @@ export function apply(ctx, config = {}) {
         const persona = loadPersona({ cfg });
         const peakStatus = deepseekPeakStatus(Date.now(), cfg);
         const status = explorationStatus(state, persona);
-        return { ...status, feedback: explorationFeedbackForUi(status, cfg), auto: cfg.exploration.auto, mode: cfg.exploration?.mode === 'light' ? 'light' : 'deep', running: exploring,
+        return { ...status, feedback: explorationFeedbackForUi(status, cfg), auto: cfg.exploration.auto, mode: cfg.exploration?.mode === 'light' ? 'light' : 'deep', running: Boolean(explorationRun),
+          runId: explorationRun?.id || null, runNotice: explorationRunNotice, topicIssue: explorationTopicIssue,
           offPeakOnly: cfg.exploration.offPeakOnly === true,
           pausedForRest: cfg.exploration.auto === true && characterRestAt(cfg).asleep,
           nextTopic: String(cfg.exploration?.nextTopic || ''),
@@ -908,6 +1005,7 @@ export function apply(ctx, config = {}) {
         secret: true,
         notes: ['授权码已存进 credentials.json（界面上只显示「已设置」，不会再显示出来）'],
         groups: listForUi(secCfg),
+        presets: presetsForUi(secCfg),
         explorationItems: explorationItemsForUi(secCfg),
         channelItems: channelItemsForUi(secCfg),
         hiddenItems: hiddenItemsForSearch(secCfg),
@@ -916,6 +1014,9 @@ export function apply(ctx, config = {}) {
       };
     }
     const notes = [];
+    if (r.path === 'exploration.builtinFeeds' || r.path === 'exploration.rssUrls') {
+      syncBuiltinExploreFeeds(() => r.cfg);
+    }
     if (r.path === 'channels.primary') {
       try {
         const from = initialCfg.channels.primary;
@@ -969,6 +1070,9 @@ export function apply(ctx, config = {}) {
     }
     try {
       if (r.path !== 'channels.primary') saveConfig(r.cfg);
+      if (['exploration.nextTopic', 'exploration.interest', 'exploration.workSources'].includes(r.path)) explorationTopicIssue = null;
+      if (r.path === 'enabled' && r.value === false) stopExploration();
+      if (r.path === 'exploration.auto') stopDisabledAutoExploration(r.cfg);
     } catch (e) {
       return { ok: false, error: `写 config.json 失败：${String(e?.message || e).slice(0, 120)}` };
     }
@@ -991,6 +1095,7 @@ export function apply(ctx, config = {}) {
       clearTimeout(timer);
       schedule(intervalMs());
     }
+    compactChatTools.sync();
     const latestCfg = loadConfig();
     return {
       ok: true,
@@ -998,6 +1103,7 @@ export function apply(ctx, config = {}) {
       value: r.value,
       notes,
       groups: listForUi(latestCfg),
+      presets: presetsForUi(latestCfg),
       explorationItems: explorationItemsForUi(latestCfg),
       channelItems: channelItemsForUi(latestCfg),
       hiddenItems: hiddenItemsForSearch(latestCfg),
@@ -1011,20 +1117,20 @@ export function apply(ctx, config = {}) {
   // 挂路由要等 webServer 就绪（见 whenService 的注释）：apply 那一刻它还没 provide，
   // 直接取只会拿到 null，然后设置页永远 404。
   if (opt.statusApi !== false) {
-    let apiMounted = false;
+    let mountedServer = null;
     const mountApi = (c) => {
-      if (apiMounted) return;
       const ws = serviceOf(c, 'webServer');
       if (!ws || typeof ws.register !== 'function') {
         noteMount('api: webServer 拿不到，跳过');
         return;
       }
+      if (mountedServer === ws) return;
       try {
         // 用注入后的子 ctx 管生命周期（跟 dsh-client-modules 的写法一致）：
         // webServer 被替换时，路由会跟着一起卸掉再挂。
         const eff = (c || ctx).effect || ctx.effect;
-        eff(() =>
-          ws.register({
+        eff(() => {
+          const dispose = ws.register({
             kind: 'prefix',
             path: API_PREFIX,
             handler: async (req, res) => {
@@ -1051,6 +1157,7 @@ export function apply(ctx, config = {}) {
                     ok: true,
                     path: CONFIG_PATH,
                     groups: listForUi(curCfg),
+                    presets: presetsForUi(curCfg),
                     explorationItems: explorationItemsForUi(curCfg),
                     channelItems: channelItemsForUi(curCfg),
                     hiddenItems: hiddenItemsForSearch(curCfg),
@@ -1059,6 +1166,42 @@ export function apply(ctx, config = {}) {
                 }
                 if (route === '/config' && req.method === 'POST') {
                   return json(200, await saveFromBody(req));
+                }
+                if ((route === '/presets/apply' || route === '/presets/override' || route === '/presets/reset') && req.method === 'POST') {
+                  let body;
+                  try {
+                    const raw = typeof req?.on === 'function' ? await readBody(req) : '';
+                    body = raw ? JSON.parse(raw) : req?.body;
+                  } catch {
+                    return json(400, { ok: false, error: '请求体不是 JSON' });
+                  }
+                  const curCfg = loadConfig();
+                  const r = route === '/presets/apply'
+                    ? applyPresetToConfig(curCfg, body?.id)
+                    : route === '/presets/override'
+                    ? updatePresetOverride(curCfg, body?.presetId, body?.path, body?.value)
+                    : resetPresetOverride(curCfg, body?.presetId);
+                  if (!r.ok) return json(400, r);
+                  saveConfig(r.cfg);
+                  const latestCfg = loadConfig();
+                  stopDisabledAutoExploration(latestCfg);
+                  syncBuiltinExploreFeeds(() => latestCfg);
+                  const note = route === '/presets/apply'
+                    ? (r.active === 'custom' ? (r.restored ? '已切回自定义并恢复原参数' : '已切回自定义模式') : `已应用套餐：${presetsForUi(latestCfg).presets.find((p) => p.id === r.active)?.label || r.active}`)
+                    : route === '/presets/override'
+                    ? (r.syncedLive ? '已保存套餐参数并同步生效到当前配置' : '已保存套餐参数')
+                    : (r.syncedLive ? '已恢复该套餐默认参数并同步生效' : '已恢复该套餐默认参数');
+                  return json(200, {
+                    ok: true,
+                    notes: [note],
+                    groups: listForUi(latestCfg),
+                    presets: presetsForUi(latestCfg),
+                    explorationItems: explorationItemsForUi(latestCfg),
+                    channelItems: channelItemsForUi(latestCfg),
+                    hiddenItems: hiddenItemsForSearch(latestCfg),
+                    searchTags: SEARCH_TAGS,
+                    state: snapshot(),
+                  });
                 }
                 if (route === '/diagnostics' && (req.method || 'GET') === 'GET') {
                   const cfg = loadConfig();
@@ -1147,6 +1290,48 @@ export function apply(ctx, config = {}) {
                   };
                   const note = route === '/agreements/dismiss' ? '已忽略该约定' : (notes[body.action] || '已更新');
                   return json(200, { ok: true, note, state: snapshot() });
+                }
+                if (route === '/explore/stop' && req.method === 'POST') {
+                  let body;
+                  try { body = JSON.parse((await readBody(req)) || '{}'); }
+                  catch { return json(400, { ok: false, error: '请求体不是 JSON' }); }
+                  if (!body || typeof body !== 'object' || Array.isArray(body) ||
+                      (body.runId !== undefined && typeof body.runId !== 'string')) {
+                    return json(400, { ok: false, error: '探索轮次编号无效' });
+                  }
+                  return json(200, { ...stopExploration(body.runId), state: snapshot() });
+                }
+                if (route === '/explore/topic' && req.method === 'POST') {
+                  let body;
+                  try { body = JSON.parse((await readBody(req)) || '{}'); }
+                  catch { return json(400, { ok: false, error: '请求体不是 JSON' }); }
+                  const issue = explorationTopicIssue;
+                  const fail = (reason) => json(200, { ok: false, reason, state: snapshot() });
+                  if (!issue || issue.input !== body?.input || issue.field !== body?.field) return fail('TOPIC_CHANGED');
+                  const cfg = loadConfig();
+                  const next = { ...cfg.exploration };
+                  const { field, input, title } = issue;
+                  const items = field === 'interest' ? splitInterestItems(next.interest) : null;
+                  if ((items && !items.includes(input)) || (field === 'nextTopic' && next.nextTopic.trim() !== input)) return fail('TOPIC_CHANGED');
+                  if (body.choice === 'source') {
+                    const source = publicExplorationUrl(body.url);
+                    if (!source || !classifyExplorationTarget('作品：《' + title + '》 来源：' + source.href).hosts.length) {
+                      return fail('INVALID_SOURCE');
+                    }
+                    const updated = setExplorationWorkSource(next.workSources, title, source.href);
+                    if (updated.length > 1600 || !classifyExplorationTarget('作品：' + title, updated).hosts.length) return fail('INVALID_SOURCE');
+                    next.workSources = updated;
+                  } else if (!['work', 'topic'].includes(body.choice)) {
+                    return fail('INVALID_CHOICE');
+                  }
+                  const replacement = (body.choice === 'topic' ? '主题：' : '作品：') + title;
+                  if (items) next.interest = items.map(item => item === input ? replacement : item).join('\n');
+                  else next.nextTopic = replacement;
+                  if (next.interest.length > 160 || next.nextTopic.length > 120) return fail('INVALID_CHOICE');
+                  saveConfig({ ...cfg, exploration: next });
+                  explorationTopicIssue = body.choice === 'work' ? { ...issue, input: replacement, field: field || 'nextTopic',
+                    reason: 'WORK_SOURCE_REQUIRED' } : null;
+                  return json(200, { ok: true, state: snapshot(), explorationItems: explorationItemsForUi(loadConfig()) });
                 }
                 if (route === '/explore' && req.method === 'POST') {
                   let body = {};
@@ -1272,6 +1457,7 @@ export function apply(ctx, config = {}) {
                     }
                   }
 
+                  compactChatTools.sync();
                   const latestBinding = activeBoundSession(cfg);
                   const label = latestBinding.sessionTitle || foundTitle;
                   if (!notes.length) {
@@ -1306,6 +1492,7 @@ export function apply(ctx, config = {}) {
                     preparedSessionId: '',
                     ...(record.title ? { sessionTitle: record.title } : {}),
                   });
+                  compactChatTools.sync();
                   if (internalPrimary(curCfg)) {
                     await syncInternalHistory({
                       sessionId: record.newSessionId, sessions: sessionsHost(), controller: sessionController(), persistence: sessionPersistence(),
@@ -1362,9 +1549,13 @@ export function apply(ctx, config = {}) {
                 return json(500, { ok: false, error: String(e?.message || e).slice(0, 200) });
               }
             },
-          })
-        );
-        apiMounted = true;
+          });
+          mountedServer = ws;
+          return () => {
+            if (mountedServer === ws) mountedServer = null;
+            if (typeof dispose === 'function') dispose();
+          };
+        });
         noteMount(`api: 已挂上 ${API_PREFIX}`);
         log.info(`状态接口：GET ${API_PREFIX}/state，POST ${API_PREFIX}/tick`);
       } catch (e) {
@@ -1480,72 +1671,76 @@ export function apply(ctx, config = {}) {
             },
           }));
           if (typeof disposeWatch === 'function') (c?.effect || ctx.effect)(() => disposeWatch);
-          const disposeCalendar = tools.register(spec({
-            name: 'presence_holiday_calendar',
-            description:
-              '看 / 刷新 dsh-drop-by 的节假日日历缓存（忙碌时段在法定节假日整天不生效）。' +
-              'action="status" 看今年有没有缓存、内置表覆盖到哪一年；' +
-              'action="refresh" 按设置里的「节假日日历接口」拉一次，把放假/调休写进 data/holidays-<年>.json。' +
-              '用户说「更新一下今年的节假日」「明年放假表出来了」时用 refresh。',
-            parameters: {
-              action: { type: 'string', enum: ['status', 'refresh'], description: 'status=只看（默认）；refresh=联网拉一次并写缓存' },
-              year: { type: 'number', description: '哪一年，默认今年' },
-              url: { type: 'string', description: '临时指定接口地址（留空用设置里的），{year} 会替换成年份' },
-            },
-            async execute(args) {
-              const cfg = loadConfig();
-              const action = String(args?.action || 'status');
-              const year = Number(args?.year) || new Date().getFullYear();
-              if (action === 'refresh') {
-                const r = await refreshCalendar({ year, url: String(args?.url || cfg?.calendar?.url || ''), cfg });
-                return { ...r, builtin: builtinYears(), status: calendarStatus(cfg) };
-              }
-              return { builtin: builtinYears(), ...calendarStatus(cfg) };
-            },
-            output: {
-              schema: { type: 'object', additionalProperties: true },
-              render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
-            },
-          }));
-          if (typeof disposeCalendar === 'function') (c?.effect || ctx.effect)(() => disposeCalendar);
-          const disposeEmotionRepair = tools.register(spec({
-            name: 'presence_repair_emotion',
-            description: '查看 emotion-state-portrait 情绪插件在本机的状态，或把配置里遗留的作者路径、模型 Key 与 QQ 号一键对齐到当前机器。',
-            parameters: {
-              action: { type: 'string', enum: ['status', 'repair'], description: 'status=只查看（默认）；repair=自动修复本机配置' },
-            },
-            async execute(args) {
-              const cfg = loadConfig();
-              if (String(args?.action || 'status') === 'repair') return repairEmotionConfig({ cfg, force: true });
-              return inspectEmotionPlugin({ cfg });
-            },
-            output: {
-              schema: { type: 'object', additionalProperties: true },
-              render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
-            },
-          }));
-          if (typeof disposeEmotionRepair === 'function') (c?.effect || ctx.effect)(() => disposeEmotionRepair);
-          const disposeMemoryMerge = tools.register(spec({
-            name: 'presence_memory_merge',
-            description: '查看 dsh-fish-memory 工作区/会话记忆文件，或按文本去重将历史 session-*.json 记忆只增不删地合并进默认工作区 ws_*.json（写入前自动备份）。',
-            parameters: {
-              action: { type: 'string', enum: ['status', 'merge'], description: 'status=只查看（默认）；merge=执行合并' },
-              targetFile: { type: 'string', description: '可选：指定目标 ws_*.json 文件名，留空取最近有记忆的工作区' },
-            },
-            async execute(args) {
-              const cfg = loadConfig();
-              if (String(args?.action || 'status') === 'merge') {
-                return mergeMemorySessions({ cfg, targetFile: String(args?.targetFile || '') });
-              }
-              return inspectMemory({ cfg });
-            },
-            output: {
-              schema: { type: 'object', additionalProperties: true },
-              render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
-            },
-          }));
-          if (typeof disposeMemoryMerge === 'function') (c?.effect || ctx.effect)(() => disposeMemoryMerge);
-          noteMount('tool: presence_status、presence_watch_video、presence_holiday_calendar、presence_repair_emotion、presence_memory_merge 已挂上');
+          const mountedNames = ['presence_status', 'presence_watch_video'];
+          if (loadConfig().rules?.exposeMaintenanceTools === true) {
+            const disposeCalendar = tools.register(spec({
+              name: 'presence_holiday_calendar',
+              description:
+                '看 / 刷新 dsh-drop-by 的节假日日历缓存（忙碌时段在法定节假日整天不生效）。' +
+                'action="status" 看今年有没有缓存、内置表覆盖到哪一年；' +
+                'action="refresh" 按设置里的「节假日日历接口」拉一次，把放假/调休写进 data/holidays-<年>.json。' +
+                '用户说「更新一下今年的节假日」「明年放假表出来了」时用 refresh。',
+              parameters: {
+                action: { type: 'string', enum: ['status', 'refresh'], description: 'status=只看（默认）；refresh=联网拉一次并写缓存' },
+                year: { type: 'number', description: '哪一年，默认今年' },
+                url: { type: 'string', description: '临时指定接口地址（留空用设置里的），{year} 会替换成年份' },
+              },
+              async execute(args) {
+                const cfg = loadConfig();
+                const action = String(args?.action || 'status');
+                const year = Number(args?.year) || new Date().getFullYear();
+                if (action === 'refresh') {
+                  const r = await refreshCalendar({ year, url: String(args?.url || cfg?.calendar?.url || ''), cfg });
+                  return { ...r, builtin: builtinYears(), status: calendarStatus(cfg) };
+                }
+                return { builtin: builtinYears(), ...calendarStatus(cfg) };
+              },
+              output: {
+                schema: { type: 'object', additionalProperties: true },
+                render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+              },
+            }));
+            if (typeof disposeCalendar === 'function') (c?.effect || ctx.effect)(() => disposeCalendar);
+            const disposeEmotionRepair = tools.register(spec({
+              name: 'presence_repair_emotion',
+              description: '查看 emotion-state-portrait 情绪插件在本机的状态，或把配置里遗留的作者路径、模型 Key 与 QQ 号一键对齐到当前机器。',
+              parameters: {
+                action: { type: 'string', enum: ['status', 'repair'], description: 'status=只查看（默认）；repair=自动修复本机配置' },
+              },
+              async execute(args) {
+                const cfg = loadConfig();
+                if (String(args?.action || 'status') === 'repair') return repairEmotionConfig({ cfg, force: true });
+                return inspectEmotionPlugin({ cfg });
+              },
+              output: {
+                schema: { type: 'object', additionalProperties: true },
+                render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+              },
+            }));
+            if (typeof disposeEmotionRepair === 'function') (c?.effect || ctx.effect)(() => disposeEmotionRepair);
+            const disposeMemoryMerge = tools.register(spec({
+              name: 'presence_memory_merge',
+              description: '查看 dsh-fish-memory 工作区/会话记忆文件，或按文本去重将历史 session-*.json 记忆只增不删地合并进默认工作区 ws_*.json（写入前自动备份）。',
+              parameters: {
+                action: { type: 'string', enum: ['status', 'merge'], description: 'status=只查看（默认）；merge=执行合并' },
+                targetFile: { type: 'string', description: '可选：指定目标 ws_*.json 文件名，留空取最近有记忆的工作区' },
+              },
+              async execute(args) {
+                const cfg = loadConfig();
+                if (String(args?.action || 'status') === 'merge') {
+                  return mergeMemorySessions({ cfg, targetFile: String(args?.targetFile || '') });
+                }
+                return inspectMemory({ cfg });
+              },
+              output: {
+                schema: { type: 'object', additionalProperties: true },
+                render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+              },
+            }));
+            if (typeof disposeMemoryMerge === 'function') (c?.effect || ctx.effect)(() => disposeMemoryMerge);
+            mountedNames.push('presence_holiday_calendar', 'presence_repair_emotion', 'presence_memory_merge');
+          }
+          noteMount(`tool: ${mountedNames.join('、')} 已挂上`);
         } catch (e) {
           toolMounted = false;
           noteMount(`tool: 挂载失败 ${String(e?.message || e).slice(0, 160)}`);
@@ -1554,6 +1749,19 @@ export function apply(ctx, config = {}) {
       })();
     };
     whenService(ctx, 'tools', mountTool, log);
+  }
+
+  const removeCompactToolListeners = [];
+  if (opt.enabled !== false && typeof ctx.on === 'function') {
+    removeCompactToolListeners.push(
+      ctx.on('agent/created', () => compactChatTools.sync()),
+      ctx.on('agent/disposed', ({ agent } = {}) => compactChatTools.sync({ disposing: agent })),
+      ctx.on('session/event', (_session, event) => {
+        // Re-read the bridge binding before DSH assembles the next turn's tool schemas.
+        if (event?.type === 'turn/start') compactChatTools.sync();
+      }),
+      ctx.on('tools/change', () => compactChatTools.sync({ refresh: true })),
+    );
   }
 
   const releases = new Map();
@@ -1610,6 +1818,7 @@ export function apply(ctx, config = {}) {
         getConfig: loadConfig,
         log,
         async notify({ handoff, usage, prepared, displayTitle }) {
+          compactChatTools.sync();
           const cfg = loadConfig();
           const isInt = internalPrimary(cfg);
           const dy = douyinPrimary(cfg);
@@ -1632,10 +1841,44 @@ export function apply(ctx, config = {}) {
           if (!sent.ok) log.warn('续聊提醒发送失败：' + sent.error);
         },
       });
+      const activeChatTurns = new Map();
+      const isBoundChatSession = (sid) => {
+        if (!sid) return false;
+        const shared = sharedSessionId();
+        if (shared && sid === shared) return true;
+        try {
+          const qqSid = chatBinding()?.qqBinding?.sessionId;
+          if (qqSid && sid === qqSid) return true;
+        } catch {}
+        return false;
+      };
+      const notifyToolLimitPause = async (cfg, sessionId, limit) => {
+        if (disposed || cfg.enabled === false || cfg.dryRun !== false || cfg.send?.enabled !== true) return;
+        const text = `这轮工具调用已达到上限（${limit} 次），我先停下来了，免得把上下文撑满；需要继续直接说一声。`;
+        try {
+          if (internalPrimary(cfg)) {
+            if (cfg.channels?.internal?.enabled === false || cfg.channels?.internal?.send === false) return;
+            await sendInternalMessage({ cfg, sessionId, text, source: 'tool-limit' });
+          } else if (douyinPrimary(cfg)) {
+            if (cfg.channels?.douyin?.send === false) return;
+            await sendDouyinText({ cfg, text });
+          } else {
+            const to = cfg.channels?.qq?.peerId;
+            if (!to || cfg.sources?.qq?.enabled === false || cfg.channels?.qq?.enabled === false || cfg.channels?.qq?.send === false) return;
+            await sendQQPrivate({ to, text, dryRun: false, timeoutMs: cfg.send?.timeoutMs });
+          }
+        } catch (err) {
+          log.warn('工具上限暂停提示发送失败：' + String(err?.message || err).slice(0, 120));
+        }
+      };
       const aroundPrompt = async (payload, signal, next) => {
         let nextPayload = payload;
+        let turnGuard = null;
+        let unlinkSignal = null;
+        let promptSignal = signal;
+        const cfgAtStart = loadConfig();
         try {
-          const cfg = loadConfig();
+          const cfg = cfgAtStart;
           const sid = internalPrimary(cfg) ? sharedSessionId() : '';
           if (sid && payload?.sessionId === sid && cfg.enabled !== false && canReadChat(cfg) && Array.isArray(payload.content) && payload.content.length) {
             const idx = payload.content.findIndex((part) => part?.type === 'text' && typeof part.text === 'string');
@@ -1655,10 +1898,39 @@ export function apply(ctx, config = {}) {
               }
             }
           }
+          const toolCap = Math.max(0, Math.trunc(Number(cfg.rules?.chatSession?.maxToolCallsPerTurn) || 0));
+          const isInternalControlMsg = payload?.source?.plugin === name || payload?.source?.proactive === true || payload?.source?.source === 'tool-limit';
+          if (toolCap > 0 && !isInternalControlMsg && payload?.sessionId && isBoundChatSession(payload.sessionId)) {
+            const ac = new AbortController();
+            if (signal) {
+              if (signal.aborted) ac.abort(signal.reason);
+              else {
+                const onAbort = () => ac.abort(signal.reason);
+                signal.addEventListener('abort', onAbort, { once: true });
+                unlinkSignal = () => signal.removeEventListener('abort', onAbort);
+              }
+            }
+            turnGuard = { abortController: ac, turn: null, count: 0, limit: toolCap, hit: false };
+            activeChatTurns.set(payload.sessionId, turnGuard);
+            promptSignal = ac.signal;
+          }
         } catch (error) {
           log.warn('内部会话上下文注入跳过：' + String(error?.message || error).slice(0, 120));
         }
-        return rollover.prompt(nextPayload, signal, next);
+        try {
+          return await rollover.prompt(nextPayload, promptSignal, (p) => next(p, promptSignal));
+        } finally {
+          if (unlinkSignal) unlinkSignal();
+          if (turnGuard && payload?.sessionId && activeChatTurns.get(payload.sessionId) === turnGuard) {
+            activeChatTurns.delete(payload.sessionId);
+          }
+          if (turnGuard?.hit) {
+            const freshCfg = loadConfig();
+            if (freshCfg.rules?.chatSession?.notifyOnToolLimit !== false) {
+              void notifyToolLimitPause(freshCfg, payload.sessionId, turnGuard.limit);
+            }
+          }
+        }
       };
       const removePrompt = installQqPromptMerge(controller, aroundPrompt);
       const lastAssistant = new Map();
@@ -1666,6 +1938,27 @@ export function apply(ctx, config = {}) {
         .map((p) => (p?.type === 'text' ? String(p.text || '') : '')).join('').trim();
       const removeListener = ctx.on?.('session/event', (session, event) => {
         if (disposed || !session?.id) return;
+        const guard = activeChatTurns.get(session.id);
+        if (guard) {
+          const evTurn = event?.data?.turn ?? null;
+          if (event?.type === 'turn/start') {
+            guard.turn = evTurn;
+            guard.count = 0;
+          } else if (event?.type === 'tool/call' && !guard.hit && (guard.turn == null || evTurn == null || guard.turn === evTurn)) {
+            guard.count += 1;
+            if (guard.count > guard.limit) {
+              guard.hit = true;
+              log.warn(`聊天会话单轮工具调用超过上限（${guard.limit} 次），已自动暂停本轮任务`);
+              try { guard.abortController.abort(new Error('CHAT_TOOL_LIMIT')); } catch {}
+              try {
+                if (typeof controller.abort === 'function') void Promise.resolve(controller.abort(session.id)).catch(() => {});
+                else if (typeof controller.cancel === 'function') void Promise.resolve(controller.cancel(session.id)).catch(() => {});
+              } catch {}
+            }
+          } else if (event?.type === 'turn/end' && (guard.turn == null || evTurn == null || guard.turn === evTurn)) {
+            activeChatTurns.delete(session.id);
+          }
+        }
         douyin.observe(session, event);
         const cfg = loadConfig();
         if (internalPrimary(cfg)) {
@@ -1724,6 +2017,7 @@ export function apply(ctx, config = {}) {
     snapshot,
     runOnce,
     runExploration: () => runExploration(false),
+    stopExploration,
     registerExploreSource,
     registerMoodSource,
     registerMemorySource,
@@ -1731,6 +2025,11 @@ export function apply(ctx, config = {}) {
     listExtensions,
     stop() {
       disposed = true;
+      stopExploration();
+      for (const dispose of removeCompactToolListeners.splice(0)) {
+        if (typeof dispose === 'function') dispose();
+      }
+      compactChatTools.stop();
       releaseActionExecutor();
       releaseInternalDispatcher();
       douyin.stop();
@@ -1776,13 +2075,14 @@ export function apply(ctx, config = {}) {
       }).catch(() => {});
     }
   }
+  compactChatTools.sync();
   log.info(
     `插件已激活：每 ${tickMinutes()} 分钟一拍，首拍 +${Math.round(firstDelay / 1000)}s，` +
       `dryRun=${loadConfig().dryRun !== false}${opt.hostLlm === false ? '，宿主模型已关（走 spawn）' : ''}`
   );
 
   if (typeof ctx.effect === 'function') {
-    ctx.effect(() => () => api.stop());
+    ctx.effect(() => () => { syncBuiltinExploreFeeds({ exploration: { builtinFeeds: false } }); api.stop(); });
   } else if (typeof ctx.on === 'function') {
     try {
       ctx.on('dispose', () => api.stop());

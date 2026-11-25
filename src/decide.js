@@ -50,6 +50,7 @@ export const REASONS = {
   FOLLOWUP_CONTEXT_CHANGED: '生成期间收到新消息，放弃旧追问',
   JUDGE_NO_SEND: '有候选由头，模型判断此刻不发',
   JUDGE_INVALID_CANDIDATE: '模型没有选中有效由头',
+  RECEPTIVITY_LOW: '本地小算盘评估此刻打扰得分偏低，暂不开口',
   NO_TOPIC: '时机到了，但这次没有由头（不硬凑）',
   PROJECT_HELP_WITHOUT_REQUEST: '用户没有近期亲口说需要排查或有新进展',
   PROJECT_QUESTION_OUTSIDE_SLOT: '项目近况只由一次性问候发起',

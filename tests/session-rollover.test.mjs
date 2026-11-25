@@ -206,6 +206,7 @@ test('conversation extraction skips DSH host-injected runtime, memory, time, and
     user('<hindsight_pages>\nThis repository has Hindsight...\n</hindsight_pages>'),
     user('Time sampled while preparing turn 165, step 1: 2026-11-23T20:57:40+08:00'),
     user('MNEMON RUNTIME MEMORY SNAPSHOT\nUSER.md...'),
+    user('[MNEMON] Search Documents for substantial project records...'),
     user('第二句真实消息'),
     assistant('第二句回复'),
   ];

@@ -17,6 +17,13 @@ export function probe(force = false, cfg, { readOnly = false } = {}) {
   if (cached) return Promise.resolve(cached);
   const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', SCRIPT];
   if (readOnly) args.push('-ReadOnly');
+  const ac = cfg?.perception?.anticheat || {};
+  if (ac.skip !== false) {
+    const acList = (Array.isArray(ac.procs) && ac.procs.length ? ac.procs : ANTICHEAT_DEFAULT)
+      .map((n) => String(n || '').trim().toLowerCase())
+      .filter(Boolean);
+    if (acList.length) args.push('-AnticheatProcs', acList.join(','));
+  }
   return new Promise((resolve) => {
     execFile(
       'powershell.exe',
@@ -61,13 +68,33 @@ export function probe(force = false, cfg, { readOnly = false } = {}) {
 
 /** 反作弊名单：这些进程在跑的时候，读窗口标题、读浏览器标签、截屏都可能被当成外挂行为。 */
 export const ANTICHEAT_DEFAULT = [
+  // 腾讯 / Riot / 国服对战平台
   'wegame', 'tencentdl', 'tcls', 'crossproxy', 'leagueclient', 'lolex',
-  'dnf', 'cf', 'valorant', 'vgtray', 'gamecoach',
+  'dnf', 'cf', 'valorant', 'vgtray', 'vgc', 'gamecoach',
+  'tenprotect', 'tesafe', 'ace-tray', 'sguard64', 'sguardsvc64',
+  '5eclient', '5earena', 'pwclient', 'b5client',
+  // 外服 / Steam / 主流第三方反作弊
+  'easyanticheat', 'easyanticheat_eos', 'beservice', 'bedaisy', 'battleye',
+  'faceitclient', 'faceitservice', 'gamemon', 'gamemon64', 'npggnt',
+  'xigncode', 'xxd-0', 'pnkbstra', 'pnkbstrb',
+  'eaanticheat', 'eaanticheat.gameservice', 'mhyprot2', 'hoyokprotect',
+  'nexongamesecurity', 'blackcipher', 'blackcipher64',
 ];
 
+/** 全屏时不当作游戏拦截的常见日常软件（如全屏看视频、写代码、远程桌面）。 */
+const FULLSCREEN_NON_GAME = new Set([
+  'explorer', 'msedge', 'chrome', 'firefox', 'brave', 'opera', 'arc',
+  'code', 'cursor', 'idea64', 'pycharm64', 'devenv', 'windowsterminal', 'wt', 'powershell', 'cmd',
+  'deepseek harness', 'wechat', 'qq', 'tim', 'dingtalk', 'feishu',
+  'wps', 'winword', 'excel', 'powerpnt', 'mstsc',
+  'vlc', 'potplayermini64', 'potplayermini', 'mpv', 'obs64',
+]);
+
 /**
- * 反作弊保护（2026-11-08 她提的）：WeGame 在进程里时，某些操作可能触发反作弊。
- * 命中就返回进程名，没命中返回 null；`perception.anticheat.skip === false` 时永远 null。
+ * 反作弊与全屏游戏保护：
+ * 1) 命中反作弊进程名单 → 返回进程名；
+ * 2) 前台为全屏应用且不在日常非游戏软件白名单内（skipFullscreen !== false）→ 返回 `fullscreen:<进程名>`；
+ * 没命中返回 null；`perception.anticheat.skip === false` 时永远 null。
  */
 export function anticheatRunning(sys, cfg) {
   const ac = cfg?.perception?.anticheat || {};
@@ -75,7 +102,13 @@ export function anticheatRunning(sys, cfg) {
   const list = (Array.isArray(ac.procs) && ac.procs.length ? ac.procs : ANTICHEAT_DEFAULT)
     .map((n) => String(n).toLowerCase());
   const procs = new Set((sys?.procs || []).map((n) => String(n).toLowerCase()));
-  return list.find((n) => procs.has(n)) || null;
+  const hitProc = list.find((n) => procs.has(n));
+  if (hitProc) return hitProc;
+  if (ac.skipFullscreen !== false && sys?.fullscreen === true) {
+    const fg = String(sys?.fg_name || '').toLowerCase().trim();
+    if (!fg || !FULLSCREEN_NON_GAME.has(fg)) return `fullscreen:${fg || 'unknown'}`;
+  }
+  return null;
 }
 
 /** L2：判断「在干什么」。只在真正要发的时候才需要，不参与 send/skip。 */

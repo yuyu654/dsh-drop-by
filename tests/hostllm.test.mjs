@@ -1,7 +1,7 @@
 // hostllm.test.mjs —— 插件用宿主模型生成这一条路。全部用假 ctx，不联网、不出进程。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { makeHostLlm } from '../src/hostllm.js';
+import { makeHostLlm, clearReasoningEffortCache, setHostLlmTrace } from '../src/hostllm.js';
 
 /** 假 ctx：get 按名字返回服务，别的什么都不做。 */
 function ctxWith(services) {
@@ -240,8 +240,8 @@ test('hostllm：思考耗尽 maxTokens 返回空时，诊断 note 保留细节�
   const okRes = await h.generate({ prompt: '说一句', minOutputTokens: 1024 });
   assert.equal(okRes.ok, true);
   assert.equal(okRes.text, '行。');
-  assert.deepEqual(seenMax, [1024, 2048]);
-  assert.match(logs[0], /finish=max-tokens.*reasoning=4字.*outTokens=1024.*maxTokens=1024/);
+  assert.deepEqual(seenMax, [2048, 4096]);
+  assert.match(logs[0], /finish=max-tokens.*reasoning=4字.*outTokens=1024.*maxTokens=2048/);
 
   const emptyH = makeHostLlm(
     ctxWith({
@@ -256,6 +256,130 @@ test('hostllm：思考耗尽 maxTokens 返回空时，诊断 note 保留细节�
   const failRes = await emptyH.generate({ prompt: '说一句', minOutputTokens: 768 });
   assert.equal(failRes.ok, false);
   assert.equal(failRes.reason, 'HOST_LLM_EMPTY');
-  assert.match(failRes.note, /finish=max-tokens · reasoning=3字 · maxTokens=1024/);
+  assert.match(failRes.note, /finish=max-tokens · reasoning=3字 · maxTokens=2048/);
   assert.match(logs.at(-1), /生成最终失败（HOST_LLM_EMPTY：finish=max-tokens/);
+});
+
+test('hostllm：支持思考的模型按需传 reasoningEffort，切到无思考模型不传、切回自动恢复', async () => {
+  clearReasoningEffortCache();
+  const seen = [];
+  const traces = [];
+  setHostLlmTrace((m) => traces.push(m));
+  try {
+    let current = { provider: 'deepseek-account', model: 'deepseek-flash' };
+    const llm = {
+      async resolveModelInfo(provider, model) {
+        if (model === 'deepseek-flash') {
+          return {
+            reasoning: {
+              efforts: [{ id: 'off' }, { id: 'low' }, { id: 'high' }, { id: 'max' }],
+              defaultEffort: 'high',
+            },
+          };
+        }
+        return { inputModalities: ['text'] };
+      },
+      stream(args) {
+        seen.push(args);
+        return (async function* () {
+          yield { type: 'text-delta', text: '{"ok":true}' };
+          yield { type: 'usage', usage: { outputTokens: 12 } };
+          yield { type: 'finish', reason: { kind: 'stop' } };
+        })();
+      },
+    };
+    const ctx = ctxWith({ llm, agentDefaultModel: { currentSelection: () => current } });
+
+    // 1. 思考模型传 off
+    const r1 = await makeHostLlm(ctx).generate({ prompt: '分类', reasoningEffort: 'off', tag: 'command-intent' });
+    assert.equal(r1.ok, true);
+    assert.equal(r1.reasoningEffort, 'off');
+    assert.equal(seen[0].reasoningEffort, 'off');
+
+    // 2. 切到无思考模型：完全不带 reasoningEffort 字段
+    current = { provider: 'openai', model: 'gpt-4o-mini' };
+    const r2 = await makeHostLlm(ctx).generate({ prompt: '分类', reasoningEffort: 'off', tag: 'command-intent' });
+    assert.equal(r2.ok, true);
+    assert.equal(r2.reasoningEffort, null);
+    assert.equal(Object.hasOwn(seen[1], 'reasoningEffort'), false);
+
+    // 3. 切回思考模型：自动恢复 reasoningEffort=low 且预算不低于 2048
+    current = { provider: 'deepseek-account', model: 'deepseek-flash' };
+    const r3 = await makeHostLlm(ctx).generate({ prompt: '判断', reasoningEffort: 'low', tag: 'proactive-judge' });
+    assert.equal(r3.ok, true);
+    assert.equal(r3.reasoningEffort, 'low');
+    assert.equal(seen[2].reasoningEffort, 'low');
+    assert.ok(seen[2].maxTokens >= 2048);
+    assert.match(traces[0], /llm\[command-intent\]: deepseek-account:deepseek-flash effort=off\(req=off\)/);
+    assert.match(traces[1], /llm\[command-intent\]: openai:gpt-4o-mini effort=none\(req=off\)/);
+  } finally {
+    setHostLlmTrace(null);
+    clearReasoningEffortCache();
+  }
+});
+
+test('hostllm：仅支持 low/high 的模型请求 off 时自动降级到 low；resolveModelInfo 抛错不阻断', async () => {
+  clearReasoningEffortCache();
+  const seen = [];
+  const llm = {
+    async resolveModelInfo(_p, model) {
+      if (model === 'low-only') return { reasoning: { efforts: [{ id: 'low' }, { id: 'high' }] } };
+      throw new Error('network error');
+    },
+    stream(args) {
+      seen.push(args);
+      return (async function* () {
+        yield { type: 'text-delta', text: 'ok' };
+        yield { type: 'finish', reason: { kind: 'stop' } };
+      })();
+    },
+  };
+  let current = { provider: 'p', model: 'low-only' };
+  const ctx = ctxWith({ llm, agentDefaultModel: { currentSelection: () => current } });
+
+  const r1 = await makeHostLlm(ctx).generate({ prompt: 'x', reasoningEffort: 'off' });
+  assert.equal(r1.ok, true);
+  assert.equal(seen[0].reasoningEffort, 'low');
+
+  current = { provider: 'p', model: 'broken-info' };
+  const r2 = await makeHostLlm(ctx).generate({ prompt: 'x', reasoningEffort: 'off' });
+  assert.equal(r2.ok, true);
+  assert.equal(Object.hasOwn(seen[1], 'reasoningEffort'), false);
+  clearReasoningEffortCache();
+});
+
+test('hostllm：第三方模型拒收 reasoningEffort 报错时自动剥离并记住不再发送', async () => {
+  clearReasoningEffortCache();
+  const seen = [];
+  const llm = {
+    async resolveModelInfo() {
+      return { reasoning: { efforts: [{ id: 'off' }, { id: 'high' }] } };
+    },
+    stream(args) {
+      seen.push(args);
+      return (async function* () {
+        if (args.reasoningEffort) {
+          yield { type: 'finish', reason: { kind: 'error', failure: { message: 'unknown param reasoningEffort' } } };
+          return;
+        }
+        yield { type: 'text-delta', text: '已兜底' };
+        yield { type: 'finish', reason: { kind: 'stop' } };
+      })();
+    },
+  };
+  const ctx = ctxWith({ llm, agentDefaultModel: { currentSelection: () => ({ provider: 'relay', model: 'bad-effort' }) } });
+
+  const r1 = await makeHostLlm(ctx, { cfg: { content: { llm: { retries: 0 } } } }).generate({ prompt: 'x', reasoningEffort: 'off' });
+  assert.equal(r1.ok, true);
+  assert.equal(r1.text, '已兜底');
+  assert.equal(seen.length, 2);
+  assert.equal(seen[0].reasoningEffort, 'off');
+  assert.equal(Object.hasOwn(seen[1], 'reasoningEffort'), false);
+
+  // 下一次调用直接跳过 reasoningEffort，不再触发报错
+  const r2 = await makeHostLlm(ctx, { cfg: { content: { llm: { retries: 0 } } } }).generate({ prompt: 'y', reasoningEffort: 'off' });
+  assert.equal(r2.ok, true);
+  assert.equal(seen.length, 3);
+  assert.equal(Object.hasOwn(seen[2], 'reasoningEffort'), false);
+  clearReasoningEffortCache();
 });

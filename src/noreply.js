@@ -210,7 +210,7 @@ export async function judgeAway({ cand, ctx, cfg, now, tz, generate, llmReady = 
     return { away: false, untilHm: null, why: '', judge: 'off' };
   }
   try {
-    const r = await generate({ prompt: judgePrompt({ cand, ctx, cfg, now, tz }), cfg, timeoutMs: cfg?.content?.topics?.noReplyJudgeTimeoutMs ?? 90_000 });
+    const r = await generate({ prompt: judgePrompt({ cand, ctx, cfg, now, tz }), cfg, timeoutMs: cfg?.content?.topics?.noReplyJudgeTimeoutMs ?? 90_000, reasoningEffort: 'off', tag: 'noreply-judge' });
     if (!r?.ok) return { away: false, untilHm: null, why: '', judge: 'error', reason: String(r?.reason || '') };
     const m = /\{[\s\S]*\}/.exec(String(r.text || ''));
     if (!m) return { away: false, untilHm: null, why: '', judge: 'bad', reason: 'NOT_JSON' };

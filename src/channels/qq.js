@@ -39,12 +39,12 @@ export function readQq(cfg, now, timezone) {
   // 桥自己发的那一轮也要算进「我最后一次开口」：不然 reply 轨道的冷却
   // 只有 1 分钟、tick 是 10 分钟，桥回完插件还会补一句完全不同的话。
   // 多段发送中途（lastAt = 0）用 firstAt 顶上——发着的那一轮也算开口了。
-  const br = bridgeLastOut();
+  const br = bridgeLastOut({ peer: peerId });
   if (br.ts > (lastReplyTs || 0)) lastReplyTs = br.ts;
 
   // 她最后一条也以桥的落盘为准：qq-history 是空的（driver 的 qqReply 关着），
   // 只看 history 会以为她一天没说话——2026-11-10 的「那条」就是这么追出来的。
-  const bi = bridgeLastIn();
+  const bi = bridgeLastIn({ peer: peerId });
   if (bi.ts > (lastUserTs || 0)) lastUserTs = bi.ts;
 
   // qq-rate.json：{ "<peerId>": { date: "YYYY-MM-DD", count: n } }

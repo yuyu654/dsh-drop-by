@@ -1,11 +1,14 @@
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { saveConfig } from './config.js';
+import { saveConfig, loadState } from './config.js';
 import { explorationStatus, loadExploration } from './explore.js';
+import { agendaSource, nextCourse, parseAgenda } from './agenda.js';
+import { parseExams, examsSource } from './exams.js';
 import { recentSharedExplorationTopic, recordExplorationDirection, topicInExplorationFeedback } from './exploration-feedback.js';
 import { loadPersona } from './persona.js';
 import { publicExplorationUrl } from './explore-media.js';
+import { openExplorationLoginTab } from './explore-browser.js';
 import { shiftDay } from './retention.js';
 import { dayKey } from './time.js';
 import { incomingMatches } from './action-proposal.js';
@@ -176,13 +179,101 @@ async function runPluginSmoke(cfg) {
   }
 }
 
-export async function executeQqCommand({ cmd, cfg, media, explore, state, persona, now = Date.now() }) {
+/** 从近期探索记录里找出最近一条卡登录墙且带合法公网 URL 的记录，供调出登录页与登录后续跑。 */
+export function latestLoginContext(explorationState = loadExploration(), cfg = {}) {
+  const st = explorationState && typeof explorationState === 'object' ? explorationState : {};
+  const status = explorationStatus(st, loadPersona({ cfg }));
+  const candidates = [
+    ...(Array.isArray(st.history) ? st.history : []),
+    ...(status.candidate?.loginSite ? [{ ...status.candidate, url: status.candidate.source?.url,
+      topic: st.lastRun?.query || status.candidate.source?.title }] : []),
+    status.thread,
+    status.leisure,
+    status.light,
+  ].filter(Boolean);
+  candidates.sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0));
+  for (const entry of candidates) {
+    const urlObj = publicExplorationUrl(entry.url || entry.sourceUrl || '');
+    const url = urlObj ? String(urlObj.href || urlObj) : '';
+    const site = String(entry.loginSite || '').trim();
+    if (url && site) {
+      return {
+        url,
+        site,
+        topic: String(entry.topic || '').trim().slice(0, 80),
+        at: Number(entry.at) || 0,
+      };
+    }
+  }
+  return null;
+}
+
+async function openPublicUrlInBrowser(url, cfg = {}) {
+  const safeObj = publicExplorationUrl(url);
+  const safeUrl = safeObj ? String(safeObj.href || safeObj) : '';
+  if (!safeUrl) return { ok: false, reason: 'INVALID_URL' };
+  if (await openExplorationLoginTab(safeUrl, cfg.content?.forward).catch(() => false)) return { ok: true, url: safeUrl };
+  const exec = promisify(execFile);
+  if (process.platform === 'win32') {
+    await exec('rundll32.exe', ['url.dll,FileProtocolHandler', safeUrl], { windowsHide: true, timeout: 8000 });
+  } else if (process.platform === 'darwin') {
+    await exec('open', [safeUrl], { timeout: 8000 });
+  } else {
+    await exec('xdg-open', [safeUrl], { timeout: 8000 });
+  }
+  return { ok: true, url: safeUrl, fallbackBrowser: true };
+}
+
+function formatLocalQuery(scope, cfg, explorationState, now) {
+  const tz = cfg?.timezone || 'Asia/Shanghai';
+  const lines = [];
+  const want = (k) => !scope || scope === k;
+
+  if (want('课表')) {
+    const raw = agendaSource(cfg)?.text || '';
+    const next = raw ? nextCourse(raw, now, tz, {
+      periods: cfg?.content?.agenda?.periods || '',
+      termStart: cfg?.content?.agenda?.termStart || '',
+      off: cfg?.content?.agenda?.off || [],
+    }) : null;
+    lines.push(next
+      ? `课表：下一节是「${next.name || '课程'}」（${next.dayLabel || ''}${next.hm || ''}${next.room ? ' @' + next.room : ''}）。`
+      : '课表：当前没有查到待上的课程。');
+  }
+  if (want('考试')) {
+    const raw = examsSource(cfg)?.text || '';
+    const list = raw ? parseExams(raw, { tz, now }) : [];
+    const upcoming = list.find((e) => Number(e.at) >= now) || null;
+    lines.push(upcoming
+      ? `考试：最近一场是「${upcoming.subject || '考试'}」（${upcoming.date || ''} ${upcoming.hm || ''}）。`
+      : '考试：当前没有查到待考安排。');
+  }
+  if (want('探索')) {
+    const status = explorationStatus(explorationState || {}, loadPersona({ cfg }));
+    const active = [status.thread, status.leisure, status.light].filter((e) => e?.topic).sort((a, b) => (b.at || 0) - (a.at || 0))[0];
+    lines.push(active
+      ? `探索：最近在看「${brief(active.topic, 36)}」${active.next ? `，下一步：${brief(active.next, 60)}` : ''}。`
+      : '探索：最近还没有保存的探索进展。');
+  }
+  if (want('状态')) {
+    const st = loadState();
+    const sent = Number(st?.real?.todaySent) || 0;
+    const cap = Number(cfg?.rules?.dailyCap) || 0;
+    const left = Math.max(0, cap - sent);
+    lines.push(`陪伴状态：今天已主动发 ${sent}/${cap} 条（剩余 ${left} 条额度），当前模式为 ${cfg?.dryRun !== false ? '演练' : '正式'}。`);
+  }
+  return lines.join('\n') || '没查到对应的本地记录。';
+}
+
+export async function executeQqCommand({ cmd, cfg, media, explore, state, persona, openUrl = openPublicUrlInBrowser, now = Date.now() }) {
   switch (cmd.type) {
     case 'explore_query':
       return { text: media?.web ? formatSearchResult(await media.collect('web', cmd.params.query))
         : '这会儿网页搜索工具用不了，没搜到资料。' };
     case 'explore_trigger': {
       const result = await explore(cmd.params);
+      if (result?.reason === 'CANCELLED') return result;
+      if (result?.reason === 'EXPLORATION_TIMEOUT') return { text: '本轮自主探索到时限，已经停止。' };
       if (!result?.ok) return { text: result?.reason === 'UNAVAILABLE' ? '手头那轮探索还在跑，这次没能再起一轮。'
         : '这轮探索没跑完，没拿到新进展。' };
       const entry = result.action === 'light' ? result.light : result.thread;
@@ -196,6 +287,49 @@ export async function executeQqCommand({ cmd, cfg, media, explore, state, person
       return { text: summarizeExplorationNotes(state(), persona(), cmd.params.target, now, cfg.timezone) };
     case 'run_tests':
       return { text: await runPluginSmoke(cfg) };
+    case 'open_login_page': {
+      const targetObj = publicExplorationUrl(cmd.params?.url || latestLoginContext(state?.(), cfg)?.url || '');
+      const targetUrl = targetObj ? String(targetObj.href || targetObj) : '';
+      if (!targetUrl) return { text: '最近没有记到需要登录的公开网页链接。' };
+      try {
+        const opened = await openUrl(targetUrl, cfg);
+        if (!opened?.ok) return { text: '没能打开那个登录页面，可以手动打开：' + targetUrl };
+        if (opened.fallbackBrowser) return { text: '已用默认浏览器打开页面。续读使用 DSH 的探索浏览器，登录时请用同一个浏览器。' };
+        return { text: `已经在桌面把页面打开了（${targetUrl}），登完告诉我一声。` };
+      } catch {
+        return { text: '没能调起浏览器窗口，可以先手动打开：' + targetUrl };
+      }
+    }
+    case 'resume_after_login': {
+      const pending = latestLoginContext(state?.(), cfg);
+      const topic = cmd.params?.topic || pending?.topic;
+      const sourceUrl = cmd.params?.url || pending?.url;
+      if (!sourceUrl) return { text: '最近没有找到可以续读的登录页面。' };
+      const result = await explore({ mode: 'research', ...(topic ? { topic } : {}), sourceUrl, resumedAfterLogin: true });
+      if (result?.reason === 'CANCELLED') return result;
+      if (result?.reason === 'EXPLORATION_TIMEOUT') return { text: '续读到时限，已经停止。' };
+      if (!result?.ok) return { text: result?.reason === 'UNAVAILABLE' ? '手头那轮探索还在跑，稍后再续。'
+        : '登录后续读没有跑完，没拿到新进展。' };
+      const entry = result.action === 'light' ? result.light : result.thread;
+      const progress = entry?.progress || entry?.summary;
+      if (result.action === 'skip' || !progress) return { text: '刚去重新看过了，暂时没有读到新进展。' };
+      return { text: ['接着把「' + brief(entry.topic, 40) + '」往后读了一段。',
+        brief(progress, 170),
+        ...(entry.next ? ['接下来：' + brief(entry.next, 90)] : [])].join('\n') };
+    }
+    case 'browse_url': {
+      const safeObj = publicExplorationUrl(cmd.params?.url || '');
+      const safeUrl = safeObj ? String(safeObj.href || safeObj) : '';
+      if (!safeUrl) return { text: '这个链接不是可访问的公开网址，后台没有打开。' };
+      if (!media?.web) return { text: '这会儿探索网页工具没开或不可用，没法在后台读链接。' };
+      const fetched = typeof media.fetch === 'function' ? await media.fetch(safeUrl) : await media.collect('web', safeUrl);
+      if (typeof fetched === 'string' && fetched.trim()) {
+        return { text: `后台读完这个链接了：\n${brief(fetched, 260)}` };
+      }
+      return { text: formatSearchResult(fetched) };
+    }
+    case 'query_local':
+      return { text: formatLocalQuery(cmd.params?.scope || '', cfg, state?.(), now) };
     default:
       return { text: '这条指令没有可执行的任务。' };
   }

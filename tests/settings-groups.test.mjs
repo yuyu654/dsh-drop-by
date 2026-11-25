@@ -41,13 +41,14 @@ test('首屏日常组保持精简清爽（其余组分类折叠）', () => {
   offExp.exploration = { ...offExp.exploration, auto: false, browseMode: 'vision_light' };
   assert.deepEqual(
     explorationItemsForUi(offExp).map((i) => i.path),
-    ['exploration.auto', 'exploration.mode', 'exploration.model', 'exploration.bias', 'exploration.browseMode', 'exploration.nextTopic', 'exploration.interest', 'exploration.offerShare']
+    ['exploration.auto', 'exploration.mode', 'exploration.model', 'exploration.bias', 'exploration.browseMode', 'exploration.nextTopic',
+    'exploration.workSources', 'exploration.interest', 'exploration.offerShare']
   );
   const autoExp = cfg();
   autoExp.exploration = { ...autoExp.exploration, auto: true, browseMode: 'vision_light' };
   assert.deepEqual(
     explorationItemsForUi(autoExp).map((i) => i.path),
-    ['exploration.auto', 'exploration.mode', 'exploration.model', 'exploration.bias', 'exploration.browseMode', 'exploration.intervalMinutes', 'exploration.offPeakOnly', 'exploration.nextTopic', 'exploration.interest', 'exploration.offerShare']
+    ['exploration.auto', 'exploration.mode', 'exploration.model', 'exploration.bias', 'exploration.browseMode', 'exploration.intervalMinutes', 'exploration.offPeakOnly', 'exploration.nextTopic', 'exploration.workSources', 'exploration.interest', 'exploration.offerShare']
   );
   const browserExp = cfg();
   browserExp.exploration = { ...browserExp.exploration, auto: false, browseMode: 'browser_agent' };

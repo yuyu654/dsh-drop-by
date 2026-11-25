@@ -130,7 +130,7 @@ export async function judgeDecision({ snapshot, persona, candidates = [], cfg, g
         base;
     let r = null;
     try {
-      r = await generate({ prompt, cfg, timeoutMs, tail: 'json', minOutputTokens: 1536 });
+      r = await generate({ prompt, cfg, timeoutMs, tail: 'json', minOutputTokens: 1536, reasoningEffort: 'low', tag: 'proactive-judge' });
     } catch (e) {
       return { ok: false, reason: 'JUDGE_ERROR', note: String(e?.message || e).slice(0, 160), ms: Date.now() - t0 };
     }

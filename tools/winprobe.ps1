@@ -8,7 +8,10 @@
 #
 # 输出：单行 JSON，Node 侧直接 JSON.parse。
 
-param([switch]$ReadOnly)
+param(
+  [switch]$ReadOnly,
+  [string]$AnticheatProcs = ''
+)
 
 $ErrorActionPreference = 'Stop'
 
@@ -18,7 +21,7 @@ try {
   $OutputEncoding = [System.Text.Encoding]::UTF8
 } catch { }
 
-$dll = Join-Path $PSScriptRoot 'winprobe.dll'
+$dll = Join-Path $PSScriptRoot 'winprobe-v2.dll'
 $src = @'
 using System;
 using System.Runtime.InteropServices;
@@ -26,6 +29,15 @@ using System.Runtime.InteropServices;
 public static class WP {
   [StructLayout(LayoutKind.Sequential)]
   public struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
+  [StructLayout(LayoutKind.Sequential)]
+  public struct RECT { public int Left, Top, Right, Bottom; }
+  [StructLayout(LayoutKind.Sequential)]
+  public struct MONITORINFO {
+    public uint cbSize;
+    public RECT rcMonitor;
+    public RECT rcWork;
+    public uint dwFlags;
+  }
 
   [DllImport("user32.dll")]
   public static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
@@ -33,8 +45,16 @@ public static class WP {
   public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll", CharSet = CharSet.Unicode)]
   public static extern int GetWindowTextW(IntPtr h, System.Text.StringBuilder s, int n);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+  public static extern int GetClassNameW(IntPtr h, System.Text.StringBuilder s, int n);
   [DllImport("user32.dll")]
   public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [DllImport("user32.dll")]
+  public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")]
+  public static extern IntPtr MonitorFromWindow(IntPtr h, uint dwFlags);
+  [DllImport("user32.dll")]
+  public static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
 
   public static long IdleMs() {
     LASTINPUTINFO li = new LASTINPUTINFO();
@@ -43,6 +63,27 @@ public static class WP {
     long idle = (long)(Environment.TickCount & 0x7FFFFFFF) - (long)(li.dwTime & 0x7FFFFFFF);
     if (idle < 0) idle += 0x80000000L;
     return idle;
+  }
+
+  public static bool IsFgFullscreen() {
+    try {
+      IntPtr h = GetForegroundWindow();
+      if (h == IntPtr.Zero) return false;
+      var cls = new System.Text.StringBuilder(64);
+      GetClassNameW(h, cls, 64);
+      string cn = cls.ToString();
+      if (cn == "Progman" || cn == "WorkerW" || cn == "Shell_TrayWnd" || cn == "Shell_SecondaryTrayWnd") return false;
+      RECT wr;
+      if (!GetWindowRect(h, out wr)) return false;
+      IntPtr mon = MonitorFromWindow(h, 2 /*MONITOR_DEFAULTTONEAREST*/);
+      if (mon == IntPtr.Zero) return false;
+      MONITORINFO mi = new MONITORINFO();
+      mi.cbSize = (uint)Marshal.SizeOf(mi);
+      if (!GetMonitorInfo(mon, ref mi)) return false;
+      return wr.Left <= mi.rcMonitor.Left + 2 && wr.Top <= mi.rcMonitor.Top + 2 &&
+             wr.Right >= mi.rcMonitor.Right - 2 && wr.Bottom >= mi.rcMonitor.Bottom - 2 &&
+             (wr.Right - wr.Left) >= 640 && (wr.Bottom - wr.Top) >= 480;
+    } catch { return false; }
   }
 
   public static string FgTitle() {
@@ -103,7 +144,9 @@ function Initialize-Probe {
   if (Test-Path $dll) {
     try {
       Add-Type -Path $dll
-      $script:probeReady = $true
+      if ([WP].GetMethod('IsFgFullscreen') -ne $null) {
+        $script:probeReady = $true
+      }
     } catch {
       # 缓存那份加载不了（被杀软动过、架构不匹配、文件被截断…）就重新编译。
       # 静默吞掉的话，出问题只能看到「找不到类型 [WP]」，没法定位。
@@ -114,6 +157,7 @@ function Initialize-Probe {
   if (-not $script:probeReady -and -not $ReadOnly) {
     try {
       Add-Type -TypeDefinition $src -OutputAssembly $dll -Language CSharp
+      try { Unblock-File -Path $dll -ErrorAction SilentlyContinue } catch { }
       Add-Type -Path $dll
       $script:probeReady = $true
     } catch {
@@ -142,14 +186,32 @@ try {
     ForEach-Object { $_.ToLowerInvariant() }
 } catch { }
 
+$acHit = $false
+if ($AnticheatProcs) {
+  $acSet = @{}
+  foreach ($p in ($AnticheatProcs -split ',')) {
+    $t = $p.Trim().ToLowerInvariant()
+    if ($t) { $acSet[$t] = $true }
+  }
+  foreach ($p in $procs) {
+    if ($acSet.ContainsKey($p)) { $acHit = $true; break }
+  }
+}
+
 $fgPid = 0
 $fgTitle = ''
 $fgName = ''
-try {
-  $fgPid = [WP]::FgPid()
-  $fgTitle = [WP]::FgTitle()
-  if ($fgPid -gt 0) { $fgName = (Get-Process -Id $fgPid -ErrorAction Stop).ProcessName.ToLowerInvariant() }
-} catch { }
+$fullscreen = $false
+if (-not $acHit) {
+  try {
+    $fgPid = [WP]::FgPid()
+    if ($fgPid -gt 0) { $fgName = (Get-Process -Id $fgPid -ErrorAction Stop).ProcessName.ToLowerInvariant() }
+    $fullscreen = [WP]::IsFgFullscreen()
+    if (-not $fullscreen) {
+      $fgTitle = [WP]::FgTitle()
+    }
+  } catch { }
+}
 
 $locked = $procs -contains 'logonui'
 
@@ -157,10 +219,12 @@ $obj = [ordered]@{
   ok         = $true
   idle_ms    = [WP]::IdleMs()
   locked     = [bool]$locked
+  fullscreen = [bool]$fullscreen
+  anticheat  = [bool]$acHit
   fg_pid     = $fgPid
   fg_title   = $fgTitle
   fg_name    = $fgName
-  audio_peak = [WP]::AudioPeak()
+  audio_peak = if ($acHit -or $fullscreen) { -1 } else { [WP]::AudioPeak() }
   procs      = $procs
 }
 $obj | ConvertTo-Json -Compress -Depth 3

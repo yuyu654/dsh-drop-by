@@ -97,7 +97,7 @@ export function splitInterestItems(raw) {
       sharedSitePrefix = m ? m[1] : '';
       return seg;
     }
-    if (sharedSitePrefix && (terms.titles.length || seg.length <= 36)) {
+    if (sharedSitePrefix && !/^(?:主题|作品)\s*:/u.test(seg) && (terms.titles.length || seg.length <= 36)) {
       return `${sharedSitePrefix}${seg}`;
     }
     sharedSitePrefix = '';
@@ -183,7 +183,9 @@ function videoTarget(url) {
 }
 
 import { listExploreSources, normalizeExploreItems, runExploreSource } from './extensions.js';
-import { observeWebVisuals, runBrowserExploreLoop } from './explore-browser.js';
+import { observeWebVisuals, openCdpTab, runBrowserExploreLoop } from './explore-browser.js';
+import { abortable } from './exploration-abort.js';
+import { fetchWorkPage, isLoginPage } from './exploration-work-page.js';
 
 const EXTRA_TOOL_NAME_RE = /^[a-zA-Z0-9_.:-]{1,64}$/;
 const UNSAFE_TOOL_RE = /(?:^|[_.:-])(?:bash|shell|exec|cmd|powershell|write|edit|patch|delete|remove|rm|send|post|publish|commit|push|kill|stop|restart|install|uninstall)(?:$|[_.:-])|^presence_/i;
@@ -246,10 +248,10 @@ function extractMetaDescription(html) {
   return '';
 }
 
-function fetchedBody(page, maxChars) {
+function fetchedBody(page, maxChars, { includeMeta = true } = {}) {
   if (!(page?.statusCode >= 200 && page.statusCode < 300)) return '';
   const raw = String(page.body?.content || '');
-  const metaDesc = extractMetaDescription(raw);
+  const metaDesc = includeMeta ? extractMetaDescription(raw) : '';
   const body = raw
     .replace(/<(head|script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ').trim();
   const cleanBody = JS_SHELL.test(body.replace(/\s+/g, ' ')) ? '' : body;
@@ -265,7 +267,7 @@ async function fetchWithFakeIpFallback(url, signal) {
   if (!publicExplorationUrl(url) || typeof fetch !== 'function') return null;
   const res = await fetch(url, {
     signal,
-    redirect: 'follow',
+    redirect: 'error',
     headers: {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -278,7 +280,7 @@ async function fetchWithFakeIpFallback(url, signal) {
   return { url: finalUrl, statusCode: res.status, body: { kind: 'html', content } };
 }
 
-export function createExplorationMedia({ tools, webService, web, video, extraTools = '', exploreSources = listExploreSources(), watchDouyin, observeVideo, saveImage, browseMode = 'vision_light', browseMaxSteps = 40, edgePort = 9223, edgeAutostart = true, edgeScript = '', timing }) {
+export function createExplorationMedia({ tools, webService, web, video, extraTools = '', exploreSources = listExploreSources(), watchDouyin, observeVideo, saveImage, browseMode = 'vision_light', browseMaxSteps = 40, edgePort = 9223, edgeAutostart = true, edgeScript = '', timing, signal: parentSignal }) {
   const calls = [];
   const seconds = Number(timing?.storyboardSeconds ?? 60);
   const extMs = Number(timing?.extTimeoutMs ?? 12_000);
@@ -306,18 +308,20 @@ export function createExplorationMedia({ tools, webService, web, video, extraToo
     const tool = get(name);
     if (typeof tool?.execute !== 'function') return null;
     calls.push(name);
-    const signal = AbortSignal.timeout(ms);
+    const timeout = AbortSignal.timeout(ms);
+    const signal = parentSignal ? AbortSignal.any([parentSignal, timeout]) : timeout;
     let listener;
     try {
+      signal.throwIfAborted();
       return await Promise.race([
-        Promise.resolve().then(() => tool.execute(args, { signal })),
+        Promise.resolve().then(() => { signal.throwIfAborted(); return tool.execute(args, { signal }); }),
         new Promise((resolve) => {
           listener = () => resolve(null);
           signal.addEventListener('abort', listener, { once: true });
         }),
       ]);
     } catch (err) {
-      if (name === 'web_fetch' && /198\.1[89]\.\d+\.\d+/.test(String(err?.message || err))) {
+      if (!signal.aborted && name === 'web_fetch' && /198\.1[89]\.\d+\.\d+/.test(String(err?.message || err))) {
         try {
           return await fetchWithFakeIpFallback(args?.url, signal);
         } catch { return null; }
@@ -340,7 +344,7 @@ export function createExplorationMedia({ tools, webService, web, video, extraToo
       description: String(get(name)?.description || '').replace(/\s+/g, ' ').trim().slice(0, 100),
     })),
   ];
-  if (!webReady && !videoReady && !extSources.length) return null;
+  if (!web && !videoReady && !extSources.length) return null;
 
   const hostOf = (url) => url.hostname.replace(/^www\./, '');
   const matchesSite = (host, site) => host === site || host.endsWith('.' + site);
@@ -355,8 +359,10 @@ export function createExplorationMedia({ tools, webService, web, video, extraToo
       ? [['video_search', { query, maxResults: 5 }], ['advanced_search', { query, maxResults: 5 }], ['web_search', { queries: [query] }]]
       : [['advanced_search', { query, maxResults: 4 }], ['web_search', { queries: [query] }]];
     if (options.excluded.length && kind === 'web') choices.reverse();
+    const combined = new Map();
     for (const [name, args] of choices) {
       const result = await call(name, args);
+      parentSignal?.throwIfAborted();
       const seen = new Set();
       const sources = [];
       for (const source of Array.isArray(result?.sources) ? result.sources.slice(0, 12) : []) {
@@ -367,9 +373,10 @@ export function createExplorationMedia({ tools, webService, web, video, extraToo
         sources.push({ url: url.href, title: String(source.title || url.hostname).slice(0, 120),
           snippet: String(source.snippet || '').slice(0, 300), target });
       }
-      if (sources.length) return sources;
+      if (sources.length && !options.allProviders) return sources;
+      for (const source of sources) if (!combined.has(source.url)) combined.set(source.url, source);
     }
-    return [];
+    return [...combined.values()];
   };
 
   return {
@@ -377,10 +384,89 @@ export function createExplorationMedia({ tools, webService, web, video, extraToo
     web: Boolean(webReady),
     video: Boolean(videoReady),
     extSources,
+    workWeb: Boolean(web),
+    async lookupWork(title, hosts) {
+      if (!web || !searchAvailable || !hosts.length) return [];
+      const query = withSearchSites('"' + title.replace(/["\r\n]/g, ' ') + '"', hosts);
+      return search(query, 'web', { excluded: [], excludedUrls: [], preferredSites: hosts, allProviders: true });
+    },
+    async collectWork({ title, input, hosts, url, useBrowser }, { light = false, generate, excludedUrls = [], memoryHint = '' } = {}) {
+      if (!web || !hosts?.length || !title) return [];
+      const hostKeys = new Set(hosts.map(host => host.replace(/^www\./, '').toLowerCase()));
+      const allow = (value) => {
+        const target = publicExplorationUrl(value);
+        return Boolean(target && hostKeys.has(hostOf(target)) && !excludedUrls.includes(target.href));
+      };
+      const options = { excluded: [], excludedUrls, preferredSites: hosts };
+      const workQuery = withSearchSites('"' + title.replace(/["\r\n]/g, ' ') + '"', hosts);
+      const titleKey = coreKey(title.normalize('NFKC'));
+      const searchHere = async () => (await search(workQuery, 'web', options)).filter(source =>
+        allow(source.url) && titleKey && coreKey(source.title.normalize('NFKC')).includes(titleKey));
+      const seeds = url && allow(url) ? [{ url, title }] : await searchHere();
+      if (!seeds.length) return [];
+      const read = async (address) => {
+        if (!allow(address)) return null;
+        calls.push('work:fetch');
+        const timeout = AbortSignal.timeout(timing?.toolTimeoutMs ?? 18_000);
+        const signal = parentSignal ? AbortSignal.any([parentSignal, timeout]) : timeout;
+        try { return await abortable(() => fetchWorkPage(address, { allow, signal }), signal); }
+        catch { parentSignal?.throwIfAborted(); return null; }
+      };
+      if (browseMode === 'browser_agent' && generate) {
+        const browsed = await runBrowserExploreLoop({ initialQuery: workQuery, preferredSites: hosts,
+          pinnedTopic: input || title, memoryHint, generate, observeImage: observeVideo, saveImage, cdpPort: edgePort,
+          edgeAutostart, edgeScript, maxSteps: browseMaxSteps, calls, signal: parentSignal, allowDocumentUrl: allow,
+          search: async () => seeds,
+          fetchPage: async (address) => {
+            const page = await read(address);
+            return page?.login ? page : (page && { url: page.url, body: fetchedBody(page, 2600, { includeMeta: false }) });
+          },
+        });
+        const available = browsed.sources.filter(source => source.evidence !== '搜索摘要' && source.content);
+        if (available.length) return available;
+      }
+      const evidence = [];
+      for (const source of seeds.slice(0, light ? 1 : 2)) {
+        parentSignal?.throwIfAborted();
+        let browserView;
+        if (useBrowser) {
+          const tab = await openCdpTab({ port: edgePort, autostart: edgeAutostart, scriptPath: edgeScript,
+            signal: parentSignal, allowDocumentUrl: allow }).catch(() => null);
+          if (tab) {
+            calls.push('work:browser');
+            try { browserView = await tab.open(source.url); }
+            catch { parentSignal?.throwIfAborted(); }
+            finally { await tab.close(); }
+          }
+          parentSignal?.throwIfAborted();
+          if (isLoginPage(browserView?.url) || isLoginPage(browserView?.blockedDocument)) {
+            return [{ ...source, evidence: '需要登录', content: '请在 DSH 打开来源链接并登录。' }];
+          }
+        }
+        const page = browserView?.text ? null : await read(source.url);
+        if (page?.login) return [{ ...source, evidence: '需要登录', content: '请在 DSH 打开来源链接并登录。' }];
+        const body = browserView?.text || fetchedBody(page, light ? 1800 : 3200, { includeMeta: false });
+        if (browseMode !== 'off' && observeVideo && saveImage) {
+          const timeout = AbortSignal.timeout(timing?.toolTimeoutMs ?? 18_000);
+          const signal = parentSignal ? AbortSignal.any([parentSignal, timeout]) : timeout;
+          const visual = await abortable(() => observeWebVisuals({ url: page?.url || source.url, title: source.title,
+            cdpPort: edgePort, saveImage, observeImage: observeVideo, signal, allowDocumentUrl: allow, calls }), signal).catch(() => null);
+          parentSignal?.throwIfAborted();
+          if (visual?.login) return [{ ...source, evidence: '需要登录', content: '请在 DSH 打开来源链接并登录。' }];
+          if (visual?.ok && visual.text) {
+            evidence.push({ ...source, evidence: '网页画面', content: visual.text });
+            continue;
+          }
+        }
+        if (body) evidence.push({ ...source, evidence: '网页正文', content: body });
+      }
+      return evidence;
+    },
     async browse({ initialQuery = '', preferredSites = [], anchorQuery = '', anchorKeywords = '', interest = '', pinnedTopic = '', memoryHint = '', mode = 'leisure', personaText = '', generate, maxSteps = browseMaxSteps } = {}) {
       if (!webReady) return { sources: [], query: initialQuery, stepsUsed: 0 };
       return runBrowserExploreLoop({
         maxSteps,
+        signal: parentSignal,
         initialQuery,
         preferredSites,
         anchorQuery,
@@ -420,7 +506,7 @@ export function createExplorationMedia({ tools, webService, web, video, extraToo
         if (!picked) return [];
         if (picked.kind === 'ext') {
           calls.push('ext:' + picked.id);
-          return runExploreSource(picked.id, { mode, query, interest, timeoutMs: extMs });
+          return runExploreSource(picked.id, { mode, query, interest, timeoutMs: extMs, signal: parentSignal });
         }
         const raw = await call(picked.id, { query, keyword: query, limit: light ? 3 : 5 }, extMs);
         return normalizeExtraToolOutput(picked.id, raw);
@@ -466,7 +552,8 @@ export function createExplorationMedia({ tools, webService, web, video, extraToo
                 cdpPort: edgePort,
                 saveImage,
                 observeImage: observeVideo,
-                signal: AbortSignal.timeout(timing?.toolTimeoutMs ?? 18_000),
+                signal: parentSignal ? AbortSignal.any([parentSignal, AbortSignal.timeout(timing?.toolTimeoutMs ?? 18_000)])
+                  : AbortSignal.timeout(timing?.toolTimeoutMs ?? 18_000),
                 calls,
               });
               if (visual?.ok && visual.text) {

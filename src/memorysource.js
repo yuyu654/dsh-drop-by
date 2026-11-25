@@ -7,6 +7,7 @@
 //   - markdown      Markdown 记忆/笔记文件或目录
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { dshHome } from './detect.js';
 import { getRegisteredMemorySource, listRegisteredMemorySources, readRegisteredMemorySource } from './extensions.js';
 
@@ -944,4 +945,44 @@ export function restoreMemoryBackup({ cfg, targetFile = '' } = {}) {
     targetFile: target.file,
     totalRestored: readFishRawActive(target.file).length,
   };
+}
+
+/**
+ * 将被用户积极接住的探索分享沉淀一条到 dsh-fish-memory 活跃工作区记忆（ws_*.json）。
+ * 仅在 exploration.syncToSharedMemory === true 时执行，自动按 similarMemory 去重，原子写入。
+ */
+export function syncExplorationToMemory({ cfg, text, topic = '', now = Date.now() } = {}) {
+  if (cfg?.exploration?.syncToSharedMemory !== true) return { ok: false, reason: 'SYNC_DISABLED' };
+  const cleanText = String(text || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, 160);
+  if (cleanText.length < 8) return { ok: false, reason: 'TEXT_TOO_SHORT' };
+  const resolved = resolveMemoryAdapter(cfg);
+  if (!resolved?.adapter?.supportsMerge) return { ok: false, reason: 'MEMORY_NOT_WRITABLE' };
+  const wsFiles = listFishFiles(resolved.dir).filter((s) => s.kind === 'workspace');
+  if (!wsFiles.length) return { ok: false, reason: 'NO_WORKSPACE_FILE' };
+  const target = wsFiles[0];
+  const targetRaw = readRawJson(target.file);
+  if (!targetRaw || typeof targetRaw !== 'object') return { ok: false, reason: 'INVALID_TARGET_FILE' };
+
+  const baseList = Array.isArray(targetRaw.memories) ? targetRaw.memories.slice() : [];
+  const deletedIds = new Set((Array.isArray(targetRaw.deleted) ? targetRaw.deleted : []).map((d) => (typeof d === 'string' ? d : d?.id)).filter(Boolean));
+  const fullText = topic ? `【探索发现·${String(topic).trim().slice(0, 36)}】${cleanText}` : `【探索发现】${cleanText}`;
+  const id = 'exp_' + createHash('sha256').update(fullText.normalize('NFKC')).digest('hex').slice(0, 16);
+  if (deletedIds.has(id) || baseList.some((m) => m?.id === id || (m?.text && !deletedIds.has(m.id) && similarMemory(m.text, fullText)))) {
+    return { ok: true, added: 0, skipped: 1, target: target.name };
+  }
+
+  baseList.push({
+    id,
+    text: fullText,
+    category: 'self_exploration',
+    tags: ['我自己的事', '探索发现'],
+    importance: 0.7,
+    createdAt: Number(now) || Date.now(),
+    updatedAt: Number(now) || Date.now(),
+    source: 'dsh-drop-by',
+  });
+  const tmp = `${target.file}.${process.pid}.sync.tmp`;
+  fs.writeFileSync(tmp, `${JSON.stringify({ ...targetRaw, memories: baseList }, null, 2)}\n`, 'utf8');
+  fs.renameSync(tmp, target.file);
+  return { ok: true, added: 1, skipped: 0, id, target: target.name };
 }

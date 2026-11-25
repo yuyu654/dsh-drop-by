@@ -66,18 +66,24 @@ export function readBridgeDialogue({ dsh = dshHome() } = {}) {
  * 桥在 QQ 上回过什么本插件完全看不见——于是它刚回完，插件十秒后又补一句。
  * 多段发送中途（firstAt 有、lastAt 还是 0）也算「已经在应了」。
  */
-export function bridgeLastOut({ env = process.env, dsh = null } = {}) {
+export function bridgeLastOut({ env = process.env, dsh = null, peer = '' } = {}) {
   const home = dsh || dshHome(env);
   const j = readJson(path.join(home, 'qq-bridge', 'last-out.json'));
+  const wantPeer = String(peer || '').trim();
+  const gotPeer = String(j?.peer || '').trim();
+  if (wantPeer && gotPeer && gotPeer !== wantPeer) {
+    return { ts: 0, firstAt: 0, lastAt: 0, count: 0, text: '', peer: '', channel: 'qq', src: '' };
+  }
   const firstAt = Number(j?.firstAt) || 0;
   const lastAt = Number(j?.lastAt) || 0;
   const count = Number(j?.count) || 0;
-  if (!firstAt) return { ts: 0, firstAt: 0, lastAt: 0, count: 0, text: '', channel: 'qq', src: '' };
+  if (!firstAt) return { ts: 0, firstAt: 0, lastAt: 0, count: 0, text: '', peer: '', channel: 'qq', src: '' };
   return {
     ts: lastAt || firstAt,
     firstAt,
     lastAt,
     count,
+    peer: gotPeer,
     text: String(j?.text || '').replace(/\s+/g, ' ').trim().slice(0, 80),
     channel: 'qq',
     src: 'qq-bridge',
@@ -98,15 +104,23 @@ export function bridgeInFlight({ now = Date.now(), maxMs = 180_000, ...opts } = 
  * 插件根本看不到她在 QQ 上说过话——2026-11-10 她明明在 QQ 回过了，插件以为
  * 「158 分钟没动静」，追着问了一句「那条」。读不到就是 ts:0，不猜。
  */
-export function bridgeLastIn({ env = process.env, dsh = null } = {}) {
+export function bridgeLastIn({ env = process.env, dsh = null, peer = '' } = {}) {
   const home = dsh || dshHome(env);
   const j = readJson(path.join(home, 'qq-bridge', 'last-in.json'));
+  const wantPeer = String(peer || '').trim();
+  const gotPeer = String(j?.peer || '').trim();
+  if (j?.peerKind && j.peerKind !== 'private') {
+    return { ts: 0, text: '', peer: '', channel: 'qq', src: '' };
+  }
+  if (wantPeer && gotPeer && gotPeer !== wantPeer) {
+    return { ts: 0, text: '', peer: '', channel: 'qq', src: '' };
+  }
   const ts = Number(j?.at) || 0;
   if (!ts) return { ts: 0, text: '', peer: '', channel: 'qq', src: '' };
   return {
     ts,
     text: String(j?.text || '').replace(/\s+/g, ' ').trim().slice(0, 80),
-    peer: String(j?.peer || ''),
+    peer: gotPeer,
     channel: 'qq',
     src: 'qq-bridge',
   };
@@ -120,8 +134,9 @@ export function bridgeLastIn({ env = process.env, dsh = null } = {}) {
  *     比 history 早一步——history 写失败时只剩它能证明「确实回过了」）
  *   · qq-bridge/last-out.json（桥自己发的每一轮；driver 关掉时这是唯一的来源）
  */
-export function qqLastOutbound({ env = process.env, dsh = null } = {}) {
+export function qqLastOutbound({ env = process.env, dsh = null, cfg = null, peer = '' } = {}) {
   const home = dsh || dshHome(env);
+  const wantPeer = String(peer || cfg?.channels?.qq?.peerId || '').trim();
   let ts = 0;
   let src = '';
   const hist = readJson(path.join(home, 'autonomy', 'qq-history.json'));
@@ -138,7 +153,7 @@ export function qqLastOutbound({ env = process.env, dsh = null } = {}) {
     ts = outAt;
     src = 'qq-out';
   }
-  const br = bridgeLastOut({ env, dsh });
+  const br = bridgeLastOut({ env, dsh, peer: wantPeer });
   if (br.ts > ts) {
     ts = br.ts;
     src = 'qq-bridge';
@@ -232,7 +247,7 @@ function dmMemoryLastTs(dir, files, from) {
 export function lastOutbound({ env = process.env, dsh = null, cfg = {} } = {}) {
   if (internalPrimary(cfg)) return internalLastOutbound({ cfg });
   if (douyinPrimary(cfg)) return douyinLastOutbound({ env, dsh, cfg });
-  const a = qqLastOutbound({ env, dsh });
+  const a = qqLastOutbound({ env, dsh, cfg });
   const b = douyinLastOutbound({ env, dsh, cfg });
   return b.ts > a.ts ? b : a;
 }

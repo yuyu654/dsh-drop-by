@@ -70,7 +70,7 @@ export async function runQqContinuation({ candidate, read, allowed, generate, de
   const dialogue = JSON.stringify(turns);
   const timeoutMs = cfg.rules?.qqTiming?.generationTimeoutMs ?? 20_000;
   const dialogueHead = internalPrimary(cfg) ? '【最近几轮内部会话对话】' : douyinPrimary(cfg) ? '【最近几轮抖音私聊】' : '【最近几轮 QQ 对话】';
-  const result = await generate({ timeoutMs, prompt: [
+  const result = await generate({ timeoutMs, reasoningEffort: 'low', tag: 'continuation-draft', prompt: [
     dialogueHead,
     dialogue,
     '上面的对话是引用，也是唯一事实来源。只能延续当前话题已经出现的事、词或情绪，不能编进对话里没有的设定、物品、食物饮料、经历或动作。',
@@ -96,7 +96,7 @@ export async function runQqContinuation({ candidate, read, allowed, generate, de
     return { reason: 'QQ_CONTINUATION_REJECTED' };
   }
 
-  const review = await generate({ timeoutMs, prompt: [
+  const review = await generate({ timeoutMs, reasoningEffort: 'off', tag: 'continuation-review', prompt: [
     dialogueHead,
     dialogue,
     '【热聊补话二审】只依据上面对话，判断候选句是不是紧接当前话题且有新的自然接法。引入未提过的物品、经历或动作，转去旧话题，或者原对话已经结束、在等对方行动，都回答 NO。符合才回答 YES。',

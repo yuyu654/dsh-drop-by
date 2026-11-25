@@ -386,7 +386,7 @@ test('抖音配送时切成演练，不记真实发送、反馈或 lastProactive
   t.mock.method(Date, 'now', () => now);
   resetState();
   const config = { ...cfg, dryRun: false, quietHours: [], busyHours: [], send: { enabled: true },
-    channels: { primary: 'douyin', douyin: { peerSecUid: 'MS4w-demo' } },
+    channels: { primary: 'douyin', douyin: { peerSecUid: 'MS4w-demo', read: false } },
     sources: { phone: { enabled: false }, memory: { enabled: false } },
     perception: { l2: { enabled: false }, l3: { enabled: false }, signals: { enabled: false } },
     content: { mode: 'llm', exams: { text: '2026-11-22 18:30 电机学' } },

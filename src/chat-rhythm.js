@@ -1,5 +1,6 @@
 // chat-rhythm.js —— 对话节律（开场接话点轮换 + 收尾信号识别 + 热聊热度闸）。
 // 纯函数模块，无磁盘 IO，供 explore / compose / qq-continuation / qq-reply / engine 共用。
+import { detectBusySpeech, extractBusyUntilMs } from './receptivity.js';
 
 const MIN = 60_000;
 const DAY = 86_400_000;
@@ -73,6 +74,8 @@ export function detectWindDownSignals(turns = []) {
   const reasons = [];
   const explicit = isExplicitClose(lastHer.text);
   if (explicit) reasons.push('explicit_close');
+  const busySpeech = !explicit && detectBusySpeech(lastHer.text);
+  if (busySpeech) reasons.push('busy_speech');
 
   const lastMin = isMinimalReply(lastHer.text);
   const lastLen = contentLen(lastHer.text);
@@ -109,8 +112,8 @@ export function detectWindDownSignals(turns = []) {
   }
 
   const windingDown = reasons.length > 0;
-  const hint = explicit ? CLOSING_EXPLICIT_HINT : windingDown ? CLOSING_SOFT_HINT : '';
-  return { windingDown, explicit, reasons, lastUserTs: lastHer.ts || 0, hint };
+  const hint = (explicit || busySpeech) ? CLOSING_EXPLICIT_HINT : windingDown ? CLOSING_SOFT_HINT : '';
+  return { windingDown, explicit: explicit || busySpeech, busySpeech, reasons, lastUserTs: lastHer.ts || 0, lastUserText: lastHer.text, hint };
 }
 
 /** 检测到收尾信号后，主动开口进入可配冷却期（只拦主动，不拦用户重新开口后的回复）。 */
@@ -121,7 +124,10 @@ export function closingCooldownActive(turns, cfg, now = Date.now()) {
     return { active: false, remainMin: 0, signals };
   }
   const elapsed = now - signals.lastUserTs;
-  const limitMs = min * MIN;
+  const explicitUntil = signals.busySpeech
+    ? extractBusyUntilMs(signals.lastUserText, signals.lastUserTs, cfg?.timezone || 'Asia/Shanghai')
+    : 0;
+  const limitMs = explicitUntil > signals.lastUserTs ? (explicitUntil - signals.lastUserTs) : min * MIN;
   if (elapsed >= limitMs) return { active: false, remainMin: 0, signals };
   return { active: true, remainMin: Math.max(1, Math.ceil((limitMs - elapsed) / MIN)), signals };
 }

@@ -51,8 +51,17 @@ export function clean(text) {
   return s;
 }
 
+// 合法的短标签括号（卷次/分篇/年份/平台缩写/纯数字），不当作“括号动作说明”误杀
+const SAFE_PAREN_TAG = /^[（(](?:第?\d{1,3}[话集章卷部期回季]|上|下|中|前篇|后篇|上篇|下篇|番外|完结|连载|剧透|全集|原版|汉化|重制|精校|官译|B漫|b漫|\d{1,4}|[A-Za-z0-9._-]{2,12})[）)]$/;
+
+function hasParenAction(text) {
+  for (const m of String(text || '').matchAll(/[（(][^）)]{2,30}[）)]/g)) {
+    if (!SAFE_PAREN_TAG.test(m[0])) return true;
+  }
+  return false;
+}
+
 const BANNED = [
-  { code: 'PAREN_ACTION', re: /[（(][^）)]{2,30}[）)]/, why: '写了括号动作说明' },
   { code: 'SELF_AI', re: /(我是|作为)(一个)?\s*(AI|人工智能|助手|机器人|语言模型|程序)/i, why: '承认自己是 AI/助手' },
   { code: 'SERVICE_TONE', re: /您好|很高兴为您|希望(能|可以)帮到您|感谢您的反馈|请问有什么/, why: '客服腔' },
   { code: 'META_TALK', re: /(人格|人设|设定|按你的要求|根据.{0,6}资料|我(已经)?分析|思考过程)/, why: '把生成过程说出来了' },
@@ -69,7 +78,7 @@ const BANNED = [
 const VAGUE = [
   { code: 'APHORISM_OPEN', re: /^(?:我(?:最近|一直|刚才|今天)?在想|最近在想|说到底|其实人|有时候人|人这一?生|人生就是)/, why: '感悟/格言式开头' },
   { code: 'GENERIC_SUBJ', re: /^(?:人|大家|我们|很多人|大多数人|有些人|一个人|成年人)(?:不是|都|总|其实|往往|就是|活着)/, why: '拿泛指的「人」当主语' },
-  { code: 'ESSAY', re: /往往|本质上|这世界|所谓|某种程度上|无一例外|其实我们都/, why: '议论文腔' },
+  { code: 'ESSAY', re: /往往|本质上|这世界|所谓|某种程度上|无一例外|其实我们都/, shareRe: /这世界|无一例外|其实我们都/, why: '议论文腔' },
   { code: 'CHEER_END', re: /(加油|别放弃|你可以的|慢慢来|相信自己|做自己|接受自己)[。！!～~]?$/, why: '结尾在劝人' },
 ];
 
@@ -109,17 +118,29 @@ export function guard(text, cfg, ctx = null, opts = {}) {
   }
 
   // 探索里的心情原话不许整段抄出来（2026-11-15：把「术语对上了，卡在这儿不上不下」
-  // 缝进一句发给了她）。比的是去掉标点后的 4 字以上连续片段——换个说法就过，
-  // 照抄就拦；只拿 raw，不拿脱敏后的短情绪。
+  // 缝进一句发给了她）。比对前先剔除《作品名》等专有名词，且要求至少连续 6 字重合，
+  // 避免正常提起作品名或四字成语被误杀；只拿 raw，不拿脱敏后的短情绪。
   const rawMood = String(ctx?.explorationMood?.raw || '').trim();
   if (rawMood && t) {
-    const flat = t.replace(/[\s\p{P}]+/gu, '');
-    const flatMood = rawMood.replace(/[\s\p{P}]+/gu, '');
-    for (let i = 0; i + 4 <= flatMood.length; i += 1) {
-      const frag = flatMood.slice(i, i + 4);
-      if (flat.includes(frag)) {
-        violations.push({ code: 'MOOD_LEAK', why: `抄了探索里的心情原话（${frag}）：换成自己的说法，别念状态` });
-        break;
+    const stripEntities = (s) => {
+      let out = String(s || '').replace(/《[^》]{1,30}》/gu, '');
+      const titles = [ctx?.self?.section, ctx?.self?.source?.title].filter((x) => typeof x === 'string' && x.trim().length >= 3);
+      for (const title of titles) {
+        const cleanTitle = title.replace(/[\s\p{P}]+/gu, '');
+        if (cleanTitle.length >= 3) out = out.split(cleanTitle).join('');
+      }
+      return out.replace(/[\s\p{P}]+/gu, '');
+    };
+    const flat = stripEntities(t);
+    const flatMood = stripEntities(rawMood);
+    const minSpan = Math.min(6, flatMood.length);
+    if (minSpan >= 4) {
+      for (let i = 0; i + minSpan <= flatMood.length; i += 1) {
+        const frag = flatMood.slice(i, i + minSpan);
+        if (flat.includes(frag)) {
+          violations.push({ code: 'MOOD_LEAK', why: `抄了探索里的心情原话（${frag}）：换成自己的说法，别念状态` });
+          break;
+        }
       }
     }
   }
@@ -152,6 +173,9 @@ export function guard(text, cfg, ctx = null, opts = {}) {
     violations.push({ code: 'TOO_PRECISE_TIME', why: '报了分钟级的时长（「5 小时 4 分钟」这种）；说「五个多小时」「快六个小时」' });
   }
 
+  if (hasParenAction(t)) {
+    violations.push({ code: 'PAREN_ACTION', why: '写了括号动作说明' });
+  }
   for (const b of BANNED) {
     if (b.re.test(t)) violations.push({ code: b.code, why: b.why });
   }
@@ -160,7 +184,8 @@ export function guard(text, cfg, ctx = null, opts = {}) {
     if (b.re.test(t)) violations.push({ code: b.code, why: b.why });
   }
   for (const b of VAGUE) {
-    if (b.re.test(t)) violations.push({ code: b.code, why: b.why });
+    const re = opts.shareTechnical && b.shareRe ? b.shareRe : b.re;
+    if (re.test(t)) violations.push({ code: b.code, why: b.why });
   }
   // 「不是 A，是 B」的对偶说理：带着「你」还能算在跟她说话，没有「你」就是自我抒情
   if (!/你/.test(t) && /(不是|并非|不在于)[^，。！？]{1,26}[，,]\s*(?:而?是)/.test(t)) {
@@ -795,7 +820,7 @@ export async function compose({ ctx, topic, persona, cfg, now, st = {}, generate
     let lastText = '';
     for (let i = 0; i < attempts; i++) {
       const prompt = buildChitchatPrompt({ ctx, topic, persona, cfg, st, feedback: i === 0 ? '' : describeViolations(violations) });
-      const r = await doGenerate({ prompt, cfg });
+      const r = await doGenerate({ prompt, cfg, reasoningEffort: 'low', tag: 'compose-chitchat' });
       if (!r.ok) return { ok: false, source: 'none', slot: 'chitchat', reason: r.reason || 'CHITCHAT_NO_MODEL' };
       ms += Number(r.ms) || 0;
       const text = clean(r.text);
@@ -849,7 +874,7 @@ export async function compose({ ctx, topic, persona, cfg, now, st = {}, generate
           st,
           feedback: i === 0 ? '' : describeViolations(violations),
         });
-        const r = await doGenerate({ prompt, cfg });
+        const r = await doGenerate({ prompt, cfg, reasoningEffort: 'low', tag: 'compose-reply' });
         if (!r.ok) {
           // 环境/超时问题，重试也没用，直接走模板
           lastFail = r;

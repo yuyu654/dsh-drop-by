@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   SELF_MEMORY_TAG,
   formatMemoryHint,
@@ -10,6 +13,8 @@ import {
 import { exploreRound } from '../src/explore.js';
 import { qqReplyContext } from '../src/qq-reply.js';
 import { pickTopic } from '../src/topics.js';
+import { inspectSessionContext } from '../src/diagnostics.js';
+import { applyChange } from '../src/settings.js';
 
 const persona = { ok: true, text: '喜欢百合漫画和自动化的小澪' };
 const DAY = 86_400_000;
@@ -371,4 +376,51 @@ test('方案B：首次深度探索分享允许附链接，继续推进同一件�
   });
   assert.match(replyCtx, /https:\/\/manga\.bilibili\.com\/detail\/mc38749/);
   assert.match(replyCtx, /只有用户明确索要链接/);
+});
+
+test('inspectSessionContext 轻量体检与 rules.exposeMaintenanceTools 开关校验', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pg-ctx-diag-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, 'qq-bridge'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'storages', 'session_projcache', 'sessions'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'qq-bridge', 'bindings.json'), JSON.stringify({
+    version: 1,
+    sessions: {
+      'sess-heavy': { peerId: '728361417', peerKind: 'private', enabled: true, authoritative: true },
+    },
+  }));
+  fs.writeFileSync(path.join(dir, 'storages', 'session_projcache', 'sessions', 'sess-heavy.json'), JSON.stringify({
+    record: {
+      rows: {
+        contextBreakdown: { val: { breakdown: { toolsTokens: 28418 } } },
+        contextPressure: { val: { pressureTokens: 61069, contextWindow: 262144 } },
+        contextHeaders: {
+          val: {
+            headers: [{
+              tools: [
+                { name: 'see_now', tokens: 1868 },
+                { name: 'video_storyboard', tokens: 986 },
+                { name: 'comfyui_workflow', tokens: 926 },
+              ],
+            }],
+          },
+        },
+      },
+    },
+  }));
+
+  const cfg = { channels: { primary: 'qq', qq: { peerId: '728361417' } } };
+  const diag = inspectSessionContext(cfg, dir);
+  assert.equal(diag?.key, 'session_context');
+  assert.equal(diag?.level, 'warn');
+  assert.match(diag?.detail || '', /28\.4k tokens/);
+  assert.match(diag?.detail || '', /see_now\(1868\)/);
+
+  // 无缓存时静默返回 null
+  assert.equal(inspectSessionContext({ channels: { primary: 'qq', qq: { peerId: '99999' } } }, dir), null);
+
+  // exposeMaintenanceTools 开关可正常保存
+  const res = applyChange({}, 'rules.exposeMaintenanceTools', true);
+  assert.equal(res.ok, true);
+  assert.equal(res.cfg.rules.exposeMaintenanceTools, true);
 });

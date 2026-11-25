@@ -28,6 +28,7 @@ const baseCfg = {
   idle: { onlineSec: 30, awaySec: 600 },
   rules: { replyCooldownMin: 1, minGapMin: 240, dailyCap: 3, backfillWindowMin: 30, replyGuard: true },
   channels: {
+    primary: 'qq',
     qq: { enabled: true, read: true, send: true, peerId: '10001', activeHours: [] },
     main: { enabled: false, read: true, send: false, activeHours: [] },
     douyin: { enabled: false, read: true, send: false, activeHours: [] },
@@ -44,6 +45,10 @@ const now = Date.parse('2026-11-22T12:00:00+08:00');
 const herTs = now - 20 * 60_000;
 fs.mkdirSync(path.join(home, 'autonomy'), { recursive: true });
 fs.mkdirSync(path.join(home, 'douyin-duty', 'memory'), { recursive: true });
+fs.mkdirSync(path.join(home, 'node_modules', 'dsh-plugin-qq-bridge'), { recursive: true });
+fs.writeFileSync(path.join(home, 'node_modules', 'dsh-plugin-qq-bridge', 'package.json'), JSON.stringify({ name: 'dsh-plugin-qq-bridge', version: '1.0.0' }));
+fs.mkdirSync(path.join(home, 'qq-bridge'), { recursive: true });
+fs.writeFileSync(path.join(home, 'qq-bridge', 'connection.json'), '{}');
 fs.writeFileSync(
   path.join(home, 'autonomy', 'qq-history.json'),
   JSON.stringify({ turns: [{ user: '在吗', reply: '', at: herTs }] }),

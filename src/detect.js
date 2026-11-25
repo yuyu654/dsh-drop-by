@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ROOT } from './config.js';
-import { SECRETS_PATH } from './fishmail.js';
+import { SECRETS_PATH, loadSecrets } from './fishmail.js';
 
 /** DSH 家目录；测试用 PG_DSH_HOME 顶掉，别去扫真实的 ~/.dsh。 */
 export function dshHome(env = process.env) {
@@ -140,30 +140,37 @@ export function detectPhone(cfg, opts = {}) {
   const home = opts.dshHome || dshHome(opts.env || process.env);
   const mail = cfg?.mail || {};
   const secretsPath = opts.secretsPath || SECRETS_PATH;
-  const authCode = readJson(secretsPath)?.authCode || '';
+  const authCode = loadSecrets(secretsPath).authCode || '';
   const user = String(mail.user || '');
   const enabled = mail.enabled === true;
   const hasAuth = Boolean(String(authCode || '').trim());
   const ready = enabled && Boolean(user) && hasAuth;
 
   let ageMin = null;
+  let fetchAgeMin = null;
   // 数据文件在本插件自己的 data/ 下（ROOT 可用 PG_CONFIG_PATH 那套顶掉场景另行传入 root）。
   const dataRoot = opts.root ? path.resolve(opts.root) : ROOT;
   const latest = readJson(path.join(dataRoot, 'data', 'fish-latest.json'));
-  // 时间字段在不同版本里叫法不同：fetchedAt（毫秒）/ dateTs（毫秒）/ at（ISO 串）。
-  const rawTs = latest?.fetchedAt ?? latest?.dateTs ?? latest?.at;
-  const ts =
-    typeof rawTs === 'number' ? (rawTs < 1e12 ? rawTs * 1000 : rawTs) : Date.parse(String(rawTs || ''));
-  if (Number.isFinite(ts) && ts > 0) ageMin = Math.max(0, Math.round((Date.now() - ts) / 60000));
+  const toMs = (raw) =>
+    typeof raw === 'number' ? (raw < 1e12 ? raw * 1000 : raw) : Date.parse(String(raw || ''));
+  // 邮件年龄按邮件自身日期（dateTs）算，与自检口径一致；旧版无 dateTs 时退回 fetchedAt / at。
+  const dataTs = toMs(latest?.dateTs ?? latest?.fetchedAt ?? latest?.at);
+  if (Number.isFinite(dataTs) && dataTs > 0) ageMin = Math.max(0, Math.round((Date.now() - dataTs) / 60000));
+  const fetchedTs = toMs(latest?.fetchedAt);
+  if (Number.isFinite(fetchedTs) && fetchedTs > 0) fetchAgeMin = Math.max(0, Math.round((Date.now() - fetchedTs) / 60000));
 
+  const formatAge = (min) => (min >= 180 ? `${Math.round(min / 60)} 小时前` : `${min} 分钟前`);
+  const ageText = ageMin == null
+    ? ''
+    : `，最近一封 ${formatAge(ageMin)}${fetchAgeMin != null && Math.abs(ageMin - fetchAgeMin) >= 15 ? `（${formatAge(fetchAgeMin)}检查过邮箱）` : ''}`;
   const note = !enabled
     ? '邮箱没开'
     : !user
       ? '没填邮箱账号'
       : !hasAuth
         ? '没填 IMAP 授权码'
-        : `配置齐了${ageMin == null ? '' : `，最近一封 ${ageMin} 分钟前`}`;
-  return { kind: 'mail', enabled, ready, user: user ? user.replace(/^([^@]{1,2})[^@]*(@.*)$/, '$1***$2') : '', ageMin, note };
+        : `配置齐了${ageText}`;
+  return { kind: 'mail', enabled, ready, user: user ? user.replace(/^([^@]{1,2})[^@]*(@.*)$/, '$1***$2') : '', ageMin, fetchAgeMin, note };
 }
 
 /** 情绪插件：emotion-state-portrait 在不在，入口 qq-emotion.mjs 能不能找到。 */

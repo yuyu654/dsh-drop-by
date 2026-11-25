@@ -26,6 +26,61 @@ const STOP_WORDS = new Set([
   '摘要', '简介', '探索', '进展', '问题', '内容', '作品', '故事', '今天', '昨天',
 ]);
 
+// 轻量同义/领域别名组：用于口语简称与跨词召回
+const SYNONYM_GROUPS = [
+  ['番剧', '新番', '动画', '动漫', '追番', 'bangumi'],
+  ['漫画', 'b漫', '哔哩哔哩漫画', '追漫', '连载', '单话'],
+  ['游戏', '独立游戏', '关卡', 'steam', '电游', '玩法'],
+  ['小说', '网文', '轻小说', '连载小说'],
+  ['开源', 'github', '代码', '仓库', '编程', '开发', '项目'],
+  ['视频', 'up主', 'b站', '哔哩哔哩', '热榜', '抖音'],
+  ['电路', '保护', '过流', '反时限', '电机', '变换器', '电力'],
+];
+
+const SYNONYM_LOOKUP = new Map();
+for (const group of SYNONYM_GROUPS) {
+  for (const word of group) {
+    const k = word.toLowerCase();
+    const set = SYNONYM_LOOKUP.get(k) || new Set();
+    for (const peer of group) {
+      if (peer.toLowerCase() !== k) set.add(peer.toLowerCase());
+    }
+    SYNONYM_LOOKUP.set(k, set);
+  }
+}
+
+function charBigrams(text) {
+  const clean = String(text || '').normalize('NFKC').toLowerCase().replace(/[\p{P}\p{S}\s]+/gu, '');
+  const out = new Set();
+  for (let i = 0; i + 2 <= clean.length; i += 1) {
+    out.add(clean.slice(i, i + 2));
+  }
+  return out;
+}
+
+function expandAliases(terms = [], rawQuery = '') {
+  const out = new Set();
+  const base = `${rawQuery || ''} ${terms.join(' ')}`.normalize('NFKC').toLowerCase();
+  for (const [k, peers] of SYNONYM_LOOKUP) {
+    if (base.includes(k)) {
+      for (const p of peers) out.add(p);
+    }
+  }
+  return [...out];
+}
+
+function bigramOverlap(queryText, targetText) {
+  const qSet = charBigrams(queryText);
+  if (qSet.size < 2) return 0;
+  const tSet = charBigrams(targetText);
+  if (!tSet.size) return 0;
+  let inter = 0;
+  for (const bg of qSet) {
+    if (tSet.has(bg)) inter += 1;
+  }
+  return inter / qSet.size;
+}
+
 /** 从中文/英文文本提取用于召回与打标签的关键词。 */
 export function extractMemoryTerms(text, limit = 12) {
   const plain = line(String(text || ''), 300).normalize('NFKC').toLowerCase().replace(/[“”‘’"'`]/gu, '');
@@ -98,7 +153,8 @@ export function scoreExplorationMemory(item, { now = Date.now(), query = '', hal
   const hitsBoost = Math.min(0.25, (Number(item.hits) || 0) * 0.05);
   let relevance = 0;
   const qTerms = extractMemoryTerms(query, 10);
-  if (qTerms.length) {
+  const rawQuery = String(query || '').normalize('NFKC').trim();
+  if (qTerms.length || rawQuery.length >= 2) {
     const haystack = `${item.topic || ''} ${item.text || ''} ${item.next || ''} ${item.checkpoint || ''} ${(item.tags || []).join(' ')}`
       .normalize('NFKC')
       .toLowerCase();
@@ -106,7 +162,23 @@ export function scoreExplorationMemory(item, { now = Date.now(), query = '', hal
     for (const term of qTerms) {
       if (haystack.includes(term)) matched += 1;
     }
-    if (matched > 0) relevance = 0.65 + Math.min(0.85, (matched / qTerms.length) * 0.85);
+    if (matched > 0) {
+      relevance = 0.65 + Math.min(0.85, (matched / Math.max(1, qTerms.length)) * 0.85);
+    } else {
+      // 1) 字符 2-gram 重合（支持简称/省略字，如「哆嗦逃离」命中「哆哆嗦嗦逃离你」）
+      const bg = Math.max(
+        bigramOverlap(rawQuery, item.topic || ''),
+        bigramOverlap(rawQuery, haystack) * 0.85,
+      );
+      if (bg >= 0.34) {
+        relevance = Math.max(relevance, 0.45 + Math.min(0.45, bg * 0.6));
+      }
+      // 2) 同义/领域别名扩展（如「追番」命中「番剧/新番」）
+      const aliases = expandAliases(qTerms, rawQuery);
+      if (aliases.length && aliases.some((a) => haystack.includes(a))) {
+        relevance = Math.max(relevance, 0.42);
+      }
+    }
   }
   return {
     score: (baseImportance + hitsBoost) * decay + relevance,

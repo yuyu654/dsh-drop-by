@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { pollFishMail, hostFor, maskUser, maskAuth, summaryOf } from '../src/fishmail.js';
+import { pollFishMail, hostFor, maskUser, maskAuth, summaryOf, encryptSecret, decryptSecret, saveSecrets, loadSecrets } from '../src/fishmail.js';
 import { buildFishMail, buildOtherMail, SUMMARY } from './fixtures.mjs';
 
 // mailUpdateMode 在 logging 里，不在 mail 里（别顺手塞进 over，会被当成 mail 的键）
@@ -357,4 +357,28 @@ test('跨天补抓：按邮件日期归档，不按抓取时间', async () => {
   ];
   await run(cfgOf(), {}, msgs, { now: Date.UTC(2026, 10, 5, 1), archiveDir: dir });
   assert.deepEqual(fs.readdirSync(dir), ['2026-11-04.json'], '落在邮件自己的那一天');
+});
+
+test('credentials：AES-256-GCM 加密落盘、自动解密、兼容旧明文且篡改密文安全返回空', () => {
+  const dir = tmpArchive();
+  const credFile = path.join(dir, 'credentials.json');
+  saveSecrets({ user: 'demo@qq.com', authCode: 'my-secret-auth-code' }, credFile);
+  const raw = fs.readFileSync(credFile, 'utf8');
+  assert.equal(raw.includes('my-secret-auth-code'), false, '磁盘文件不应包含明文授权码');
+  const parsed = JSON.parse(raw);
+  assert.match(parsed.authCode, /^enc:v1:/);
+  assert.equal(parsed.encrypted, true);
+
+  const loaded = loadSecrets(credFile);
+  assert.equal(loaded.user, 'demo@qq.com');
+  assert.equal(loaded.authCode, 'my-secret-auth-code');
+
+  // 兼容旧版明文文件
+  fs.writeFileSync(credFile, JSON.stringify({ user: 'old@qq.com', authCode: 'legacy-plain' }), 'utf8');
+  assert.equal(loadSecrets(credFile).authCode, 'legacy-plain');
+
+  // 篡改密文安全返回空，不抛异常
+  const enc = encryptSecret('top-secret');
+  assert.equal(decryptSecret(enc), 'top-secret');
+  assert.equal(decryptSecret(enc.slice(0, -4) + 'AAAA'), '');
 });

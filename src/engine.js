@@ -18,7 +18,7 @@ import { append, appendOnce } from "./logger.js";
 import { pruneOldRecords, recordDay } from "./retention.js";
 import { hhmm, agoSec, healthDay, dayKey } from "./time.js";
 import { inQuiet, inWindows } from "./schedule.js";
-import { agreementMessage, agreementStillClaimed, dueAgreement, claimAgreement, markAgreementSent, releaseAgreement } from "./agreements.js";
+import { agreementMessage, agreementReminderPrompt, agreementStillClaimed, dueAgreement, claimAgreement, markAgreementSent, releaseAgreement } from "./agreements.js";
 import { rememberExplorationShare } from "./exploration-feedback.js";
 import { busyNow } from "./holidays.js";
 import { activeChatChannel, canReadChat, chatDialogue, chatPeer, emotionPeer, externalInFlight, sendChatRound } from './channels/external.js';
@@ -32,13 +32,14 @@ import { chitchatGate, chitchatTopic, noteChitchatSent, bareRemainingToday, chit
 import { restFor } from "./bedtime.js";
 import { characterRestAt, WIND_DOWN_HINT, WOKEN_HINT } from "./character-rest.js";
 import { closingCooldownActive, isHotChat } from "./chat-rhythm.js";
+import { contextFeatures, detectBusySpeech, scoreReceptivity } from "./receptivity.js";
 import { pickSeed, conversationLine } from "./seeds.js";
 import { detectTriggers } from "./triggers.js";
 import { summarizeVideo, readCache as readVideoCache } from "./videosum.js";
 import { outboundFor, answeredAlready, recentOutbound, recentTurns, douyinLastInbound } from "./outbound.js";
 import { settle, sweep, noteSent, noteProactive, topicPreferenceMode, adaptiveExtraMin } from "./feedback.js";
 import { generate as llmGenerate } from "./llm.js";
-import { compose, composeDraft, guard } from "./compose.js";
+import { clean, compose, composeDraft, guard } from "./compose.js";
 import { loadPersona, qqContinuationTone } from "./persona.js";
 import { buildSnapshot } from "./snapshot.js";
 import { shadowEligible, shadowRate, runShadow } from "./shadow.js";
@@ -317,14 +318,26 @@ export async function tick({
   const herLine = ch.lastUserTs ? lastHerMessage(cfg) : null;
   const herSayTs = Number(herLine?.ts) || 0;
   const herSay = herSayTs && Math.abs(herSayTs - (Number(ch.lastUserTs) || 0)) <= Number(cfg.rules?.feedback?.replyMatchSec ?? 60) * 1000 ? herLine.text : '';
-  const repliedCount = settle(st, ch.lastUserTs, now, herSay, { tz, cfg, channel: cfg.channels?.primary });
-
   const useSim = preview || cfg.dryRun !== false;
+  const repliedCount = settle(st, ch.lastUserTs, now, herSay, {
+    tz,
+    cfg,
+    channel: cfg.channels?.primary,
+    syncMemory: !useSim,
+  });
   if (!quiet && !useSim && cfg.rules?.askProjectOnce === true && canReadChat(cfg)) {
     captureProjectAnswer(cfg, st, chatDialogue(cfg).incoming, now);
   }
   // 窗口已过、她一句话都没有的：每拍补判一次。盲着的时段（静默/全断）不判，dryRun 不写。
-  if (!useSim) sweep(st, now, { tz, cfg, channel: cfg.channels?.primary, canJudge: !quiet && !ch.allDown });
+  if (!useSim) sweep(st, now, {
+    tz,
+    cfg,
+    channel: cfg.channels?.primary,
+    canJudge: !quiet && !ch.allDown,
+    idleSec,
+    locked: isScreenLocked(sys),
+    userBusySpeech: Boolean(herSay && detectBusySpeech(herSay)),
+  });
   // 预览用真实发送历史判断时机，之前的演练次数和间隔不影响预览。
   const bucket = useSim && !preview ? st.sim : st.real;
   const todaySent = Number(bucket.todaySent) || 0;
@@ -374,6 +387,7 @@ export async function tick({
   let signals = null;
   let memory = null;
   let verdict = null;
+  let receptivity = null;
   let actionProposal = null;
   const topicMisses = new Map();
   let phone = null;
@@ -642,6 +656,32 @@ export async function tick({
         !['projectCheckIn', 'noReply', 'examSoon', 'examReview', 'agenda'].includes(item?.slot);
       const mood = candidates.some(moodFor) ? resolveMoodState({ cfg, persona, now }) : {};
       const comparing = compare && topic?.slot !== 'projectCheckIn';
+      const scoreSlot = (slot) => scoreReceptivity({
+        st,
+        slot,
+        now,
+        tz,
+        cfg,
+        activity,
+        idleSec,
+        locked: isScreenLocked(sys),
+        pc: { event: pcEvent },
+      });
+      if (d.decision === 'send' && topic && d.track === 'proactive') {
+        if (comparing && candidates.length > 1 && cfg?.rules?.receptivity?.mode === 'gate') {
+          const kept = candidates.filter((item) => !scoreSlot(item.slot).wouldBlock);
+          if (kept.length) {
+            candidates = kept;
+            if (!candidates.some((item) => item.slot === topic.slot)) topic = candidates[0];
+          }
+        }
+        receptivity = scoreSlot(topic.slot);
+        if (receptivity.mode === 'gate' && receptivity.wouldBlock) {
+          d.decision = 'skip';
+          d.reason = 'RECEPTIVITY_LOW';
+          topic = null;
+        }
+      }
       if (cfg.rules?.judge?.enabled === true && d.decision === 'send' && topic?.slot !== 'projectCheckIn') {
         const cards = comparing ? candidates.map((item) => ({
           id: item.slot,
@@ -661,8 +701,18 @@ export async function tick({
         verdict = await judgeDecision({ snapshot: judgeInput, persona, candidates: cards, cfg, generate: gen || llmGenerate, llmReady });
         if (verdict.ok && verdict.say && comparing) {
           topic = candidates.find((item) => item.slot === verdict.candidateId);
-          if (topic.slot === 'chitchat') d.chitchat = casualMeta;
-          else if (cfg.rules?.chitchat?.enabled === true) d.chitchat = chitchatYield(topic.slot);
+          if (topic && d.track === 'proactive') {
+            receptivity = scoreSlot(topic.slot);
+            if (receptivity.mode === 'gate' && receptivity.wouldBlock) {
+              d.decision = 'skip';
+              d.reason = 'RECEPTIVITY_LOW';
+              topic = null;
+            }
+          }
+          if (topic) {
+            if (topic.slot === 'chitchat') d.chitchat = casualMeta;
+            else if (cfg.rules?.chitchat?.enabled === true) d.chitchat = chitchatYield(topic.slot);
+          }
         }
         // state 只存结论，不存快照（快照几百字，state 每拍落盘）
         st.judge = {
@@ -806,6 +856,9 @@ export async function tick({
     d.decision = 'skip';
     d.reason = code;
     d.guard = { channel: guardHit.channel, src: guardHit.src || '', at: guardHit.ts, herTs: Number(ctx?.her?.lastTs) || 0 };
+  } else if (d.decision === 'skip' && d.reason === 'DATA_UNAVAILABLE' && (chatChanging() || (channel === 'douyin' && !readyDouyinBinding({ readOnly: preview })))) {
+    delivery = { attempted: false, reason: 'CHANNEL_SWITCH_PENDING' };
+    d.reason = 'CHANNEL_SWITCH_PENDING';
   } else if (d.decision === 'send') {
     if (chatChanging() || (channel === 'douyin' && !readyDouyinBinding({ readOnly: preview }))) {
       delivery = { attempted: false, reason: 'CHANNEL_SWITCH_PENDING' };
@@ -813,22 +866,47 @@ export async function tick({
       d.reason = 'CHANNEL_SWITCH_PENDING';
     } else if (useSim) {
       delivery = { attempted: false, reason: preview ? 'PREVIEW' : 'DRY_RUN', preview: content?.text || '' };
-    } else if (cfg.send?.enabled !== true) {
+    } else if (
+      cfg.send?.enabled !== true ||
+      cfg.channels?.[channel]?.send === false ||
+      (cfg.channels?.primary !== channel && cfg.channels?.[channel]?.enabled === false)
+    ) {
       delivery = { attempted: false, reason: 'SEND_DISABLED' };
     } else if (!content?.ok || !content.text) {
       delivery = { attempted: false, reason: 'NO_CONTENT' };
     } else {
       const to = peer;
-      let stoppedForRest = false;
-      const canDispatch = d.track === 'proactive' ? (sentParts) => {
-        stoppedForRest = characterRestAt(loadConfig()).asleep;
-        if (stoppedForRest) return false;
-        if (!topic) return true;
-        const current = topicPreferenceMode(loadState(), topic);
-        if (current === 'mute_less') return false;
-        if (sentParts === 0) preference = current;
+      let stoppedReason = '';
+      const canDispatch = (sentParts) => {
+        const fresh = loadConfig();
+        if (
+          fresh.enabled === false ||
+          fresh.dryRun !== false ||
+          fresh.send?.enabled !== true ||
+          fresh.channels?.[channel]?.send === false ||
+          (fresh.channels?.primary !== channel && fresh.channels?.[channel]?.enabled === false) ||
+          activeChatChannel(fresh) !== channel ||
+          chatPeer(fresh) !== to ||
+          chatChanging()
+        ) {
+          stoppedReason = 'SEND_DISABLED';
+          return false;
+        }
+        if (d.track === 'proactive') {
+          if (characterRestAt(fresh).asleep) {
+            stoppedReason = 'CHARACTER_ASLEEP';
+            return false;
+          }
+          if (!topic) return true;
+          const current = topicPreferenceMode(loadState(), topic);
+          if (current === 'mute_less') {
+            stoppedReason = 'TOPIC_PREFERENCE_MUTED';
+            return false;
+          }
+          if (sentParts === 0) preference = current;
+        }
         return true;
-      } : undefined;
+      };
       // 该拆的拆成几条发（空行分段），首条按她的字数晚几秒，条间留空隙；
       // 一轮只记一次「开口」，不算几条。
       const r = await sendChatRound({
@@ -843,11 +921,13 @@ export async function tick({
         actionProposal,
         canDispatch,
       });
-      const delivered = r.ok && !r.dryRun;
-      const stoppedByPreference = r.reason === 'TOPIC_PREFERENCE_MUTED' && !stoppedForRest;
-      const deliveryReason = stoppedForRest ? 'CHARACTER_ASLEEP' : r.reason;
-      delivery = r.dryRun || ((stoppedByPreference || stoppedForRest) && !r.parts)
-        ? { attempted: false, reason: r.dryRun ? 'SEND_DISABLED' : deliveryReason }
+      const stoppedByConfig = stoppedReason === 'SEND_DISABLED';
+      const stoppedForRest = stoppedReason === 'CHARACTER_ASLEEP';
+      const stoppedByPreference = !stoppedByConfig && !stoppedForRest && r.reason === 'TOPIC_PREFERENCE_MUTED';
+      const deliveryReason = stoppedReason || r.reason;
+      const delivered = r.ok && !r.dryRun && !(stoppedByConfig && !r.parts);
+      delivery = r.dryRun || ((stoppedByPreference || stoppedForRest || stoppedByConfig) && !r.parts)
+        ? { attempted: false, reason: r.dryRun || stoppedByConfig ? 'SEND_DISABLED' : deliveryReason }
         : { attempted: true, ok: Boolean(delivered), to, chars: content.text.length, parts: r.parts ?? 1,
             messageId: r.messageId ?? null, reason: deliveryReason, error: r.ok ? undefined : r.error };
       // 发失败不能算「今天已经找过她」，否则一次网络抖动就白吃一个配额
@@ -856,6 +936,7 @@ export async function tick({
         d.reason = r.dryRun ? 'SEND_DISABLED' : deliveryReason || 'SEND_FAILED';
       }
       if (delivered) {
+        d.channel = channel;
         st.lastRealSendAt = now;
         notifyExternalMoodMessage({ peer: emotionPeer(cfg), role: 'ai', text: content.text, at: r.sentAt || now, channel, cfg });
       }
@@ -875,8 +956,13 @@ export async function tick({
       if (delivered && topic?.slot && topic.slot !== 'projectCheckIn') {
         // 测试期（rules.feedback.testMode）：记一条「发过」，但**不计入接住率**——
         // 插件没完工之前她的沉默不是「没接住」，是还没改好。
-        const options = { test: cfg.rules?.feedback?.testMode === true, channel,
-          sentAt: r.sentAt || Date.now(), expect: preference !== 'allow_silent' && !stoppedByPreference };
+        const options = {
+          test: cfg.rules?.feedback?.testMode === true,
+          channel,
+          sentAt: r.sentAt || Date.now(),
+          expect: preference !== 'allow_silent' && !stoppedByPreference,
+          ctx: contextFeatures({ slot: topic.slot, now, tz, activity, idleSec, locked: isScreenLocked(sys), pc: { event: pcEvent }, cfg }),
+        };
         noteSent(st, topic.slot, now, content.text, options);
         if (topic.slot === 'chitchat') noteChitchatSent(st, now, tz, content.text, topic.evidence?.seedId, options);
         st.content ||= {};
@@ -929,13 +1015,14 @@ export async function tick({
     }
   }
 
+  const antiHitForLog = Boolean(anticheatRunning(sys, cfg));
   const record = {
     ts: now,
     tsLocal: hhmm(now, tz),
     idle_sec: idleSec,
     presence: presenceOf(idleSec, cfg),
-    fg_title: sys.fg_title || '',
-    audio_peak: typeof sys.audio_peak === 'number' ? sys.audio_peak : null,
+    fg_title: antiHitForLog ? '' : (sys.fg_title || ''),
+    audio_peak: antiHitForLog ? null : (typeof sys.audio_peak === 'number' ? sys.audio_peak : null),
     in_quiet: quiet,
     in_busy: busy,
     last_user_ago_sec: agoSec(now, ch.lastUserTs),
@@ -1044,6 +1131,7 @@ export async function tick({
         }
       : null,
     probe_ok: Boolean(sys.ok),
+    receptivity: receptivity || null,
     pc: st.pc
       ? {
           activeSince: st.pc.activeSince || null,
@@ -1135,7 +1223,7 @@ export async function tick({
 }
 
 /** Fast path for a known due item; never starts the regular probe/model cycle. */
-export async function tickDueAgreement({ active = () => true, send = sendChatRound, probeSystem = probe } = {}) {
+export async function tickDueAgreement({ active = () => true, send = sendChatRound, probeSystem = probe, generate = null } = {}) {
   const cfg = loadConfig();
   const channel = activeChatChannel(cfg);
   const peer = chatPeer(cfg);
@@ -1176,10 +1264,26 @@ export async function tickDueAgreement({ active = () => true, send = sendChatRou
   if (cfg.rules?.requirePcOnline === true) {
     const sys = await probeSystem(false, cfg);
     const idle = Number(sys?.idle_ms);
-    if (!Number.isFinite(idle) || idle / 1000 > (Number(cfg.idle?.awaySec) || 600) || isScreenLocked(sys)) return null;
+    if (sys?.ok === false || !Number.isFinite(idle) || idle < 0 || idle / 1000 > (Number(cfg.idle?.awaySec) || 600) || isScreenLocked(sys)) return null;
   }
-  const text = agreementMessage(item);
-  const checked = guard(text, cfg, { dialogueTurns: [{ who: 'her', text: item.title }] });
+  const guardCtx = { dialogueTurns: [{ who: 'her', text: item.title }] };
+  let text = '';
+  let via = 'template';
+  if (typeof generate === 'function' && cfg.content?.mode !== 'template') {
+    try {
+      const persona = loadPersona({ cfg });
+      const prompt = agreementReminderPrompt(item, { persona, cfg, now });
+      const timeoutMs = Math.min(10000, Math.max(5000, Number(cfg.agreements?.extractTimeoutMs) || 5000));
+      const answer = await generate({ prompt, timeoutMs, minOutputTokens: 128, reasoningEffort: 'off', tag: 'agreement-remind' });
+      const candidate = answer?.ok ? clean(answer.text) : '';
+      if (candidate && guard(candidate, cfg, guardCtx).ok) {
+        text = candidate;
+        via = 'llm';
+      }
+    } catch { /* Fall back to the deterministic template below. */ }
+  }
+  if (!text) text = agreementMessage(item);
+  const checked = guard(text, cfg, guardCtx);
   const startedAt = Date.now();
   if (!checked.ok || !permits(cfg, startedAt, loadState()) || !claimAgreement(item.id, cfg, startedAt, source)) return null;
   let dispatchStarted = false;
@@ -1196,7 +1300,10 @@ export async function tickDueAgreement({ active = () => true, send = sendChatRou
     return null;
   }
   if (!result?.ok) {
-    markAgreementSent(item.id, cfg, Date.now());
+    const errTxt = String(result?.error || result?.reason || '');
+    const uncertain = Boolean(result?.parts > 0 || /timeout|timed out|abort/i.test(errTxt));
+    if (uncertain) markAgreementSent(item.id, cfg, Date.now());
+    else releaseAgreement(item.id, cfg, Date.now());
     return { ok: false, reason: 'SEND_FAILED' };
   }
   const at = result.sentAt || Date.now();
@@ -1211,7 +1318,7 @@ export async function tickDueAgreement({ active = () => true, send = sendChatRou
   noteProactive(st, topic, { channel, peer, at });
   saveState(st);
   append({ ts: at, decision: 'send', reason: 'SEND', track: 'proactive', channel, content_ok: true,
-    topic: { slot: topic.slot, label: topic.label }, content: { slot: topic.slot, source: 'agreement', chars: text.length },
+    topic: { slot: topic.slot, label: topic.label }, content: { slot: topic.slot, source: 'agreement', via, chars: text.length },
     delivery: { attempted: true, ok: true } }, at, tz, cfg);
   return { ok: true };
 }

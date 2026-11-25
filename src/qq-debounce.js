@@ -117,7 +117,11 @@ export function installQqPromptMerge(controller, aroundPrompt) {
   async function prompt(...args) {
     const [payload, signal] = args;
     const dispatch = (nextPayload) => {
-      const next = (value) => { args[0] = value; return original.apply(this, args); };
+      const next = (value, nextSignal) => {
+        args[0] = value;
+        if (nextSignal !== undefined) args[1] = nextSignal;
+        return original.apply(this, args);
+      };
       const handler = [...handles].find((entry) => entry.aroundPrompt)?.aroundPrompt;
       return handler ? handler(nextPayload, signal, next) : next(nextPayload);
     };

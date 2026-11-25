@@ -49,6 +49,8 @@ export function updatePortraitMood(input) {
     const result = await generate({
       timeoutMs: cfg.exploration?.portraitTimeoutMs ?? 12_000,
       minOutputTokens: 1024,
+      reasoningEffort: 'off',
+      tag: 'emotion-portrait',
       prompt: [
         triggerHint,
         '只返回 JSON {"emotions":[{"name":"词库中的一个词","level":1}]}，最多两个。短回复或暂时没回复不代表冷落。不得因对方不回复而生气。',

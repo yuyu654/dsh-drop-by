@@ -1,4 +1,5 @@
 import { loadConfig } from './config.js';
+import { abortable } from './exploration-abort.js';
 import { makeHostLlm } from './hostllm.js';
 import { downloadVideo, observeDownloadedVideo, summarizeVideo } from './videosum.js';
 
@@ -6,18 +7,19 @@ const watching = new Map();
 let watchQueue = Promise.resolve();
 
 /** Both plugins share the downloader and ASR, so only run one video job at a time. */
-export function watchVideo(id, { cfg, now, llm, host, node, ctx } = {}) {
+export function watchVideo(id, { cfg, now, llm, host, node, ctx, signal } = {}) {
   const key = String(id || '').trim();
-  if (watching.has(key)) return watching.get(key);
+  const current = watching.get(key);
+  if (current && !current.signal?.aborted) return abortable(() => current.promise, signal);
   const promise = watchQueue.then(() => summarizeVideo(key, {
-    cfg, now, llm,
+    cfg, now, llm, signal,
     fetchVideo: node ? (key, options) => downloadVideo(key, { ...options, node }) : undefined,
-    vision: ctx ? (input) => observeDownloadedVideo(input, { ctx, observe: host?.observeVideo }) : null,
+    vision: ctx ? (input) => observeDownloadedVideo(input, { ctx, observe: host?.observeVideo, signal }) : null,
     visionMethod: 'storyboard',
-  })).finally(() => watching.delete(key));
+  })).finally(() => { if (watching.get(key)?.promise === promise) watching.delete(key); });
   watchQueue = promise.catch(() => {});
-  watching.set(key, promise);
-  return promise;
+  watching.set(key, { promise, signal });
+  return abortable(() => promise, signal);
 }
 
 /** Evidence for an incoming Douyin card. This entry point never sends a reply. */

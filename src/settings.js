@@ -16,7 +16,7 @@
 import fs from 'node:fs';
 import { CHARACTER_REST_DEFAULTS, explorationBiasForUi, getPath, STATE_WRITE_WAIT_MAX_MS, usesLegacyExplorationCadence } from './config.js';
 import { normalizeWindows, fmtWindows } from './schedule.js';
-import { SECRETS_PATH, saveSecrets, hostFor } from './fishmail.js';
+import { SECRETS_PATH, loadSecrets, saveSecrets, hostFor } from './fishmail.js';
 import { detectSources, detectEmotionPortrait, douyinPluginPeer } from './detect.js';
 import { detectMemory } from './memorysource.js';
 import { parseAgenda, agendaSource, courseKey } from './agenda.js';
@@ -24,12 +24,12 @@ import { parseExams, examsSource } from './exams.js';
 import { characterRestStatus } from './character-rest.js';
 import { listRegisteredMemorySources, listRegisteredMoodSources } from './extensions.js';
 import { getHostModelCatalog } from './hostllm.js';
+import { markCustomOnManualChange } from './presets.js';
 
 /** 存凭据的位置（和 fishmail 用同一份）。读的时候永远只给「已设置/未设置」。 */
 function secretFor(path) {
   try {
-    const j = JSON.parse(fs.readFileSync(SECRETS_PATH, 'utf8'));
-    if (path === 'mail.authCode') return String(j.authCode || j.mail?.authCode || '');
+    if (path === 'mail.authCode') return loadSecrets(SECRETS_PATH).authCode;
   } catch {
     /* 没有就是没设置 */
   }
@@ -233,7 +233,12 @@ export const SCHEMA = [
   { group: '高级', path: 'rules.qqRollover.thresholdPercent', label: '预建续聊的上下文占用率', type: 'int', min: 10, max: 95, unit: '%', dep: dep('rules.qqRollover.enabled', true), hint: '默认 80%。只在绑定会话完成一轮时检查，每个旧会话只预建一次。' },
   { group: '高级', path: 'rules.qqRollover.carryMessages', label: '新会话携带最近消息', type: 'int', min: 0, max: 50, unit: '条', dep: dep('rules.qqRollover.enabled', true), hint: '默认 10 条，用户和助手各自的一条都计数。填 0 只建立续聊会话。' },
   { group: '高级', path: 'rules.qqRollover.prepareBindingFile', label: '预备重启后自动切到续聊会话', type: 'bool', dep: dep('rules.qqRollover.enabled', true), hint: '预备当前主通道的磁盘绑定。当前聊天照常继续，重启 DSH 后启用。关闭后可手动切绑。' },
+  { group: '高级', path: 'rules.compactChatTools', label: '精简陪聊工具', type: 'bool', hint: '仅从当前绑定会话的模型工具清单隐藏低频开发、分镜和搜索辅助工具。关闭后恢复。其他会话和陪伴后台照常使用。开启后，当前会话里依赖这些工具的任务可能受影响。如需推进任务，建议使用明确的派活指令，由陪伴的内置派活在后台处理。' },
+  { group: '高级', path: 'rules.exposeMaintenanceTools', label: '向会话暴露维护类工具', type: 'bool', hint: '默认关闭，仅保留状态查询与视频观察工具以减少上下文占用；开启后额外注册节假日刷新、情绪修复、记忆合并 3 个工具（重启 DSH 后生效）。' },
   { group: '说什么', path: 'rules.qqCommands.enabled', label: '接收私聊任务指令', type: 'bool', hint: '只接收主通道配置联系人的私聊。可以暂停探索方向、指定下轮题目、搜索公开网页、推进研究、整理笔记或跑插件快速测试。后台任务回传不受日常静默和配额限制。' },
+  { group: '高级', path: 'rules.qqCommands.extended', label: '扩展私聊后台指令（含付费探索链路）', type: 'bool', dep: ON_QQ_CMD, hint: '默认关闭。开启后额外支持：调出待登录网页、登录后自动继续后台探索（走探索模型）、后台读链接摘要、查本地课表/考试/状态，减少主会话工具占用。' },
+  { group: '高级', path: 'rules.chatSession.maxToolCallsPerTurn', label: '聊天会话单轮工具调用上限', type: 'int', min: 0, max: 50, unit: '次', hint: '默认 0 次（不限制）。仅对陪伴绑定的聊天会话生效；设成 8 或 10 次后，单轮工具调用达到上限会自动暂停该轮任务，避免撑爆上下文。' },
+  { group: '高级', path: 'rules.chatSession.notifyOnToolLimit', label: '触达工具上限时发提示', type: 'bool', hint: '开启后，因聊天会话工具调用达到上限而暂停任务时，会在聊天里补发一句简短提示。' },
   { group: '时间间隔', path: 'rules.qqCommands.intentTimeoutSec', label: '意图识别最多等多久', type: 'int', min: 1, max: 20, unit: '秒', dep: ON_QQ_CMD, hint: '默认 5 秒。模型超时或未给出可校验的任务时，直接走普通聊天。' },
   { group: '时间间隔', path: 'rules.qqCommands.timeoutSec', label: '任务多久先反馈超时', type: 'int', min: 5, max: 120, unit: '秒', dep: ON_QQ_CMD, hint: '默认 90 秒。任务到时限仍没结束会回一条状态。' },
   { group: '时间间隔', path: 'rules.qqCommands.freshSec', label: '任务指令最多多旧', type: 'int', min: 5, max: 900, unit: '秒', dep: ON_QQ_CMD, hint: '默认 120 秒。超过这个时间的补发消息不能启动后台任务。' },
@@ -275,6 +280,7 @@ export const SCHEMA = [
   { group: '时间间隔', path: 'channels.main.activeHours', label: '允许读取主会话的时段', type: 'windows', dep: ON_MAIN_READ },
   { group: '时间间隔', path: 'exploration.storyboardSeconds', label: '通用视频分镜取前多少秒', type: 'int', min: 1, max: 600, unit: '秒', dep: ON_VIDEO_OR_FORWARD },
   { group: '时间间隔', path: 'exploration.moodReplyAgeMin', label: '调整心情语气最多参考多早的消息', type: 'int', min: 0, max: 1440, unit: '分钟', dep: ON_EXP_MOOD },
+  { group: '时间间隔', path: 'exploration.roundBudgetMs', label: '每轮自主探索总时限', type: 'int', min: 10, max: 1800, scale: 1000, unit: '秒', hint: '默认 300 秒，包含选题、搜索、浏览、看图和生成。到时会中止本轮并保留此前的进展。' },
   { group: '时间间隔', path: 'exploration.planTimeoutMs', label: '探索选题生成超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒' },
   { group: '时间间隔', path: 'exploration.roundTimeoutMs', label: '探索进展生成超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒' },
   { group: '时间间隔', path: 'exploration.toolTimeoutMs', label: '探索搜索和读网页超时', type: 'int', min: 1, max: 900, scale: 1000, unit: '秒', dep: ON_EXP_WEB },
@@ -375,8 +381,9 @@ export const SCHEMA = [
   { group: '自主探索', path: 'exploration.browseMaxSteps', label: '调网站浏览每轮步数上限', type: 'int', min: 5, max: 80, unit: '步', dep: dep('exploration.browseMode', 'vision_light', 'browser_agent'), hint: '默认 40 步（沿用旧版自主探索上限），到达上限自动收尾，避免在网站里反复翻页卡死或消耗过多 token。' },
   { group: '自主探索', path: 'exploration.intervalMinutes', label: '探索间隔', type: 'int', min: 30, max: 1440, unit: '分钟', dep: ON_EXP_AUTO, hint: '默认 180 分钟；静默、忙碌和角色睡眠时段不自动探索（若开启下方「只在谷时自动探索」，还会避开 DeepSeek API 高峰时段）。' },
   { group: '自主探索', path: 'exploration.offPeakOnly', label: '只在谷时自动探索', type: 'bool', dep: ON_EXP_AUTO, hint: '开：自动探索仅在 DeepSeek 谷时（5折空闲时段）运行——按北京时间结合日历判定，工作日非高峰时段（00:00–09:00、12:00–14:00、18:00–24:00）、周中法定节假日全天及周末（含调休上班周末）全天均为谷时；工作日 09:00–12:00 / 14:00–18:00 跳过。手动点「试跑一轮」不受限制。' },
-  { group: '自主探索', path: 'exploration.nextTopic', label: '近一轮探索主题', type: 'str', max: 120, hint: '建议一次只填一个主题。单独指定下一轮要探索的具体题目（优先于下方「最近对什么好奇」）；成功跑完一轮后会自动清空恢复日常自选。' },
-  { group: '自主探索', path: 'exploration.interest', label: '最近对什么好奇', type: 'text', max: 160, rows: 2, hint: '可写想长期追的作品、网站或主题，多个主题可用换行、顿号或逗号分隔，每轮会自动挑其中一个探索；研究和休闲都参考，留空按人设选。' },
+  { group: '自主探索', path: 'exploration.nextTopic', label: '近一轮探索主题', type: 'str', max: 120, hint: '留空则按下方「最近对什么好奇」和角色人设自动选题。填写时建议一次只填一个主题，取得进展后自动清空；看作品请把纯作品名用书名号放前面、话数放后面并带平台或已配来源（如「哔哩哔哩漫画：《作品名》第2话」或「作品：《作品名》第2话」，别把「看第几话」写在作品名前面）；自由搜话题写「主题：漫画分镜怎么表现紧张感」。' },
+  { group: '自主探索', path: 'exploration.workSources', label: '已确认的作品来源', type: 'text', max: 1600, rows: 3, hint: '每行写「纯作品名 | 网站网址」，例如「作品名 | https://manga.bilibili.com/...」（左边只写纯作品名，别带「看一话」等动作词）。配好一次后，上面只写作品名或带话数就能直接认出。' },
+  { group: '自主探索', path: 'exploration.interest', label: '最近对什么好奇', type: 'text', max: 160, rows: 2, hint: '留空则完全按角色人设和近期聊天自由探索。填写时可写想长期追的作品、网站或主题，多个主题可用换行、顿号或逗号分隔；只填作品名时会先核对来源，无法确认时会在探索卡片里等你选择。' },
   { group: '自主探索', path: 'exploration.offerShare', label: '让探索进展参与主动分享', type: 'bool', hint: '默认关闭。开启后，进展只是主动消息候选，仍走原有时段、额度和发送开关。' },
   // ================================================================ 日常
   { group: '日常', path: 'enabled', label: '总开关', type: 'bool', hint: '关掉就一拍都不跑（插件还在，只是不动）' },
@@ -406,6 +413,9 @@ export const SCHEMA = [
   { group: '决定TA粘不粘人', path: 'rules.qqContinuation', label: '热聊补一句', type: 'bool', hint: '刚来回聊了几轮，普通回复发完并等待设定时长后，可以顺着话题再补一句。有新消息就取消；没内容或没回应就停。遵守静默、忙碌时段和每日上限。' },
   { group: '决定TA粘不粘人', path: 'rules.feedback.enabled', label: '按TA的反应调由头', type: 'bool', hint: '开（默认）：记下哪一类发出去TA接住了、哪一类老没人应，老不接的先压几天；关：所有由头一视同仁' },
   { group: '决定TA粘不粘人', path: 'rules.judge.enabled', label: '让模型自己决定说不说', type: 'bool', hint: '关（默认）：规则挑到由头就写。开：模型从合格的由头里挑一条，或选择不说。草稿还会过长度、口吻和防重复检查。无合格由头时保持安静' },
+  { group: '决定TA粘不粘人', path: 'rules.receptivity.mode', label: '本地看眼色小算盘', type: 'select', options: [['off', '关闭'], ['shadow', '只记分观察（默认）'], ['gate', '启用低分拦截']], hint: '零 Token 本地打分：结合时段、话题、在忙/上课口语与桌面活跃度学习什么时候不打扰。默认只记分不拦截；切到「启用低分拦截」后，得分低于门槛会直接跳过模型判断省 Token。' },
+  { group: '高级', path: 'rules.receptivity.threshold', label: '小算盘低分拦截门槛', type: 'num', min: 0.05, max: 0.7, hint: '0.05–0.70（默认 0.28）。仅在「启用低分拦截」且样本达标时生效；数值越高越克制。' },
+  { group: '高级', path: 'rules.receptivity.minSamples', label: '小算盘冷启动最少样本', type: 'int', min: 1, max: 100, unit: '条', hint: '至少积累多少条有效反馈后才允许低分拦截（默认 12 条；睡着/上课/在忙导致的未回不算样本、不扣分）。' },
   { group: '决定TA粘不粘人', path: 'rules.chitchat.enabled', label: '没什么事也可以说一句', type: 'bool', hint: '关（默认）：没有由头就不说话。开：可在合适的时候加入一个「随口话」候选（没有具体话题时，按下面设置的次数放行「在吗」「在干嘛」这类轻招呼）——只走模型，写不出来就不发。一天最多几条在下面的「随口话一天最多几条」里自己设；不说时段跟着全局静默和TA睡着的那段走。要「让模型自己决定说不说」也开着才生效' },
   { group: '决定TA粘不粘人', path: 'rules.chitchat.perDay', label: '随口话一天最多几条', type: 'int', min: 1, max: 10, unit: '条', dep: dep('rules.chitchat.enabled', true), hint: '默认 3 条。近期不足 5 条样本或接住率低于 30% 时，最多 1 条。30%–70% 时最多 2 条，超过 70% 时放到这里设的上限。随口话也计入每天总上限。' },
   { group: '决定TA粘不粘人', path: 'rules.chitchat.barePerDay', label: '轻招呼一天最多几次', type: 'int', min: 0, max: 10, unit: '次', dep: dep('rules.chitchat.enabled', true), hint: '默认 1 次（填 0 禁止「在吗」「在干嘛」这类空招呼）。仍受上面的随口话条数和每天总上限约束' },
@@ -520,10 +530,15 @@ export const SCHEMA = [
   { group: '高级', path: 'exploration.web', label: '探索时搜索网页', type: 'bool', hint: '优先用 dsh-free-search，找不到结果时用 DSH 的 web_search。再用 web_fetch 读最多两页正文；仅搜到摘要时会标明。' },
   { group: '高级', path: 'exploration.video', label: '探索时找视频', type: 'bool', hint: '每轮最多看一条。画面需要 dsh-video-storyboard 和支持图片的模型；抖音还需要取流配置。有字幕或转写时可退回文字，只有标题会标明。' },
   { group: '高级', path: 'exploration.extraTools', label: '探索可调用的额外只读工具', type: 'str', max: 240, hint: '逗号分隔的宿主只读工具名（如 bilibili_hot, bilibili_search），让自主探索直接调用已装插件或 MCP 的查询工具；留空关闭。请仅填写只读查询工具，系统会自动拦截写/执行/发送类工具名。' },
+  { group: '高级', path: 'exploration.builtinFeeds', label: '启用内置轻量结构化探索源', type: 'bool', hint: '默认关闭。开启后零浏览器开销直连 Bangumi 番剧日历、GitHub 开源热门、B站公开热榜与下方 RSS 订阅，省 Token 且不撞登录墙。' },
+  { group: '高级', path: 'exploration.rssUrls', label: 'RSS / Atom 订阅地址', type: 'text', max: 600, rows: 2, dep: dep('exploration.builtinFeeds', true), hint: '可选：填公开 RSS/Atom 链接（多个用逗号或换行分隔，最多 6 个），开启内置轻量结构化探索源后生效。' },
+  { group: '高级', path: 'exploration.syncToSharedMemory', label: '聊热的探索自动沉淀到共享记忆', type: 'bool', hint: '默认关闭。开启后，被用户接住的探索分享会自动去重同步一条到 dsh-fish-memory 工作区记忆，方便日常自由聊天延续。' },
   { group: '高级', path: 'perception.l3.everyMin', label: '看屏幕隔多久', type: 'int', min: 5, max: 720, unit: '分钟', dep: ON_L3, hint: '默认 30 分钟。上一次看屏幕不到这么久就跳过，免得同一张桌面反复截' },
   { group: '高级', path: 'perception.signals.enabled', label: '看窗口和网页（不截屏）', type: 'bool', hint: '只读前台窗口标题、进程名和浏览器当前标签页，不截屏、不 OCR、不联网。比 L3 准，默认开' },
   { group: '高级', path: 'perception.signals.browser', label: '读浏览器当前标签页', type: 'bool', dep: ON_SIGNALS, hint: '借桌面 Edge 的调试口（默认 9223）问它在看哪个页面；端口没开就跳过，不影响别的。默认开' },
   { group: '高级', path: 'perception.signals.port', label: '浏览器调试端口', type: 'int', min: 1024, max: 65535, dep: ON_SIGNALS, hint: '默认 9223（start-edge-debug.ps1 开的那个）。改了要对应 Edge 的 --remote-debugging-port' },
+  { group: '高级', path: 'perception.anticheat.skip', label: '反作弊保护（打游戏不读窗口/不截屏）', type: 'bool', hint: '开（默认）：检测到常见国服/外服反作弊进程（如 WeGame、EAC、BattlEye、Vanguard、FACEIT、5E 等）或全屏游戏时，只读键鼠空闲，绝不读窗口、标签或截屏。' },
+  { group: '高级', path: 'perception.anticheat.skipFullscreen', label: '全屏游戏自动避让', type: 'bool', dep: dep('perception.anticheat.skip', true), hint: '开（默认）：任意未知全屏游戏（排除浏览器/编辑器/播放器）也会自动跳过读窗口与截屏。' },
   // 由头细节：所属那一类关着就不显示，免得一堆用不上的阈值挡路。
   { group: '高级', path: 'content.topics.sleepShortMin', label: '算「睡少了」低于', type: 'int', min: 240, max: 600, unit: '分钟', dep: [ON_PHONE, onTopic('sleep')], hint: '默认 420 分钟（7 小时）。读得到深睡时要和「深睡少」同时满足才算；深睡没读到就只看这一条' },
   { group: '高级', path: 'content.topics.sleepDeepShortMin', label: '深睡低于', type: 'int', min: 30, max: 240, unit: '分钟', dep: [ON_PHONE, onTopic('sleep')], hint: '默认 120 分钟（2 小时）。深睡是拓展项——应用不报这个数时只按时长判；报的时候要和「睡少了」同时满足才算' },
@@ -1067,5 +1082,6 @@ export function applyChange(cfg, path, raw) {
       hostReset = { from: had, to: want };
     }
   }
+  markCustomOnManualChange(next, r.path);
   return { ok: true, cfg: next, path: r.path, value: r.value, ...(hostReset ? { hostReset } : {}) };
 }

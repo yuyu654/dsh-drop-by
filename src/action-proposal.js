@@ -8,15 +8,18 @@ import { busyNow } from './holidays.js';
 import { publicExplorationUrl } from './explore-media.js';
 import { dshHome } from './outbound.js';
 import { activeChatChannel, canReadChat, chatDialogue, chatPeer } from './channels/external.js';
+import { chatChanging } from './channels/chat-switch.js';
 import { createHash } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 const FILE = path.join(path.dirname(CONFIG_PATH), 'data', 'action-consent.json');
 let executor = null;
+let lastExplorationStop = null;
 
 /** The active DSH instance owns exploration, including its single-round lock. */
 export function bindActionExecutor(handler) {
   executor = handler;
+  lastExplorationStop = null;
   return () => { if (executor === handler) executor = null; };
 }
 
@@ -148,6 +151,26 @@ export function incomingMatches({ peer, kind, text, bridgeText = text, at, incom
     incoming.ts === at && Boolean(incoming.observedAt) && String(incoming.text || '').trim() === value;
 }
 
+export function tryStopExplorationCommand({ peer, kind, text, bridgeText = text, at, cfg, internalSession, now = Date.now() }) {
+  if (!/^(?:(?:中止|停止)(?:自主探索|本轮探索))[。！!]?$/.test(String(bridgeText || '').trim())) return '';
+  if (!executor?.stopExploration || kind !== 'private' || !peer || String(peer) !== chatPeer(cfg) ||
+      cfg.enabled === false || !canReadChat(cfg) || chatChanging()) return '';
+  const { incoming } = chatDialogue(cfg);
+  const age = now - Number(at);
+  if (!(age >= 0 && age <= Number(cfg.rules?.qqCommands?.freshSec ?? 120) * 1000) ||
+      !incomingMatches({ peer, kind, text, bridgeText, at, incoming, cfg, internalSession })) return '';
+  const channel = activeChatChannel(cfg);
+  if (lastExplorationStop?.channel === channel && lastExplorationStop.peer === peer && lastExplorationStop.at === at) {
+    return lastExplorationStop.context;
+  }
+  const result = executor.stopExploration();
+  const context = result.ok
+    ? '<qq_reply_context>中止指令已执行。自然告诉用户，本轮自主探索已中止。</qq_reply_context>'
+    : '<qq_reply_context>目前没有正在运行的自主探索。自然告诉用户当前状态。</qq_reply_context>';
+  lastExplorationStop = { channel, peer, at, context };
+  return context;
+}
+
 function readPendingForMessage({ peer, kind, text, bridgeText, at, cfg, internalSession, now }) {
   const state = read();
   const pending = state.content?.pendingAction;
@@ -203,6 +226,7 @@ function startQqTask({ peer, cfg, now, handler, run, canReport, command = false 
     if (reported) return;
     reported = true;
     clearTimeout(timer);
+    if (result?.reason === 'CANCELLED') return;
     void (async () => {
       await waitForOrdinaryReply({ peer, consumedAt: now, cfg, handler });
       const fresh = loadConfig();
@@ -250,7 +274,7 @@ export function queueQqCommand({ cmd, peer, kind, text, bridgeText, at, cfg, int
   const key = createHash('sha256').update(String(text || '').trim()).digest('hex');
   const handled = content.handled || [];
   if (runningCommand) return 'busy';
-  if (cmd.type === 'explore_query' && cfg.exploration?.web !== true) return 'webDisabled';
+  if ((cmd.type === 'explore_query' || cmd.type === 'browse_url') && cfg.exploration?.web !== true) return 'webDisabled';
   content.handled = [...handled, { peer: String(peer), at, channel: activeChatChannel(cfg), commandKey: key }].slice(-50);
   save(state);
   runningCommand = true;

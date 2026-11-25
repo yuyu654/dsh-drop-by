@@ -107,7 +107,8 @@ test('设置口：读、写、拒绝、以及不碰真配置', async (t) => {
   assert.deepEqual([debugMode.path, debugMode.label, debugMode.type, debugMode.value], ['debugMode', '调试模式', 'bool', false]);
   assert.deepEqual(
     got.json.explorationItems.map((i) => i.path),
-    ['exploration.auto', 'exploration.mode', 'exploration.model', 'exploration.bias', 'exploration.browseMode', 'exploration.nextTopic', 'exploration.interest', 'exploration.offerShare']
+    ['exploration.auto', 'exploration.mode', 'exploration.model', 'exploration.bias', 'exploration.browseMode', 'exploration.nextTopic',
+    'exploration.workSources', 'exploration.interest', 'exploration.offerShare']
   );
   assert.deepEqual(
     got.json.channelItems.map((i) => i.path),
@@ -179,7 +180,9 @@ test('设置口：读、写、拒绝、以及不碰真配置', async (t) => {
   assert.equal(cred.json.ok, true);
   assert.equal(cred.json.secret, true);
   assert.equal(cred.json.value, '', '响应里不能把授权码吐回来');
-  assert.equal(JSON.parse(fs.readFileSync(path.join(tmp, 'credentials.json'), 'utf8')).authCode, 'abcd1234efgh5678');
+  const rawCred = fs.readFileSync(path.join(tmp, 'credentials.json'), 'utf8');
+  assert.equal(rawCred.includes('abcd1234efgh5678'), false, 'credentials.json 不应明文存储授权码');
+  assert.match(JSON.parse(rawCred).authCode, /^enc:v1:/, '授权码应以 enc:v1: 密文落盘');
   assert.equal(fs.readFileSync(cfgPath, 'utf8').includes('abcd1234efgh5678'), false, '授权码不能进 config.json');
   const afterAuth = cred.json.groups.flatMap((g) => g.items).find((i) => i.path === 'mail.authCode');
   assert.equal(afterAuth.display, '已设置');

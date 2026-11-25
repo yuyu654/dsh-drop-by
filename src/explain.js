@@ -143,6 +143,44 @@ function explainMisses(topicMisses, phone) {
   return { detail: detail.join(' '), actionHint: hint };
 }
 
+const VIOLATION_LABELS = {
+  TOO_LONG: '超过字数上限',
+  TOO_SHORT: '字数太短',
+  TOO_MANY_PARTS: '分段过多',
+  MOOD_LEAK: '照抄了探索心情原话',
+  PAREN_ACTION: '带了括号动作说明',
+  SELF_AI: '自称 AI/助手',
+  SERVICE_TONE: '客服腔',
+  META_TALK: '说出了内部设定/思考过程',
+  LISTY: '写成了清单',
+  HEADING: '写成了标题',
+  LEAK: '泄露了内部路径或标记',
+  GREETING: '称呼越界',
+  BRUSH_OFF: '把对方的话推开了',
+  APHORISM_OPEN: '格言/感悟式开头',
+  GENERIC_SUBJ: '泛指主语说理',
+  ESSAY: '议论文腔',
+  CHEER_END: '结尾劝人',
+  ANTITHESIS: '对偶说理',
+  SHARE_TOO_TECHNICAL: '带了公式或偏专业符号',
+  ECHO_SELF: '重复了最近发过的话',
+  ECHO_TOPIC: '照抄了由头标签',
+  TOO_PRECISE_TIME: '报了分钟级报表时长',
+  FALSE_ATTRIBUTION: '把未见于对方原话的细节归给了对方',
+  CHITCHAT_BARE: '只写了空招呼',
+};
+
+function describeGuardReject(content) {
+  if (!content || typeof content !== 'object') return '';
+  const codes = Array.isArray(content.violations) ? content.violations.map((v) => typeof v === 'string' ? v : v?.code).filter(Boolean) : [];
+  const ruleText = codes.length
+    ? '命中规则：' + codes.map((c) => VIOLATION_LABELS[c] ? `${VIOLATION_LABELS[c]}（${c}）` : c).join('、')
+    : '';
+  const draft = String(content.text || content.meta?.rejected || '').trim().slice(0, 120);
+  const draftText = draft ? `被拦原句：「${draft}」` : '';
+  return [ruleText, draftText].filter(Boolean).join('；');
+}
+
 export function explainRun({ record = {}, cfg = {}, health = null, preview = false } = {}) {
   const reason = record.reason;
   let [summary, actionHint] = reasons[reason] || [REASONS[reason] || '这一拍停下了。', CHECK];
@@ -160,6 +198,12 @@ export function explainRun({ record = {}, cfg = {}, health = null, preview = fal
     actionHint = info.actionHint || actionHint;
   }
   if (reason === 'CHITCHAT_JUDGE_NO' || reason === 'NO_CHITCHAT_BUDGET') detail = record.chitchat?.why || '';
+  if (reason === 'GUARD_REJECTED' || reason === 'CHITCHAT_GUARD_REJECTED') {
+    detail = describeGuardReject(record.content);
+  }
+  if (reason === 'RECEPTIVITY_LOW' && record.receptivity) {
+    detail = `小算盘得分 ${record.receptivity.score} 低于拦截门槛 ${record.receptivity.threshold}（已积累 ${record.receptivity.samples} 条有效反馈）。`;
+  }
   if (['DATA_UNAVAILABLE', 'CHITCHAT_NO_MODEL', 'SEND_FAILED', 'LLM_NOT_READY'].includes(reason)) {
     const key = reason === 'CHITCHAT_NO_MODEL' || reason === 'LLM_NOT_READY' ? 'llm' : 'channel';
     const issue = health?.items?.find(item => item.key === key && item.level !== 'ok');

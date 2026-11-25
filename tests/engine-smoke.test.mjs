@@ -20,6 +20,10 @@ process.env.PG_SECRETS_PATH = path.join(dir, 'credentials.json');
 // 别读真实的 QQ 历史 / qq-bridge/last-out.json：上次真发出去一条会让这里
 // 撞上「距上次主动太近」而假失败（2026-11-10 09:27 就是这样）。
 process.env.PG_DSH_HOME = path.join(dir, 'home');
+fs.mkdirSync(path.join(dir, 'home', 'node_modules', 'dsh-plugin-qq-bridge'), { recursive: true });
+fs.writeFileSync(path.join(dir, 'home', 'node_modules', 'dsh-plugin-qq-bridge', 'package.json'), JSON.stringify({ name: 'dsh-plugin-qq-bridge', version: '1.0.0' }));
+fs.mkdirSync(path.join(dir, 'home', 'qq-bridge'), { recursive: true });
+fs.writeFileSync(path.join(dir, 'home', 'qq-bridge', 'connection.json'), '{}');
 
 fs.writeFileSync(
   process.env.PG_CONFIG_PATH,
@@ -32,6 +36,7 @@ fs.writeFileSync(
     idle: { onlineSec: 30, awaySec: 600 },
     rules: { replyCooldownMin: 5, minGapMin: 240, dailyCap: 3, backfillWindowMin: 30, douyinStaleMin: 10 },
     channels: {
+      primary: 'qq',
       qq: { enabled: true, read: true, send: true, peerId: '10001', activeHours: [] },
       main: { enabled: false, read: true, send: false, activeHours: [] },
       douyin: { enabled: false, read: true, send: false, activeHours: [] },

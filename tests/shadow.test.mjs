@@ -43,6 +43,7 @@ function writeConfig(patch = {}) {
     },
     channels: {
       ...cfg.channels,
+      primary: 'qq',
       qq: { ...cfg.channels.qq, read: false, send: false },
       main: { ...cfg.channels.main, enabled: false, read: false, send: false },
       douyin: { ...cfg.channels.douyin, enabled: false, read: false, send: false },

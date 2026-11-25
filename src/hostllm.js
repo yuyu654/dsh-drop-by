@@ -45,9 +45,67 @@ function userMessage(text, images = []) {
 
 let activeHostCtx = null;
 let cachedModels = [];
+let hostLlmTrace = null;
+const reasoningEffortCache = new Map();
+const unsupportedEffortModels = new Set();
+
+const EFFORT_FALLBACKS = {
+  off: ['off', 'low'],
+  low: ['low'],
+  high: ['high'],
+  max: ['max', 'high'],
+};
 
 export function setHostLlmContext(ctx) {
   activeHostCtx = ctx || null;
+}
+
+export function setHostLlmTrace(fn) {
+  hostLlmTrace = typeof fn === 'function' ? fn : null;
+}
+
+export function clearReasoningEffortCache() {
+  reasoningEffortCache.clear();
+  unsupportedEffortModels.clear();
+}
+
+function modelKey(target) {
+  return `${target?.provider || ''}:${target?.model || ''}`;
+}
+
+async function resolveSupportedEfforts(llm, modelTarget, cfg) {
+  const key = modelKey(modelTarget);
+  if (!key || key === ':' || unsupportedEffortModels.has(key)) return null;
+  if (reasoningEffortCache.has(key)) return reasoningEffortCache.get(key);
+  if (typeof llm?.resolveModelInfo !== 'function') {
+    reasoningEffortCache.set(key, null);
+    return null;
+  }
+  const timeoutMs = Math.max(1000, Number(cfg?.content?.forward?.visionInfoTimeoutMs) || 10_000);
+  try {
+    const info = await llm.resolveModelInfo(modelTarget.provider, modelTarget.model, AbortSignal.timeout(timeoutMs));
+    const raw = info?.reasoning?.efforts;
+    const efforts = Array.isArray(raw)
+      ? raw.map((item) => (typeof item === 'string' ? item : item?.id)).filter((id) => typeof id === 'string' && id.trim())
+      : null;
+    const normalized = efforts && efforts.length ? efforts : null;
+    reasoningEffortCache.set(key, normalized);
+    return normalized;
+  } catch {
+    // 探测失败或超时不阻断生成，也不永久缓存，下次可重试探测
+    return null;
+  }
+}
+
+async function resolveEffectiveReasoningEffort(llm, modelTarget, requested, cfg) {
+  const req = String(requested || '').trim().toLowerCase();
+  if (!req || !Object.hasOwn(EFFORT_FALLBACKS, req)) return undefined;
+  const efforts = await resolveSupportedEfforts(llm, modelTarget, cfg);
+  if (!efforts) return undefined;
+  for (const candidate of EFFORT_FALLBACKS[req]) {
+    if (efforts.includes(candidate)) return candidate;
+  }
+  return undefined;
 }
 
 export function parseExplorationModelSpec(raw, catalog = []) {
@@ -135,6 +193,7 @@ function collectSyncModelsFromLlm(ctx) {
 }
 
 export async function refreshHostModelCatalog(ctx = activeHostCtx) {
+  clearReasoningEffortCache();
   const llm = serviceOf(ctx, 'llm');
   if (!llm || typeof llm.listProviders !== 'function') return getHostModelCatalog(ctx);
   const out = [];
@@ -244,15 +303,16 @@ export function makeHostLlm(ctx, { cfg, log = () => {}, forExploration = false }
   }
   if (!target) return { ready: false, reason: 'HOST_LLM_NO_MODEL' };
 
-  // 默认上限放宽到 1024：带思考/reasoning 的模型（如 deepseek-v4.1-flash）会把推理过程也计入 maxTokens，
-  // 220 极易在正文还没吐出前就被 max-tokens 截断。
-  const maxTokens = Math.max(32, Number(cfg?.content?.llm?.maxTokens) || 1024);
+  // 默认上限放宽到 2048：带思考/reasoning 的模型（如 deepseek-v4.1-flash）会把推理过程也计入 maxTokens，
+  // 1024 仍容易在正文吐出前就被 max-tokens 截断从而白白触发重试。
+  const maxTokens = Math.max(32, Number(cfg?.content?.llm?.maxTokens) || 2048);
   const temperature = Number.isFinite(Number(cfg?.content?.llm?.temperature))
     ? Number(cfg.content.llm.temperature)
     : 0.85;
 
   // 一次尝试：失败就地返回结果，重试由下面的 generate() 统一做。
-  async function attemptOnce({ prompt, timeoutMs, images, modelTarget = target, minOutputTokens = 0 } = {}) {
+  async function attemptOnce({ prompt, timeoutMs, images, modelTarget = target, minOutputTokens = 0, reasoningEffort, tag = '', signal } = {}) {
+    if (signal?.aborted) return { ok: false, reason: signal.reason?.message || 'CANCELLED' };
     const t0 = Date.now();
     let out = '';
     let reasoningChars = 0;
@@ -262,19 +322,27 @@ export function makeHostLlm(ctx, { cfg, log = () => {}, forExploration = false }
     const ms = Math.max(1000, Number(timeoutMs) || Number(cfg?.content?.llm?.timeoutMs) || 60_000);
     const killer = setTimeout(() => ac.abort(new Error('HOST_LLM_TIMEOUT')), ms);
     killer.unref?.();
-    const effectiveMaxTokens = Math.max(maxTokens, Number(minOutputTokens) || 0);
+
+    const effectiveEffort = await resolveEffectiveReasoningEffort(llm, modelTarget, reasoningEffort, cfg);
+    const reasoningFloor = effectiveEffort === 'low' ? 2048 : (effectiveEffort === 'high' || effectiveEffort === 'max') ? 4096 : 0;
+    const effectiveMaxTokens = Math.max(maxTokens, Number(minOutputTokens) || 0, reasoningFloor);
+
+    const streamArgs = {
+      provider: modelTarget.provider,
+      model: modelTarget.model,
+      messages: [userMessage(prompt, images)],
+      maxTokens: effectiveMaxTokens,
+      temperature,
+      signal: signal ? AbortSignal.any([signal, ac.signal]) : ac.signal,
+    };
+    if (effectiveEffort) streamArgs.reasoningEffort = effectiveEffort;
 
     try {
-      const stream = llm.stream({
-        provider: modelTarget.provider,
-        model: modelTarget.model,
-        messages: [userMessage(prompt, images)],
-        maxTokens: effectiveMaxTokens,
-        temperature,
-        signal: ac.signal,
-      });
+      streamArgs.signal.throwIfAborted();
+      const stream = llm.stream(streamArgs);
       let finishKind;
       for await (const chunk of stream) {
+        streamArgs.signal.throwIfAborted();
         if (!chunk) continue;
         if (chunk.type === 'finish') finishKind = chunk.reason?.kind;
         if (chunk.type === 'text-delta' && typeof chunk.text === 'string') out += chunk.text;
@@ -290,13 +358,16 @@ export function makeHostLlm(ctx, { cfg, log = () => {}, forExploration = false }
             note: String(f.message || f.code || '？').slice(0, 200),
             provider: modelTarget.provider,
             model: modelTarget.model,
+            usedReasoningEffort: effectiveEffort || null,
           };
         }
       }
       const text = String(out || '').trim();
+      const elapsed = Date.now() - t0;
       if (!text) {
         const parts = [];
         if (finishKind) parts.push(`finish=${finishKind}`);
+        if (effectiveEffort) parts.push(`effort=${effectiveEffort}`);
         if (reasoningChars > 0) parts.push(`reasoning=${reasoningChars}字`);
         if (outputTokens != null) parts.push(`outTokens=${outputTokens}`);
         parts.push(`maxTokens=${effectiveMaxTokens}`);
@@ -309,10 +380,27 @@ export function makeHostLlm(ctx, { cfg, log = () => {}, forExploration = false }
           maxTokens: effectiveMaxTokens,
           provider: modelTarget.provider,
           model: modelTarget.model,
+          usedReasoningEffort: effectiveEffort || null,
         };
       }
-      return { ok: true, text, ms: Date.now() - t0, provider: modelTarget.provider, model: modelTarget.model, via: 'host' };
+      if (hostLlmTrace && (tag || reasoningEffort)) {
+        hostLlmTrace(
+          `llm[${tag || 'call'}]: ${modelTarget.provider}:${modelTarget.model} effort=${effectiveEffort || 'none'}(req=${reasoningEffort || '-'}) reasoning=${reasoningChars}字 out=${outputTokens ?? '?'} ${elapsed}ms`
+        );
+      }
+      return {
+        ok: true,
+        text,
+        ms: elapsed,
+        provider: modelTarget.provider,
+        model: modelTarget.model,
+        via: 'host',
+        reasoningEffort: effectiveEffort || null,
+        reasoningChars,
+        outputTokens,
+      };
     } catch (e) {
+      if (signal?.aborted) return { ok: false, reason: signal.reason?.message || 'CANCELLED' };
       const timeout = ac.signal.aborted;
       log(`生成失败：${String(e?.message || e).slice(0, 160)}`);
       return {
@@ -321,6 +409,7 @@ export function makeHostLlm(ctx, { cfg, log = () => {}, forExploration = false }
         note: String(e?.message || e).slice(0, 200),
         provider: modelTarget.provider,
         model: modelTarget.model,
+        usedReasoningEffort: effectiveEffort || null,
       };
     } finally {
       clearTimeout(killer);
@@ -331,17 +420,33 @@ export function makeHostLlm(ctx, { cfg, log = () => {}, forExploration = false }
    * 失败再试一次：模型侧偶发的报错/空文本，隔一两秒往往就好了（2026-11-09 17:24
    * 那拍就是一次服务端错误、一次空文本）。超时不重试——那一拍已经等得太久，
    * 重试只会继续堵着 tick。若因思考耗尽 maxTokens 返回空，重试时顺手翻倍预算。
+   * 若带 reasoningEffort 报 HOST_LLM_ERROR，自动剥离该参数并记入不支持表后重试一次。
    * 次数由 content.llm.retries 控制，默认 1（多试一次）。
    */
   const retries = Math.max(0, Math.min(3, Number(cfg?.content?.llm?.retries ?? 1)));
   async function generate(opts = {}) {
     let attemptOpts = { ...opts };
     let r = await attemptOnce(attemptOpts);
-    for (let i = 0; i < retries && !r.ok; i += 1) {
+    if (!opts.signal?.aborted && !r.ok && r.reason === 'HOST_LLM_ERROR' && r.usedReasoningEffort) {
+      const key = modelKey(attemptOpts.modelTarget || target);
+      unsupportedEffortModels.add(key);
+      log(`模型 ${key} 拒收 reasoningEffort=${r.usedReasoningEffort}，已剥离该参数降级重试`);
+      attemptOpts = { ...attemptOpts, reasoningEffort: undefined };
+      r = await attemptOnce(attemptOpts);
+    }
+    for (let i = 0; i < retries && !r.ok && !opts.signal?.aborted; i += 1) {
       if (r.reason === 'HOST_LLM_TIMEOUT') break;
       if (r.reason === 'HOST_LLM_EMPTY' && (r.finishKind === 'max-tokens' || r.reasoningChars > 0)) {
-        const currentBudget = Math.max(maxTokens, Number(attemptOpts.minOutputTokens) || 0, 512);
-        attemptOpts = { ...attemptOpts, minOutputTokens: Math.min(8192, currentBudget * 2) };
+        const currentBudget = Math.max(maxTokens, Number(attemptOpts.minOutputTokens) || 0, 1024);
+        const briefHint = '\n\n请直接输出最终结果或单行 JSON，不要展开冗长推理。';
+        const nextPrompt = typeof attemptOpts.prompt === 'string' && !attemptOpts.prompt.includes('不要展开冗长推理')
+          ? attemptOpts.prompt + briefHint
+          : attemptOpts.prompt;
+        attemptOpts = {
+          ...attemptOpts,
+          prompt: nextPrompt,
+          minOutputTokens: Math.min(8192, Math.max(currentBudget * 2, 4096)),
+        };
       }
       log(`生成失败（${r.reason}${r.note ? `：${r.note}` : ''}），重试第 ${i + 1} 次`);
       r = await attemptOnce(attemptOpts);
@@ -356,10 +461,12 @@ export function makeHostLlm(ctx, { cfg, log = () => {}, forExploration = false }
   const visionTarget = forward.visionModel
     ? { provider: forward.visionProvider || target.provider, model: forward.visionModel }
     : target;
-  async function observeVideo({ prompt, images, timeoutMs }) {
+  async function observeVideo({ prompt, images, timeoutMs, signal }) {
     let info;
     try {
-      info = await llm.resolveModelInfo?.(visionTarget.provider, visionTarget.model, AbortSignal.timeout(forward.visionInfoTimeoutMs ?? 10_000));
+      const timeoutSignal = AbortSignal.timeout(forward.visionInfoTimeoutMs ?? 10_000);
+      info = await llm.resolveModelInfo?.(visionTarget.provider, visionTarget.model,
+        signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal);
     } catch {
       return { ok: false, reason: 'VIDEO_MODEL_UNVERIFIED' };
     }
@@ -367,7 +474,7 @@ export function makeHostLlm(ctx, { cfg, log = () => {}, forExploration = false }
     if (!Array.isArray(info?.inputModalities)) return { ok: false, reason: 'VIDEO_MODEL_UNVERIFIED' };
     if (!info.inputModalities.includes('image')) return { ok: false, reason: 'VIDEO_MODEL_NO_IMAGE' };
     const content = images.map((attachment) => ({ type: 'image', attachment }));
-    return attemptOnce({ prompt, images: content, timeoutMs, modelTarget: visionTarget });
+    return attemptOnce({ prompt, images: content, timeoutMs, signal, modelTarget: visionTarget });
   }
 
   async function saveImage({ data, mediaType = 'image/jpeg', name = 'explore-page.jpg' } = {}) {

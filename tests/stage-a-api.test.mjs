@@ -29,11 +29,13 @@ const write = (file, data) => {
 const now = Date.parse('2026-11-22T12:00:00+08:00');
 const base = { enabled: true, dryRun: false, send: { enabled: true }, quietHours: [],
   rules: { minGapMin: 240, dailyCap: 3 },
-  channels: { qq: { enabled: true, read: true, send: true, peerId: '10001', activeHours: [] } },
+  channels: { primary: 'qq', qq: { enabled: true, read: true, send: true, peerId: '10001', activeHours: [] } },
   sources: { phone: { enabled: true, staleHours: 36 } },
   perception: { signals: { enabled: false }, l3: { enabled: false } },
   content: { mode: 'fixed', fixedText: '试跑草稿' }, mail: { enabled: false },
 };
+write(path.join(env.PG_DSH_HOME, 'node_modules', 'dsh-plugin-qq-bridge', 'package.json'), { name: 'dsh-plugin-qq-bridge', version: '1.0.0' });
+write(path.join(env.PG_DSH_HOME, 'qq-bridge', 'connection.json'), {});
 write(env.PG_CONFIG_PATH, base);
 const day = recordDay(now, base.timezone, loadConfig());
 write(env.PG_STATE_PATH, { day, real: { todaySent: 0 }, sim: { todaySent: 3, lastSendAt: now },

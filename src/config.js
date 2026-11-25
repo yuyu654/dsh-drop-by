@@ -30,6 +30,7 @@ export const AGREEMENT_DEFAULTS = Object.freeze({
   shortWithinMin: 180, slowIntervalMin: 15, extractTimeoutMs: 5000, soonMin: 10, fewHoursMin: 120, dateTime: '18:00', model: '',
 });
 export const CURIOSITY_DEFAULTS = Object.freeze({ enabled: true, maxCandidates: 6, keepDays: 7, warmMin: 30 });
+export const RECEPTIVITY_DEFAULTS = Object.freeze({ mode: 'shadow', threshold: 0.28, minSamples: 12 });
 
 const EXPLORATION_BIASES = new Set(['leisure', 'balanced', 'research']);
 
@@ -52,9 +53,10 @@ const DEFAULTS = {
   tickMinutes: 10,
 
   timezone: 'Asia/Shanghai',
+  presets: { active: 'custom', customSnapshot: null, overrides: {} },
   characterRest: { ...CHARACTER_REST_DEFAULTS },
   agreements: { ...AGREEMENT_DEFAULTS },
-  exploration: { feedback: { ...CURIOSITY_DEFAULTS }, auto: false, mode: 'deep', model: '', offerShare: false, mood: false, portrait: false, moodSource: 'auto', web: false, video: false, extraTools: '', bias: 'balanced', browseMode: 'vision_light', browseMaxSteps: 40, interest: '', nextTopic: '', offPeakOnly: false, intervalMinutes: 180, recentDays: 3, moodHours: 2, portraitHours: 2, planTimeoutMs: 30000, roundTimeoutMs: 45000, toolTimeoutMs: 18000, extTimeoutMs: 12000, storyboardTimeoutMs: 65000, storyboardSeconds: 60, moodReplyAgeMin: 30, moodDraftTimeoutMs: 15000, portraitTimeoutMs: 12000 },
+  exploration: { feedback: { ...CURIOSITY_DEFAULTS }, auto: false, mode: 'deep', model: '', offerShare: false, mood: false, portrait: false, moodSource: 'auto', web: false, video: false, builtinFeeds: false, rssUrls: '', syncToSharedMemory: false, extraTools: '', bias: 'balanced', browseMode: 'vision_light', browseMaxSteps: 40, interest: '', nextTopic: '', workSources: '', offPeakOnly: false, intervalMinutes: 180, recentDays: 3, moodHours: 2, portraitHours: 2, roundBudgetMs: 300000, planTimeoutMs: 30000, roundTimeoutMs: 45000, toolTimeoutMs: 18000, extTimeoutMs: 12000, storyboardTimeoutMs: 65000, storyboardSeconds: 60, moodReplyAgeMin: 30, moodDraftTimeoutMs: 15000, portraitTimeoutMs: 12000 },
   // 全局静默：这一段里所有功能都不读不发（含邮箱不联网）。多段、可跨零点。
   quietHours: [['22:30', '07:30']],
   quietHoursNote: '全局静默，多段，空数组=不静默',
@@ -74,11 +76,15 @@ const DEFAULTS = {
     // 阶段 4：shadow = 被护栏拦下的拍子也随机抽一部分交给模型预演（只记不发，不碰 feedback）。
     // shadowSampleRate 默认 0.25：一天被拦一百来拍，只烧二三十次调用。
     judge: { enabled: false, attempts: 2, shadow: false, shadowSampleRate: 0.25, timeoutMs: 90000 },
+    receptivity: { ...RECEPTIVITY_DEFAULTS },
     askProjectOnce: false,
     qqContinuation: false,
     actionGate: { enabled: true, expiresMinutes: 15, ackWaitSec: 30 },
-    qqCommands: { enabled: true, intentTimeoutSec: 5, timeoutSec: 90, freshSec: 120 },
+    qqCommands: { enabled: true, extended: false, intentTimeoutSec: 5, timeoutSec: 90, freshSec: 120 },
+    chatSession: { maxToolCallsPerTurn: 0, notifyOnToolLimit: true },
     qqRollover: { enabled: true, thresholdPercent: 80, carryMessages: 10, prepareBindingFile: true },
+    exposeMaintenanceTools: false,
+    compactChatTools: false,
     qqTiming: { debounceMs: 3500, pollSec: 2, windowSec: 180, pauseSec: 15, expireSec: 55, inFlightSec: 180, generationTimeoutMs: 20000, hotMinChars: 6 },
     closingCooldownMin: 120,
     projectTiming: { memoryDays: 14, updateMin: 30, generationTimeoutMs: 20000 },
@@ -155,11 +161,22 @@ const DEFAULTS = {
     probeTimeoutMs: 4000,
     l3: { enabled: false, everyMin: 30, timeoutMs: 12000, skipFg: ['lockapp', 'logonui'] },
     signals: { enabled: true, browser: true, port: 9223, timeoutMs: 600 },
-    // 反作弊保护：WeGame / 腾讯系游戏在跑时，这一拍不读窗口标题、不读浏览器标签、不截屏，
-    // 只留「键鼠多久没动」（GetLastInputInfo，跟游戏无关）。读窗口/截屏在带反作弊的游戏旁边有风险。
+    // 反作弊与全屏游戏保护：常见国服/外服反作弊进程或全屏游戏在跑时，不读窗口标题、不读浏览器标签、不截屏，
+    // 只留「键鼠多久没动」（GetLastInputInfo，跟游戏无关）。
     anticheat: {
       skip: true,
-      procs: ['wegame', 'tencentdl', 'tcls', 'crossproxy', 'leagueclient', 'lolex', 'dnf', 'cf', 'valorant', 'vgtray', 'gamecoach'],
+      skipFullscreen: true,
+      procs: [
+        'wegame', 'tencentdl', 'tcls', 'crossproxy', 'leagueclient', 'lolex',
+        'dnf', 'cf', 'valorant', 'vgtray', 'vgc', 'gamecoach',
+        'tenprotect', 'tesafe', 'ace-tray', 'sguard64', 'sguardsvc64',
+        '5eclient', '5earena', 'pwclient', 'b5client',
+        'easyanticheat', 'easyanticheat_eos', 'beservice', 'bedaisy', 'battleye',
+        'faceitclient', 'faceitservice', 'gamemon', 'gamemon64', 'npggnt',
+        'xigncode', 'xxd-0', 'pnkbstra', 'pnkbstrb',
+        'eaanticheat', 'eaanticheat.gameservice', 'mhyprot2', 'hoyokprotect',
+        'nexongamesecurity', 'blackcipher', 'blackcipher64',
+      ],
     },
   },
   send: { enabled: false, requireConfirm: true, timeoutMs: 8000, split: { enabled: true, maxParts: 4,
@@ -380,6 +397,16 @@ export function loadConfig() {
     const legacyFirst = Number(raw?.send?.split?.firstDelayMs);
     if (legacyFirst > 0) cfg.send = { ...cfg.send, split: { ...cfg.send.split, minFirstMs: legacyFirst } };
     cfg.timingVersion = 1;
+  }
+  // 升级旧配置里的默认 11 项腾讯系反作弊名单：未自定义过的用户自动补充外服/Steam 反作弊进程。
+  const rawAcProcs = raw?.perception?.anticheat?.procs;
+  const LEGACY_AC_11 = ['wegame', 'tencentdl', 'tcls', 'crossproxy', 'leagueclient', 'lolex', 'dnf', 'cf', 'valorant', 'vgtray', 'gamecoach'];
+  if (Array.isArray(rawAcProcs) && rawAcProcs.length === LEGACY_AC_11.length &&
+      LEGACY_AC_11.every((name, idx) => String(rawAcProcs[idx] || '').toLowerCase() === name)) {
+    cfg.perception = {
+      ...cfg.perception,
+      anticheat: { ...cfg.perception.anticheat, procs: [...DEFAULTS.perception.anticheat.procs] },
+    };
   }
   return cfg;
 }

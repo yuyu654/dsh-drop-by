@@ -7,6 +7,7 @@ import { chatBinding, readyDouyinBinding, chatChanging } from './channels/chat-s
 import { douyinInstallation, originalWatcherDisabled, readDouyinState } from './channels/douyin-im.js';
 import { activeChatChannel, chatPeer } from './channels/external.js';
 import { loadPersona } from './persona.js';
+import { loadState } from './config.js';
 import { inspectEmotionPlugin } from './emotion-sync.js';
 import { mailReady } from './fishmail.js';
 import { phonePauseText, PHONE_SLOTS, PHONE_FIX_HINT, topicLabel } from './explain.js';
@@ -23,13 +24,67 @@ function check(key, label, level, detail, actionHint = '') {
   return { key, label, level, detail, actionHint };
 }
 
-function qqBound(peer) {
+function qqBoundSessionId(peer, home = dshHome()) {
+  if (!peer) return '';
   try {
-    const file = path.join(dshHome(), 'qq-bridge', 'bindings.json');
+    const file = path.join(home, 'qq-bridge', 'bindings.json');
     const bindings = JSON.parse(fs.readFileSync(file, 'utf8'));
-    return Object.values(bindings.sessions || {}).some(item =>
-      item && item.enabled !== false && item.peerKind === 'private' && String(item.peerId) === peer);
-  } catch { return false; }
+    const matches = Object.entries(bindings.sessions || {})
+      .filter(([, item]) => item && item.enabled !== false && item.peerKind === 'private' && String(item.peerId) === peer)
+      .sort(([, a], [, b]) => Number(b.authoritative === true) - Number(a.authoritative === true) || (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0));
+    return matches[0]?.[0] || '';
+  } catch { return ''; }
+}
+
+function qqBound(peer) {
+  return Boolean(qqBoundSessionId(peer));
+}
+
+/** 轻量只读体检：从 DSH 的 session_projcache 读绑定会话的工具数与上下文占用；读不到就静默返回 null。 */
+export function inspectSessionContext(cfg, home = dshHome()) {
+  try {
+    const primary = activeChatChannel(cfg);
+    const peer = chatPeer(cfg).trim();
+    const sessionId = primary === 'qq'
+      ? (qqBoundSessionId(peer, home) || chatBinding().sessionId || '')
+      : (chatBinding().sessionId || '');
+    if (!sessionId) return null;
+    const file = path.join(home, 'storages', 'session_projcache', 'sessions', `${sessionId}.json`);
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const rows = parsed?.record?.rows;
+    if (!rows || typeof rows !== 'object') return null;
+    const toolsTokens = Number(rows.contextBreakdown?.val?.breakdown?.toolsTokens);
+    const headers = rows.contextHeaders?.val?.headers;
+    const tools = Array.isArray(headers) && headers.length ? headers[headers.length - 1]?.tools : null;
+    if (!Number.isFinite(toolsTokens) && !Array.isArray(tools)) return null;
+    const toolList = Array.isArray(tools) ? tools : [];
+    const toolCount = toolList.length;
+    const effectiveToolsTokens = Number.isFinite(toolsTokens)
+      ? toolsTokens
+      : toolList.reduce((sum, item) => sum + (Number(item?.tokens) || 0), 0);
+    if (!toolCount && effectiveToolsTokens <= 0) return null;
+    const pressure = rows.contextPressure?.val || {};
+    const used = Number(pressure.projectedTokens ?? pressure.pressureTokens);
+    const limit = Number(pressure.contextWindow);
+    const topTools = [...toolList]
+      .filter((t) => t?.name && Number(t?.tokens) > 0)
+      .sort((a, b) => Number(b.tokens) - Number(a.tokens))
+      .slice(0, 5)
+      .map((t) => `${t.name}(${t.tokens})`);
+    const heavy = effectiveToolsTokens >= 15_000 || toolCount >= 60;
+    const toolsK = (effectiveToolsTokens / 1000).toFixed(1);
+    const usageText = Number.isFinite(used) && used > 0 && Number.isFinite(limit) && limit > 0
+      ? `，当前总占用 ${(used / 1000).toFixed(1)}k / ${Math.round(limit / 1024)}K`
+      : '';
+    const detail = `当前聊天会话挂载了 ${toolCount} 个工具（约 ${toolsK}k tokens${usageText}）` +
+      (heavy && topTools.length ? `；占用最高：${topTools.join('、')}。` : '，体积适中。');
+    const hint = heavy
+      ? '工具定义过多会明显推高隔夜/间隔较久时的单句成本；可在 DSH 插件管理里关闭闲置或重复插件以减负。'
+      : '';
+    return check('session_context', '会话上下文体检（只读）', heavy ? 'warn' : 'ok', detail, hint);
+  } catch {
+    return null;
+  }
 }
 
 function checkChannel(cfg) {
@@ -85,7 +140,7 @@ function checkChannel(cfg) {
   }
 }
 
-export async function connectivity({ cfg, host, now = Date.now() }) {
+export async function connectivity({ cfg, host, st = null, now = Date.now(), secretsPath = undefined }) {
   const phoneOn = cfg.sources?.phone?.enabled !== false;
   const mailOn = cfg.mail?.enabled === true;
   const health = await checkHealth({ cfg, now, only: phoneOn || mailOn ? ['fish', 'memory'] : ['memory'] });
@@ -100,11 +155,23 @@ export async function connectivity({ cfg, host, now = Date.now() }) {
     : check('persona', '人设', 'warn', '当前使用内置口吻。', '可在 DSH 配置角色人设，或填写插件目录里的 persona.md。'));
 
   if (phoneOn || mailOn) {
-    const mail = mailReady({ ...cfg, mail: { ...cfg.mail, enabled: true } });
-    const mailDetail = mail.ok ? '邮箱账号和 IMAP 授权码已填。' :
-      mail.reason === 'MAIL_NO_USER' ? '邮箱账号缺失或格式不完整。' : '缺少 IMAP 授权码。';
-    items.push(check('mail', '邮箱配置', mailOn && mail.ok ? 'ok' : 'warn',
-      mailDetail + (mailOn ? '' : '读邮箱开关关着。'), mailOn && mail.ok ? '' : PHONE_FIX_HINT));
+    const mail = mailReady({ ...cfg, mail: { ...cfg.mail, enabled: true } }, { secretsPath });
+    const ms = (st || loadState())?.mail || {};
+    const mailFailed = Boolean(
+      mailOn &&
+      mail.ok &&
+      ms.lastError &&
+      (!ms.lastOkAt || Number(ms.failedAt) >= Number(ms.lastOkAt))
+    );
+    const mailLevel = !mailOn || !mail.ok ? 'warn' : mailFailed ? 'warn' : 'ok';
+    const mailDetail = !mail.ok
+      ? (mail.reason === 'MAIL_NO_USER' ? '邮箱账号缺失或格式不完整。' : '缺少 IMAP 授权码。')
+      : !mailOn
+        ? '邮箱账号和 IMAP 授权码已填。读邮箱开关关着。'
+        : mailFailed
+          ? `邮箱配置已填，但最近一次 IMAP 拉取失败：${String(ms.lastError).slice(0, 120)}`
+          : '邮箱账号和 IMAP 授权码已填。';
+    items.push(check('mail', '邮箱配置', mailLevel, mailDetail, mailLevel === 'ok' ? '' : PHONE_FIX_HINT));
     const fish = health.items.find(item => item.key === 'fish');
     if (phoneOn && !mailOn && health.phone?.missing) {
       items.push(check('phone', '鱼鱼邮件缓存', 'warn', '未开启读邮箱，暂未使用手机作息数据。',
@@ -131,6 +198,8 @@ export async function connectivity({ cfg, host, now = Date.now() }) {
   items.push(check('emotion', '情绪插件（可选）', emotionReady ? 'ok' : 'warn',
     emotionReady ? '情绪插件已就绪。' : emotion.installed ? '情绪插件还缺少可用配置。' : '尚未安装情绪插件。',
     emotionReady ? '' : '如需使用，安装 emotion-state-portrait 并查看陪伴里的情绪状态。'));
+  const sessionCtx = inspectSessionContext(cfg);
+  if (sessionCtx) items.push(sessionCtx);
   return { ok: true, at: now, items, phone: phoneOn ? health.phone : null };
 }
 

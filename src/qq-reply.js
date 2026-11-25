@@ -1,13 +1,13 @@
 import { loadConfig } from './config.js';
 import { loadPersona } from './persona.js';
 import { explorationStatus, explorationMood, loadExploration, recentExploration, toneOf } from './explore.js';
-import { recallExplorationMemories } from './exploration-memory.js';
+import { extractMemoryTerms, recallExplorationMemories } from './exploration-memory.js';
 import { publicExplorationUrl } from './explore-media.js';
 import { ATTRIBUTION_RULE } from './attribution.js';
 import { characterRestAt, WOKEN_HINT } from './character-rest.js';
-import { consumeQqAction, pendingQqProposal, qqCommandPreflight, queueQqCommand } from './action-proposal.js';
+import { consumeQqAction, pendingQqProposal, qqCommandPreflight, queueQqCommand, tryStopExplorationCommand } from './action-proposal.js';
 import { COMMAND_ACK, looksLikeExplorationDirection, matchUserCommand } from './command-matcher.js';
-import { applyExplorationDirection, applyTopicPreference, explorationDirectionContext, verifiedExplorationInput, verifiedPreferenceMessage } from './qq-command.js';
+import { applyExplorationDirection, applyTopicPreference, explorationDirectionContext, latestLoginContext, verifiedExplorationInput, verifiedPreferenceMessage } from './qq-command.js';
 import { makeHostLlm } from './hostllm.js';
 import { portraitMood, updatePortraitMood } from './emotion-portrait.js';
 import { appendEmotionInbox, readPortraitMoodMap } from './emotion-sync.js';
@@ -20,11 +20,44 @@ import { canReadChat, chatPeer, emotionPeer, activeChatChannel } from './channel
 import { consumeCompanionQqOutbound } from './send.js';
 import { recentTurns } from './outbound.js';
 import { REPLY_PACING_RULE, detectWindDownSignals, isExplicitClose, isMinimalReply } from './chat-rhythm.js';
-import { agreementAnchor, observeAgreement } from './agreements.js';
+import { agreementAnchor, handleAgreementChatCommand, isAgreementReminderRequest, observeAgreement } from './agreements.js';
 import { forwardCuriosity, observeCuriosity, explorationFeedbackHints, topicInExplorationFeedback } from './exploration-feedback.js';
 import { inQuiet } from './schedule.js';
 
 const ACTION_PROMPT_RULE = '换源确认由陪伴插件发出和处理；普通聊天不要自行提出需要确认的换源请求。';
+const EXPLORATION_ASK_RE = /(?:链接|网址|地址|原帖|出处|来源|发我|发一下|推给我|这一话|上一话|下一话|第[一二三四五六七八九十0-9]+[话集章]|讲了[啥什]|进展|后来呢|结果怎么样|(?:最近|刚才|之前|刚刚).{0,6}(?:在看|看过|研究|探索|关注|追|翻|查|发现))/u;
+const EXPLORATION_WARM_WINDOW_MS = 30 * 60_000;
+
+export function shouldExpandExplorationContext({ text = '', now = Date.now(), status = {}, visibleEntries = [], recalledMemories = [], warmMs = EXPLORATION_WARM_WINDOW_MS } = {}) {
+  const msg = String(text || '').trim();
+  // 无具体消息文本时保持完整注入（兼容直接调用与默认行为）
+  if (!msg) return true;
+  // 第 1 层：刚完成探索或刚发过探索分享的热窗口（默认 30 分钟），兜住「这一话讲了啥」这类代词追问
+  const latestAt = Math.max(
+    Number(status?.lastAt) || 0,
+    Number(status?.candidate?.at) || 0,
+    ...visibleEntries.map((e) => Number(e?.at) || 0),
+  );
+  if (latestAt > 0 && now >= latestAt && now - latestAt <= warmMs) return true;
+  // 第 3 层：通用探索追问 / 索要链接意图
+  if (EXPLORATION_ASK_RE.test(msg)) return true;
+  // 第 2 层：关键词命中当前活跃探索或内置探索记忆
+  if (recalledMemories.length > 0) return true;
+  const normMsg = msg.normalize('NFKC').toLowerCase();
+  const terms = extractMemoryTerms(msg, 12);
+  const haystack = visibleEntries
+    .map((e) => `${e?.topic || e?.section || ''} ${e?.progress || e?.summary || e?.line || ''} ${e?.discovery || ''}`)
+    .join(' ')
+    .normalize('NFKC')
+    .toLowerCase();
+  if (!haystack.trim()) return false;
+  if (terms.some((t) => haystack.includes(t))) return true;
+  // 反向匹配：从探索条目提取的关键词（如书名/人名）是否出现在用户原话中
+  if (extractMemoryTerms(haystack, 24).some((t) => normMsg.includes(t))) return true;
+  // 兜底：中文连续短句开头的 2 字词（如「艾栩后来怎么样了」里的「艾栩」）
+  const hanTokens = normMsg.match(/[\p{Script=Han}]{2,}/gu) || [];
+  return hanTokens.some((tok) => tok.length >= 2 && !/^(?:今天|昨天|明天|中午|晚上|早上|下午|现在|刚才|最近|已经|没有|怎么|什么|可以|觉得|好像|有点|一下|这个|那个|就是|不是|还是|应该|因为|所以)$/.test(tok.slice(0, 2)) && haystack.includes(tok.slice(0, 2)));
+}
 
 // Context belongs only to the configured private contact and the current persona.
 export function qqReplyContext({ peer, kind, cfg = loadConfig(), now = Date.now(),
@@ -48,13 +81,38 @@ export function qqReplyContext({ peer, kind, cfg = loadConfig(), now = Date.now(
   });
   const isLightMode = cfg.exploration?.mode === 'light';
   const lowSignal = Boolean(minimal || isMinimalReply(text) || isExplicitClose(text));
-  const recalledSelf = !lowSignal && !isLightMode && Array.isArray(memories) && memories.length
+  const visibleThread = !isLightMode && visible(thread) ? thread : null;
+  const visibleLeisure = !isLightMode && visible(leisure) ? leisure : null;
+  const visibleLight = visible(light) ? light : null;
+  const visibleCandidate = recent(candidate) && !candidate.loginSite && !topicInExplorationFeedback(candidate.section, avoid)
+    ? candidate : null;
+  const visibleEntries = [visibleThread, visibleLeisure, visibleLight, visibleCandidate].filter(Boolean);
+  const matchedSelf = !lowSignal && !isLightMode && Array.isArray(memories) && memories.length && String(text || '').trim()
     ? recallExplorationMemories(memories, {
       query: text,
       now,
       limit: 3,
+      requireMatch: true,
       excludeTexts: [thread?.progress, leisure?.progress, candidate?.discovery].filter(Boolean),
     }).filter((item) => !topicInExplorationFeedback(item.topic, avoid))
+    : [];
+  const expandExploration = !lowSignal && shouldExpandExplorationContext({
+    text,
+    now,
+    status,
+    visibleEntries,
+    recalledMemories: matchedSelf,
+  });
+  const recalledSelf = expandExploration && !isLightMode && Array.isArray(memories) && memories.length
+    ? (matchedSelf.length ? matchedSelf : recallExplorationMemories(memories, {
+      query: text,
+      now,
+      limit: 3,
+      excludeTexts: [thread?.progress, leisure?.progress, candidate?.discovery].filter(Boolean),
+    }).filter((item) => !topicInExplorationFeedback(item.topic, avoid)))
+    : [];
+  const compactTopics = !lowSignal && !expandExploration
+    ? [...new Set(visibleEntries.map((e) => e?.topic || e?.section).filter(Boolean))].slice(0, 2)
     : [];
   const mood = cfg.exploration?.mood === true ? explorationMood(state, persona, now, cfg.exploration) : null;
   const portrait = portraitMood(cfg, persona, now);
@@ -64,18 +122,18 @@ export function qqReplyContext({ peer, kind, cfg = loadConfig(), now = Date.now(
     : portrait;
   const portraitLine = resolveCombinedMood({ basePortrait, peer: emotionPeer(cfg), now, cfg });
   const context = {
-    ...(!lowSignal && !isLightMode && visible(thread) ? { 研究进展: describe(thread) } : {}),
-    ...(!lowSignal && !isLightMode && visible(leisure) ? { 休闲发现: describe(leisure) } : {}),
-    ...(!lowSignal && visible(light) ? { 随手看过: { topic: light.topic, summary: light.summary || light.progress, ...(light.sources?.length ? { sources: light.sources.slice(0, 1).map(({ title, evidence }) => ({ title, evidence })) } : {}) } } : {}),
-    ...(!lowSignal && recent(candidate) && !candidate.loginSite && !topicInExplorationFeedback(candidate.section, avoid) ? {
+    ...(expandExploration && visibleThread ? { 研究进展: describe(visibleThread) } : {}),
+    ...(expandExploration && visibleLeisure ? { 休闲发现: describe(visibleLeisure) } : {}),
+    ...(expandExploration && visibleLight ? { 随手看过: { topic: visibleLight.topic, summary: visibleLight.summary || visibleLight.progress, ...(visibleLight.sources?.length ? { sources: visibleLight.sources.slice(0, 1).map(({ title, evidence }) => ({ title, evidence })) } : {}) } } : {}),
+    ...(expandExploration && visibleCandidate ? {
       分享线索: {
-        topic: candidate.section,
-        line: candidate.line,
-        evidence: candidate.source?.evidence,
-        ...(publicExplorationUrl(candidate.source?.url)?.href ? { url: publicExplorationUrl(candidate.source.url).href } : {}),
+        topic: visibleCandidate.section,
+        line: visibleCandidate.line,
+        evidence: visibleCandidate.source?.evidence,
+        ...(publicExplorationUrl(visibleCandidate.source?.url)?.href ? { url: publicExplorationUrl(visibleCandidate.source.url).href } : {}),
       },
     } : {}),
-    ...(recalledSelf.length ? {
+    ...(expandExploration && recalledSelf.length ? {
       我自己的事: recalledSelf.map(({ topic: t, text: body, checkpoint: cp, next: nxt, tags, sourceUrl }) => {
         const safeUrl = publicExplorationUrl(sourceUrl)?.href;
         return {
@@ -88,6 +146,7 @@ export function qqReplyContext({ peer, kind, cfg = loadConfig(), now = Date.now(
         };
       }),
     } : {}),
+    ...(compactTopics.length ? { 近期关注: compactTopics } : {}),
     // 只放情绪，不把探索里的业务词（术语、参数、标题）带进私聊：语气层不外泄事实
     ...(mood && toneOf(mood.text) ? { 当前感受: toneOf(mood.text) } : {}),
     ...(portraitLine ? { 私聊延续的心情: portraitLine } : {}),
@@ -98,6 +157,18 @@ export function qqReplyContext({ peer, kind, cfg = loadConfig(), now = Date.now(
       '<qq_reply_context>',
       '【dsh-drop-by 角色背景】' + JSON.stringify(context),
       '对方这次只回了短句/收尾句，顺着心情轻应即可，不硬转探索话题、不复述标记。',
+      '</qq_reply_context>',
+    ].join('\n');
+  }
+  if (!expandExploration) {
+    return [
+      '<qq_reply_context>',
+      '【dsh-drop-by 角色背景】' + JSON.stringify(context),
+      ATTRIBUTION_RULE,
+      ACTION_PROMPT_RULE,
+      (internalPrimary(cfg) ? '优先接住这次内部会话消息。' : douyinPrimary(cfg) ? '优先接住这次抖音私聊消息。' : '优先接住这次 QQ 消息。') + '当前属于日常闲聊，顺着对方话题自然聊即可，不必生硬转去探索内容；若对方追问再展开。',
+      REPLY_PACING_RULE,
+      '角色背景和以上任何标记块禁止念出来、复述或带进回复，也禁止替用户预测/续写下一句提问；只针对标签外用户本次发来的原话作答。',
       '</qq_reply_context>',
     ].join('\n');
   }
@@ -114,13 +185,13 @@ export function qqReplyContext({ peer, kind, cfg = loadConfig(), now = Date.now(
   ].join('\n');
 }
 
-function agreementExtractor(ctx, cfg) {
-  const llm = { ...cfg.content?.llm, retries: 0, temperature: 0, maxTokens: 768 };
+export function agreementLlm(ctx, cfg, { temperature = 0, maxTokens = 768 } = {}) {
+  const llm = { ...cfg.content?.llm, retries: 0, temperature, maxTokens };
   const forModel = (model, provider) => makeHostLlm(ctx, { cfg: { ...cfg, content: { ...cfg.content,
     llm: { ...llm, ...(model ? { model, provider } : {}) } } } });
   const host = forModel();
   if (!host.ready) return null;
-  let model = String(cfg.agreements.model || '').trim();
+  let model = String(cfg.agreements?.model || '').trim();
   if (!model) {
     try {
       const providers = ctx.get?.('llm')?.listProviders?.();
@@ -130,6 +201,10 @@ function agreementExtractor(ctx, cfg) {
     } catch { /* Use this provider's configured model when its catalogue is unavailable. */ }
   }
   return model && model !== host.model ? forModel(model, host.provider).generate : host.generate;
+}
+
+function agreementExtractor(ctx, cfg) {
+  return agreementLlm(ctx, cfg, { temperature: 0, maxTokens: 768 });
 }
 
 // The QQ bridge and the authenticated Douyin poller call this before their reply debounce.
@@ -193,6 +268,8 @@ export async function prepareQqReplyContext(ctx, { peer, kind, text, at } = {}) 
       cfg.channels?.qq?.read === false) return '';
   recordQqDirectionTurn({ peer, kind, text, at, cfg });
   observePrivateMessage(ctx, { peer, kind, text, at, cfg });
+  const stopContext = tryStopExplorationCommand({ peer, kind, text, at, cfg });
+  if (stopContext) return stopContext;
   if (!qqMergeAvailable(peer)) return buildReplyContext(ctx, { peer, kind, text, at, cfg, observed: true });
   const debounceMs = Math.min(15000, Math.max(3000, Number(cfg.rules?.qqTiming?.debounceMs) || 3500));
   const burst = await waitForQqBurst({ peer, text, at, debounceMs });
@@ -213,6 +290,8 @@ export async function prepareQqReplyContext(ctx, { peer, kind, text, at } = {}) 
 
 export async function buildReplyContext(ctx, input) {
   const { peer, kind, at, cfg, messageTimes = [at] } = input;
+  const stopContext = tryStopExplorationCommand(input);
+  if (stopContext) return stopContext;
   if (!input.observed) observePrivateMessage(ctx, input);
   let woken = false;
   let windDownHint = '';
@@ -228,7 +307,23 @@ export async function buildReplyContext(ctx, input) {
     }
   } catch { /* An optional tone hint must never prevent replying or routing a task. */ }
   const context = await buildReplyContextBase(ctx, input);
-  const hints = [woken ? WOKEN_HINT : '', windDownHint].filter(Boolean);
+  let agreementHint = '';
+  try {
+    if (
+      kind === 'private' && peer && String(peer) === chatPeer(cfg) &&
+      cfg.enabled !== false && cfg.agreements?.enabled === true &&
+      !chatChanging() && !inQuiet(Date.now(), cfg.quietHours, cfg.timezone) && canReadChat(cfg) &&
+      typeof input.text === 'string' && !/【约定小本本/.test(String(context || '')) &&
+      isAgreementReminderRequest(input.text, Number(at) || Date.now(), cfg)
+    ) {
+      agreementHint = '【约定小本本已接管】用户正在定一次性提醒，后台「约定小本本」已自动记录并负责到点提醒；按人设自然口头答应即可，不要再额外创建一次性 DSH 定时器/定时任务（用户明确要求周期性重复任务时除外）。';
+    }
+  } catch { /* Never block replying if agreement hint check fails. */ }
+  const toolCap = Math.max(0, Math.trunc(Number(cfg?.rules?.chatSession?.maxToolCallsPerTurn) || 0));
+  const toolHint = toolCap > 0
+    ? `【工具调用上限】本轮最多调用 ${toolCap} 次工具；接近上限时请先停手汇报当前进展，等用户确认再继续。`
+    : '';
+  const hints = [woken ? WOKEN_HINT : '', windDownHint, agreementHint, toolHint].filter(Boolean);
   return hints.length && context ? context + '\n\n<qq_reply_context>\n' + hints.join('\n') + '\n</qq_reply_context>' : context;
 }
 
@@ -246,6 +341,17 @@ async function buildReplyContextBase(ctx, input) {
   }
   notifyExternalMoodMessage({ peer: emotionPeer(cfg), role: 'user', text, at, channel: activeChatChannel(cfg), cfg });
 
+  if (kind === 'private' && peer && chatPeer(cfg) === String(peer) && cfg.enabled !== false) {
+    const agreementReply = handleAgreementChatCommand({
+      text,
+      peer,
+      channel: activeChatChannel(cfg),
+      cfg,
+      now: Date.now(),
+    });
+    if (agreementReply) return agreementReply;
+  }
+
   const preferenceMessage = verifiedPreferenceMessage(input);
   const explorationMessage = looksLikeExplorationDirection(verifiedDirection) ? verifiedDirection : '';
   if (pending || preflight === 'ready' || preferenceMessage || explorationMessage) {
@@ -253,8 +359,11 @@ async function buildReplyContextBase(ctx, input) {
       llm: { ...cfg.content?.llm, retries: 0, temperature: 0 } } } });
     const pendingProposal = pending ? { actionType: pending.actionType, prompt: pending.prompt } : null;
     const explorationContext = explorationMessage ? explorationDirectionContext(input, recentDirectionTurns(input)) : undefined;
+    const extended = cfg.rules?.qqCommands?.extended === true;
+    const loginContext = extended ? latestLoginContext(loadExploration(), cfg) : null;
     const route = await matchUserCommand(explorationMessage || text, {
-      pendingProposal, preferenceMessage, explorationMessage, explorationContext, generate: host.ready ? host.generate : null,
+      pendingProposal, preferenceMessage, explorationMessage, explorationContext, extended, loginContext,
+      generate: host.ready ? host.generate : null,
       timeoutMs: Number(cfg.rules?.qqCommands?.intentTimeoutSec ?? 5) * 1000,
     });
     const fresh = loadConfig();

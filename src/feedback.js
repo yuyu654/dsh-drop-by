@@ -18,6 +18,8 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { LOG_DIR, updateStatePreferences, updateStateReceiptOverrides } from './config.js';
 import { dayKey, minutesOfDayOf } from './time.js';
+import { classifyMissCensor, detectBusySpeech, updateReceptivity } from './receptivity.js';
+import { syncExplorationToMemory } from './memorysource.js';
 
 const DAY = 86_400_000;
 const MIN = 60_000;
@@ -191,6 +193,7 @@ export function noteSent(st, slot, now, text, opts = {}) {
     chars: String(text || '').length,
     draft: String(text || '').slice(0, DRAFT_MAX),
     ...(!test && expect ? { receiptId: randomUUID(), sentAt: opts.sentAt ?? now } : {}),
+    ...(opts.ctx ? { ctx: opts.ctx } : {}),
     ...(expect ? {} : { expect: false }),
     ...(test ? { test: true } : {}),
   });
@@ -441,6 +444,17 @@ export function settle(st, herTs, now = Date.now(), herText = '', opts = {}) {
       }
       const r = classify(p, ts, tz, timing);
       apply(f, p, r, herText);
+      const isBusyReply = detectBusySpeech(herText);
+      updateReceptivity(st, p, isBusyReply ? 'busy_reply' : r.kind, { now, tz });
+      if (
+        opts.syncMemory !== false &&
+        p.slot === 'share' &&
+        !isBusyReply &&
+        (r.kind === 'hit' || r.kind === 'late') &&
+        opts.cfg?.exploration?.syncToSharedMemory === true
+      ) {
+        try { syncExplorationToMemory({ cfg: opts.cfg, text: p.draft, now }); } catch { /* ignore */ }
+      }
       // 「被晾」不是「没回」：隔了 12 小时才回也是晾着——熔断只认这一条。
       const latMin = (ts - p.ts) / MIN;
       const stranded = r.kind === 'miss' || latMin >= Number(chit.strandHours ?? 12) * 60;
@@ -504,10 +518,23 @@ export function sweep(st, now = Date.now(), opts = {}) {
     if (r.kind === 'miss') {
       apply(f, p, r, '');
       chitOutcome(st, p, now, true, chit);
+      const censor = classifyMissCensor({
+        pending: p,
+        now,
+        tz,
+        cfg: opts.cfg,
+        fair: true,
+        idleSec: opts.idleSec,
+        locked: opts.locked,
+        userBusySpeech: opts.userBusySpeech,
+        windowEndTs: windowEnd(p.ts, tz, timing),
+      });
+      updateReceptivity(st, p, 'miss', { censored: censor.censored, censorReason: censor.reason, now, tz });
     } else {
       // 夜里发的、窗口本来就不成立：不进分母也不算没接住
       const s = slotRec(f, p.slot);
       s.sent = Math.max(0, (Number(s.sent) || 0) - 1);
+      updateReceptivity(st, p, 'miss', { censored: true, censorReason: 'outside_fair_window', now, tz });
     }
     judged += 1;
   }

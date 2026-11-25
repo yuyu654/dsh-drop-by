@@ -5,7 +5,7 @@ const HANDOFF_HEADING = '【上一会话近期对话前情（已切换新会话�
 const INJECTED_HEADS = [
   HANDOFF_HEADING, '【dsh-drop-by 角色背景】', '【来源归属铁律】', '【陪伴动作', '【陪伴任务',
 ];
-const HOST_INJECTED_USER_RE = /^(?:Current runtime context\.|Time sampled while preparing turn\b|MNEMON RUNTIME MEMORY SNAPSHOT\b|## 人格设定（AGENT\.md）|<hindsight_pages\b|<hindsight_page_refresh\b|<system-reminder\b)/u;
+const HOST_INJECTED_USER_RE = /^(?:Current runtime context\.|Time sampled while preparing turn\b|MNEMON RUNTIME MEMORY SNAPSHOT\b|\[MNEMON\]\s|## 人格设定（AGENT\.md）|<hindsight_pages\b|<hindsight_page_refresh\b|<system-reminder\b)/u;
 
 export function contextUsage(pressure) {
   const used = pressure?.projectedTokens ?? pressure?.pressureTokens;

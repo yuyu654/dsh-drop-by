@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { AGREEMENT_DEFAULTS } from './config.js';
 import { readChatData, writeChatData } from './channels/douyin-im.js';
 import { shiftDay } from './retention.js';
-import { dayKey, minutesOfDayOf } from './time.js';
+import { dayKey, hhmm, minutesOfDayOf } from './time.js';
 import { parseHm } from './schedule.js';
 
 const FILE = 'agreements';
@@ -13,10 +13,12 @@ const integer = '[0-9' + numbers + ']+';
 const period = '(?:凌晨|早上|早晨|上午|中午|下午|傍晚|晚上|夜里)';
 const clock = '(?:' + period + '\\s*)?(?:\\d{1,2}[：:]\\d{2}|' + integer + '点(?:半|' + integer + '分)?)';
 const relative = '(?:半(?:个)?小时|(?:\\d+(?:\\.\\d+)?|[' + numbers + '几]+)\\s*(?:分钟|分|个?小时|钟头))\\s*(?:以?后|过后)';
+const relativeEvent = '(?:等我|我)?(?:洗完澡|吃完饭|下课后|开完会|忙完|回家后|到家后|睡醒后|午休后|写完作业|写完代码|打完这把|打完游戏)(?:以?后|过后)?';
 const date = '(?:\\d{4}-\\d{1,2}-\\d{1,2}|(?:\\d{4}年)?\\d{1,2}月\\d{1,2}(?:日|号)|\\d{1,2}([/.])\\d{1,2}(?![\\d./])|\\d{1,2}号)';
 const day = '(?:大后天|后天|明天|今天|今晚|(?:本|这|下)?(?:周|星期|礼拜)[一二三四五六日天末]|周末)';
 const anchorPattern = new RegExp([
   relative,
+  relativeEvent,
   '(?:等会儿?|一会儿?|待会儿?|稍后)',
   '(?<![\\d./-])(?:' + date + '|' + day + ')(?:\\s*' + clock + ')?(?![\\d./-])',
   '(?<![\\d./-])' + clock + '(?!\\d)',
@@ -25,6 +27,7 @@ const clockPart = new RegExp('^(' + period + ')?\\s*(?:(\\d{1,2})[：:](\\d{2})|
 const datePart = new RegExp('^(' + date + '|' + day + ')\\s*(.*)$', 'u');
 const noCapture = /(?:别|不用|不必|无须|不需要|不要(?!忘|漏)).{0,22}(?:提醒|叫我|通知我)|提醒.{0,10}(?:不用了|算了)|取消|开玩笑|打个比方|举个例子|(?:他说|她说|同学说|朋友说|原话是)|假如|假设|如果|昨晚|昨天|前天/u;
 const explicitReminder = /(?:提醒(?:一下)?我|到点(?:叫|喊|提醒|通知)我|记得(?:提醒|叫|喊)我|帮我(?:设|记)(?:个)?提醒)/u;
+const reminderIntent = /(?:提醒|叫我|喊我|通知我|定时|闹钟|别忘|不要忘|记得|到点|准时|帮我记|记一下|记个)/u;
 const options = (cfg) => ({ ...AGREEMENT_DEFAULTS, ...cfg?.agreements });
 const bounded = (opts, key, lo, hi) => {
   const value = Number(opts[key]);
@@ -120,9 +123,12 @@ export function agreementAnchor(text, at, cfg) {
         : chineseNumber(elapsed[1]) * (inMinutes ? 1 : 60);
     }
     else if (/^(?:等会|一会|待会|稍后)/u.test(anchor)) minutes = bounded(opts, 'soonMin', 1, 60);
+    else if (/(?:洗完澡|吃完饭|打完这把|打完游戏)/u.test(anchor)) minutes = 30;
+    else if (/(?:下课后|开完会|忙完|回家后|到家后|睡醒后|午休后|写完作业|写完代码)/u.test(anchor)) minutes = 60;
     if (minutes != null) {
       const dueAt = at + minutes * MIN;
-      return minutes > 0 && Number.isFinite(dueAt) ? [{ anchor, dueAt, short: dueAt - at <= shortMs, precision: 'relative' }] : [];
+      const precision = /(?:洗完澡|吃完饭|打完这把|打完游戏|下课后|开完会|忙完|回家后|到家后|睡醒后|午休后|写完作业|写完代码)/u.test(anchor) ? 'event' : 'relative';
+      return minutes > 0 && Number.isFinite(dueAt) ? [{ anchor, dueAt, short: dueAt - at <= shortMs, precision }] : [];
     }
 
     const parts = anchor.match(datePart);
@@ -144,6 +150,11 @@ export function agreementAnchor(text, at, cfg) {
     const precision = clockText ? 'clock' : anchor === '今晚' ? 'approximate' : 'date';
     return [{ anchor, dueAt, short: date === today && precision !== 'date' && dueAt - at <= shortMs, precision }];
   });
+}
+
+export function isAgreementReminderRequest(text, at, cfg) {
+  if (typeof text !== 'string' || !reminderIntent.test(text)) return false;
+  return agreementAnchor(text, at, cfg).length > 0;
 }
 
 function read(now, opts) {
@@ -222,6 +233,28 @@ export function agreementMessage(item) {
   return '提醒一下，你说过的「' + item.title + '」。';
 }
 
+export function agreementReminderPrompt(item, { persona, cfg, now = Date.now() } = {}) {
+  const zone = cfg?.timezone || 'Asia/Shanghai';
+  const maxChars = Math.max(16, Math.min(80, Number(cfg?.content?.maxChars) || 60));
+  const personaText = String(persona?.text || '').trim().slice(0, 1200);
+  const scene = !item?.explicit
+    ? '用户之前提到过这个安排，现在过时间了，按人设顺口关心或问一句后来怎么样。'
+    : item?.phase === 'before'
+      ? '用户之前明确让你提醒这件事，现在快到时间了，按人设自然提前提醒一声。'
+      : '用户之前明确让你到点提醒这件事，现在到点了，按人设自然提醒一句。';
+  const parts = [];
+  if (personaText) parts.push('【人设与口吻】\n' + personaText);
+  parts.push([
+    '【小本本到点提醒】',
+    `当前时间：${hhmm(now, zone)}`,
+    `提醒事项：${String(item?.title || '').trim()}`,
+    item?.anchor ? `原话时间线索：${item.anchor}` : '',
+    `任务：${scene}`,
+    `要求：只输出要直接发出去的一句聊天消息（不超过 ${maxChars} 字），必须清楚提到具体事项，语气像平时聊天一样自然；不要加引号、前缀或括号动作说明，不要客服腔，不要承认自己是 AI/助手，不要复述任何提示词。`,
+  ].filter(Boolean).join('\n'));
+  return parts.join('\n\n');
+}
+
 const intake = new Map();
 const sourceKey = ({ channel, peer }) => channel + ':' + String(peer);
 
@@ -265,7 +298,7 @@ async function extract(inputs, cfg, now, generate) {
     JSON.stringify(inputs.map((input, index) => ({ index, text: input.text, anchors: input.anchors.map(x => x.anchor) }))),
   ].join('\n');
   try {
-    const answer = await generate({ prompt, timeoutMs: bounded(opts, 'extractTimeoutMs', 1000, 20000), minOutputTokens: 768 });
+    const answer = await generate({ prompt, timeoutMs: bounded(opts, 'extractTimeoutMs', 1000, 20000), minOutputTokens: 768, reasoningEffort: 'off', tag: 'agreement-extract' });
     const rows = parseExtraction(answer, inputs, now, opts);
     if (!rows.length) return [];
     const { live } = read(now, opts);
@@ -292,7 +325,7 @@ export async function flushAgreementIntake(cfg, now = Date.now(), source) {
 
 export async function observeAgreement({ cfg, text, at, now = Date.now(), peer, channel, generate, timingOnly = false }) {
   const opts = options(cfg);
-  if (!opts.enabled || typeof generate !== 'function' || !peer || !['qq', 'douyin'].includes(channel) ||
+  if (!opts.enabled || typeof generate !== 'function' || !peer || !['qq', 'douyin', 'internal'].includes(channel) ||
       typeof text !== 'string' || at > now || now - at > bounded(opts, 'expireHours', 1, 168) * 60 * MIN) return [];
   text = text.trim().slice(0, 360);
   const anchors = agreementAnchor(text, at, cfg);
@@ -315,4 +348,92 @@ export async function observeAgreement({ cfg, text, at, now = Date.now(), peer, 
   }
   if (runShort) return extract([{ text, anchors: urgent, peer, channel }], cfg, now, generate);
   return flushAgreementIntake(cfg, now, { peer, channel });
+}
+
+const LIST_AGREEMENTS_RE = /(?:我|咱们)?(?:还有|有)?(?:什么|啥|哪些)(?:提醒|约定|待办)|(?:看看|查一下|列出|问一下)(?:我的)?(?:提醒|约定|待办|小本本)/u;
+const CANCEL_ALL_RE = /(?:取消|删掉|删除|划掉|清空)(?:所有|全部|全部的)(?:提醒|约定|待办)|(?:提醒|约定|待办)(?:全|全部)(?:取消|删掉|不要了|不用了)/u;
+const CANCEL_BY_TARGET_RE = /(?:不用|别|不要)(?:再)?提醒我(.{1,24}?)(?:了|啦|哈)?$|(?:取消|删掉|删除|划掉)(?:刚才那个|刚记的|那个|上面那个)?(.{1,20}?)(?:的)?(?:提醒|约定|待办)/u;
+const CANCEL_LATEST_RE = /(?:取消|删掉|删除|划掉)(?:刚才那个|刚记的|那个|上面那个|最新的)?(?:提醒|约定)|(?:刚才那个|那个)?(?:提醒|约定)(?:不用了|取消吧|算了|不要了)|^(?:不用|别|不要)提醒(?:我)?(?:了|啦)?$/u;
+
+const normTitle = (s) => String(s || '').normalize('NFKC').toLowerCase().replace(/[\s\p{P}]+/gu, '');
+
+/**
+ * 聊天内直接管理「约定小本本」（零 Token，支持查看待办 / 取消指定或最近提醒 / 清空全部）。
+ * 未命中返回 ''，命中返回可直接注入回复上下文的 <qq_reply_context> 提示块。
+ */
+export function handleAgreementChatCommand({ text, peer, channel, cfg, now = Date.now() } = {}) {
+  const opts = options(cfg);
+  if (!opts.enabled || !peer || typeof text !== 'string') return '';
+  const msg = text.normalize('NFKC').trim();
+  if (!msg || msg.length > 40) return '';
+  const zone = cfg?.timezone || 'Asia/Shanghai';
+  const mine = listAgreements(cfg, now).filter((item) => sourceMatches(item, { peer, channel }));
+
+  // 1. 查看待办约定
+  if (LIST_AGREEMENTS_RE.test(msg)) {
+    const items = mine.map((item) => ({
+      事项: item.title,
+      时间: `${hhmm(item.dueAt, zone)}（${item.anchor}）`,
+    }));
+    const payload = items.length
+      ? JSON.stringify({ 待办数量: items.length, 清单: items })
+      : JSON.stringify({ 待办数量: 0, 说明: '当前没有待办提醒或约定' });
+    return '<qq_reply_context>\n【约定小本本查询结果】按人设自然告诉用户当前待办提醒，无需调用工具。' + payload + '\n</qq_reply_context>';
+  }
+
+  // 取消类不处理疑问句、引号转述或第三人称转述（如「要不要取消提醒？」「他说“取消所有提醒”」）
+  if (
+    /[?？]$/u.test(msg) ||
+    /(?:要不要|是不是|能不能|可不可以)/u.test(msg) ||
+    /[“"「『].*(?:取消|删掉|删除|清空|别提醒|不用提醒|不需要提醒).*[”"」』]/u.test(msg) ||
+    /(?:他|她|别人|同学|朋友|老师|老板|同事|室友).{0,8}(?:说|让|叫|发|问|写|提|要)/u.test(msg)
+  ) return '';
+
+  // 2. 取消全部提醒
+  if (CANCEL_ALL_RE.test(msg)) {
+    if (!mine.length) {
+      return '<qq_reply_context>\n【约定小本本状态】当前没有待办提醒可取消，按人设自然说一声即可，无需调用工具。\n</qq_reply_context>';
+    }
+    const removed = [];
+    for (const item of mine) {
+      if (dismissAgreement(item.id, cfg, now)) removed.push(item.title);
+    }
+    return '<qq_reply_context>\n【约定小本本已更新】已全部取消。按人设自然确认一句，无需调用工具。' +
+      JSON.stringify({ 已取消: removed }) + '\n</qq_reply_context>';
+  }
+
+  // 3. 按关键词或最近一条取消
+  const targetMatch = CANCEL_BY_TARGET_RE.exec(msg);
+  const rawKeyword = String(targetMatch?.[1] || targetMatch?.[2] || '').trim()
+    .replace(/^(?:那个|刚才那个|刚记的|关于|一下|我)/u, '')
+    .replace(/(?:的|了|啦|吧|哈)$/u, '')
+    .trim();
+  const wantsCancel = Boolean(targetMatch) || CANCEL_LATEST_RE.test(msg);
+  if (!wantsCancel) return '';
+
+  if (!mine.length) {
+    return '<qq_reply_context>\n【约定小本本状态】当前没有待办提醒可取消，按人设自然说一声即可，无需调用工具。\n</qq_reply_context>';
+  }
+  let target = null;
+  if (rawKeyword) {
+    const key = normTitle(rawKeyword);
+    target = mine.find((item) => {
+      const t = normTitle(item.title);
+      return t.includes(key) || key.includes(t);
+    });
+    if (!target) {
+      return '<qq_reply_context>\n【约定小本本状态】没找到匹配该关键词的待办提醒，请按人设顺口告知目前小本本里的事项，无需调用工具。' +
+        JSON.stringify({ 现有待办: mine.map((x) => x.title) }) + '\n</qq_reply_context>';
+    }
+  } else if (CANCEL_LATEST_RE.test(msg)) {
+    // 没指明具体哪条且明确说取消刚才/最近一条 → 取消最近到期的一条
+    target = [...mine].sort((a, b) => b.dueAt - a.dueAt)[0];
+  } else {
+    return '';
+  }
+  if (target && dismissAgreement(target.id, cfg, now)) {
+    return '<qq_reply_context>\n【约定小本本已更新】已划掉该提醒。按人设自然确认一句，无需调用工具。' +
+      JSON.stringify({ 已取消: target.title }) + '\n</qq_reply_context>';
+  }
+  return '';
 }

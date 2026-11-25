@@ -161,7 +161,8 @@ export function readChannels(cfg, now, opts = {}) {
   }
 
   const available = list.filter((c) => c.ok);
-  const skipped = list.filter((c) => c.state); // off / quiet / window：本拍没读，不算失败
+  // 本拍实际尝试读取的通道（排除 off / quiet / window 以及显式关闭读取 CHANNEL_READ_OFF 的通道）
+  const attempted = list.filter((c) => !c.state && c.reason !== 'CHANNEL_READ_OFF');
 
   return {
     list,
@@ -172,6 +173,6 @@ export function readChannels(cfg, now, opts = {}) {
     available: available.map((c) => c.channel),
     off: list.filter((c) => c.state === 'off').map((c) => c.channel),
     windowOff: list.filter((c) => c.state === 'window').map((c) => c.channel),
-    allDown: available.length === 0 && skipped.length === 0,
+    allDown: available.length === 0 && attempted.length > 0,
   };
 }
