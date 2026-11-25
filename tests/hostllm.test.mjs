@@ -348,6 +348,51 @@ test('hostllm：仅支持 low/high 的模型请求 off 时自动降级到 low；
   clearReasoningEffortCache();
 });
 
+test('hostllm：阿里云等未上报档位表的 deepseek-v4.1-flash 请求 off 时乐观直传，拒收则自动降级并记住', async () => {
+  clearReasoningEffortCache();
+  const seen = [];
+  let rejectEffort = false;
+  const llm = {
+    async resolveModelInfo() {
+      return { inputModalities: ['text'] }; // 未上报 reasoning.efforts
+    },
+    stream(args) {
+      seen.push(args);
+      return (async function* () {
+        if (rejectEffort && args.reasoningEffort) {
+          yield { type: 'finish', reason: { kind: 'error', failure: { message: 'unsupported reasoning_effort' } } };
+          return;
+        }
+        yield { type: 'text-delta', text: 'ok' };
+        yield { type: 'finish', reason: { kind: 'stop' } };
+      })();
+    },
+  };
+  const ctx = ctxWith({
+    llm,
+    agentDefaultModel: { currentSelection: () => ({ provider: 'ali', model: 'deepseek-v4.1-flash-1017' }) },
+  });
+
+  // 1. 供应商支持时：直接传 reasoningEffort='off'
+  const r1 = await makeHostLlm(ctx).generate({ prompt: '分类', reasoningEffort: 'off', tag: 'command-intent' });
+  assert.equal(r1.ok, true);
+  assert.equal(seen[0].reasoningEffort, 'off');
+
+  // 2. 供应商拒收时：自动剥离重试一次成功，且后续请求记住不再传
+  rejectEffort = true;
+  const r2 = await makeHostLlm(ctx, { cfg: { content: { llm: { retries: 0 } } } })
+    .generate({ prompt: '分类', reasoningEffort: 'off', tag: 'command-intent' });
+  assert.equal(r2.ok, true);
+  assert.equal(seen[1].reasoningEffort, 'off');
+  assert.equal(Object.hasOwn(seen[2], 'reasoningEffort'), false);
+
+  const r3 = await makeHostLlm(ctx, { cfg: { content: { llm: { retries: 0 } } } })
+    .generate({ prompt: '分类', reasoningEffort: 'off', tag: 'command-intent' });
+  assert.equal(r3.ok, true);
+  assert.equal(Object.hasOwn(seen[3], 'reasoningEffort'), false);
+  clearReasoningEffortCache();
+});
+
 test('hostllm：第三方模型拒收 reasoningEffort 报错时自动剥离并记住不再发送', async () => {
   clearReasoningEffortCache();
   const seen = [];

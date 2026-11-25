@@ -55,6 +55,9 @@ const EFFORT_FALLBACKS = {
   high: ['high'],
   max: ['max', 'high'],
 };
+// 第三方兼容供应商（如 ali）往往不在 resolveModelInfo 里上报 reasoning.efforts；
+// 对已知支持关闭思考的 DeepSeek Flash 系列在请求 off 时乐观直传一次，若供应商拒收则由下方自动剥离并缓存。
+const OPPORTUNISTIC_OFF_MODEL_RE = /(?:deepseek[-_.]?v?4(?:\.\d+)?[-_.]?flash|deepseek[-_.]?flash)/i;
 
 export function setHostLlmContext(ctx) {
   activeHostCtx = ctx || null;
@@ -100,8 +103,15 @@ async function resolveSupportedEfforts(llm, modelTarget, cfg) {
 async function resolveEffectiveReasoningEffort(llm, modelTarget, requested, cfg) {
   const req = String(requested || '').trim().toLowerCase();
   if (!req || !Object.hasOwn(EFFORT_FALLBACKS, req)) return undefined;
+  const key = modelKey(modelTarget);
+  if (!key || key === ':' || unsupportedEffortModels.has(key)) return undefined;
   const efforts = await resolveSupportedEfforts(llm, modelTarget, cfg);
-  if (!efforts) return undefined;
+  if (!efforts) {
+    if (req === 'off' && OPPORTUNISTIC_OFF_MODEL_RE.test(String(modelTarget?.model || ''))) {
+      return 'off';
+    }
+    return undefined;
+  }
   for (const candidate of EFFORT_FALLBACKS[req]) {
     if (efforts.includes(candidate)) return candidate;
   }

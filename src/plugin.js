@@ -134,6 +134,8 @@ function noteMount(msg) {
   try {
     const envLog = String(process.env.PG_LOG_DIR || '').trim();
     const envCfg = String(process.env.PG_CONFIG_PATH || '').trim();
+    // 单元测试未显式隔离日志目录时，不污染真实仓库的 logs/plugin.log
+    if (!envLog && !envCfg && (process.env.NODE_TEST_CONTEXT || process.argv.includes('--test'))) return;
     const dir = envLog
       ? path.resolve(envLog)
       : (envCfg ? path.join(path.dirname(path.resolve(envCfg)), 'logs') : LOG_DIR);
