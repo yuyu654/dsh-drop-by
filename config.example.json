@@ -18,6 +18,7 @@
     "awaySec": 600
   },
   "rules": {
+    "roleplayFollowup": { "enabled": true, "minMinutes": 10, "maxMinutes": 20 },
     "compactChatTools": false,
     "qqRollover": { "enabled": true, "thresholdPercent": 80, "carryMessages": 10, "prepareBindingFile": true },
     "replyCooldownMin": 1,

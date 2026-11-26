@@ -140,7 +140,8 @@
         return h(
           'div',
           { className: 'pg-root' },
-          state ? h(Head, { state: state, busy: busy || guidePending === 'preview', tickPending: tickPending, onGuide: openGuide,
+          state ? h(Head, { state: state, busy: busy || guidePending === 'preview', tickPending: tickPending,
+            taskStopPending: taskStopPending, onTaskStop: onTaskStop, onGuide: openGuide,
             onRefresh: function () { load(false); loadDiagnostics(); }, onTick: onTick }) : null,
           h(AlertBar, { items: diagnostic && diagnostic.alerts || [] }),
           toast
@@ -372,10 +373,19 @@
             };
             var readBadge = sVal === 'all' ? '全部只读汇总' : sVal ? '指定文件' : '自动';
             var memTitleName = memory.label || memory.resolvedPlugin || memory.plugin || 'fish-memory';
-            return h('div', { className: 'pg-card' },
-              h('div', { className: 'pg-card-head' },
-                h('div', { className: 'pg-card-title' }, '长期记忆（' + memTitleName + ' · 共 ' + memFiles.length + ' 份）'),
-                h('span', { className: 'pg-badge ' + (sVal && sVal !== 'all' ? 'pg-badge-dry' : 'pg-badge-live') }, readBadge)
+            return h('details', {
+              className: 'pg-card pg-card-fold',
+              open: memoryCardOpen,
+              onToggle: function (e) {
+                var isOpen = e.currentTarget.open;
+                if (memoryCardOpen === isOpen) return;
+                writeFoldState('card:memory', isOpen);
+                setMemoryCardOpen(isOpen);
+              },
+            },
+              h('summary', { className: 'pg-card-title pg-card-sum' },
+                h('span', { className: 'pg-card-sum-name' }, '长期记忆（' + memTitleName + ' · 共 ' + memFiles.length + ' 份）'),
+                h('span', { className: 'pg-badge ' + (sVal && sVal !== 'all' ? 'pg-badge-dry' : 'pg-badge-live'), style: { marginLeft: 'auto' } }, readBadge)
               ),
               h('div', { className: 'pg-rows' },
                 h('div', { className: 'pg-row' },

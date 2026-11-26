@@ -43,10 +43,19 @@
               );
             }))
           ) : null,
-          exploration ? h('div', { className: 'pg-card pg-exp-card' },
-            h('div', { className: 'pg-card-head' },
-              h('div', { className: 'pg-card-title' }, '自主探索'),
-              h('div', { className: 'pg-card-badges' },
+          exploration ? h('details', {
+            className: 'pg-card pg-card-fold pg-exp-card',
+            open: explorationCardOpen,
+            onToggle: function (e) {
+              var isOpen = e.currentTarget.open;
+              if (explorationCardOpen === isOpen) return;
+              writeFoldState('card:exploration', isOpen);
+              setExplorationCardOpen(isOpen);
+            },
+          },
+            h('summary', { className: 'pg-card-title pg-card-sum' },
+              h('span', { className: 'pg-card-sum-name' }, '自主探索'),
+              h('div', { className: 'pg-card-badges', style: { marginLeft: 'auto' } },
                 exploration.peakStatus ? h('span', {
                   className: 'pg-badge ' + (exploration.peakStatus.offPeak ? 'pg-badge-live' : 'pg-badge-dry'),
                   title: '按 DeepSeek 官方峰谷说明（北京时间）与日历判定'
@@ -151,10 +160,19 @@
             var boundLabel = ec.sessionId
               ? (ec.sessionTitle ? '「' + ec.sessionTitle + '」' : '') + ec.sessionId.slice(0, 8)
               : '';
-            return h('div', { className: 'pg-card' },
-              h('div', { className: 'pg-card-head' },
-                h('div', { className: 'pg-card-title' }, '主聊天接口与通道开关'),
-                h('div', { className: 'pg-card-badges' },
+            return h('details', {
+              className: 'pg-card pg-card-fold',
+              open: channelCardOpen,
+              onToggle: function (e) {
+                var isOpen = e.currentTarget.open;
+                if (channelCardOpen === isOpen) return;
+                writeFoldState('card:channels', isOpen);
+                setChannelCardOpen(isOpen);
+              },
+            },
+              h('summary', { className: 'pg-card-title pg-card-sum' },
+                h('span', { className: 'pg-card-sum-name' }, '主聊天接口与通道开关'),
+                h('div', { className: 'pg-card-badges', style: { marginLeft: 'auto' } },
                   h('span', { className: 'pg-badge ' + badgeCls }, badgeText)
                 )
               ),
@@ -242,12 +260,65 @@
               group: g,
               busy: busy,
               onSave: onSave,
-              extra: g.name === '高级' && presets ? h(PresetEditor, {
-                data: presets,
-                busy: busy,
-                onOverride: function (presetId, path, value) { applyPresetAction('/presets/override', { presetId: presetId, path: path, value: value }); },
-                onReset: function (presetId) { applyPresetAction('/presets/reset', { presetId: presetId }); },
-              }) : null,
+              topExtra: g.name === '高级' && state && state.fullscreenGuard ? (function () {
+                var fg = state.fullscreenGuard;
+                var badgeText = !fg.enabled
+                  ? '已关闭'
+                  : fg.mode === 'native'
+                    ? (fg.ready ? '轻量原生模式 · 已就绪' : '轻量原生模式')
+                    : fg.mode === 'powershell'
+                      ? 'PowerShell 兜底'
+                      : '按需待命（首次触发自动编译）';
+                var badgeCls = !fg.enabled
+                  ? 'pg-badge-off'
+                  : fg.mode === 'native' && fg.ready
+                    ? 'pg-badge-live'
+                    : 'pg-badge-dry';
+                var hintText = !fg.enabled
+                  ? '全屏避让已关闭；可在下方「系统感知、反作弊与基础连接」中开启。'
+                  : fg.inFullscreen
+                    ? '当前检测到全屏游戏，敏感动作已自动避让。'
+                    : fg.inCooldown && fg.remainingMs > 0
+                      ? '退出全屏缓冲中，剩余约 ' + Math.max(1, Math.ceil(fg.remainingMs / 60000)) + ' 分钟后恢复。'
+                      : '基于 Windows 原生通知状态位（SHQueryUserNotificationState），零进程枚举、打游戏期间 0 新进程创建。';
+                return h('div', { className: 'pg-row' },
+                  h('div', { className: 'pg-row-text' },
+                    h('div', { className: 'pg-row-label' },
+                      '全屏游戏检测 ',
+                      h('span', { className: 'pg-badge ' + badgeCls, style: { marginLeft: '6px' } }, badgeText)
+                    ),
+                    h('div', { className: 'pg-row-hint' }, hintText)
+                  ),
+                  h('div', { className: 'pg-row-ctl' },
+                    h('button', {
+                      type: 'button',
+                      className: 'pg-btn',
+                      disabled: busy || smallActionPending,
+                      onClick: function () { applySmallAction('/fullscreen-guard/redeploy', {}); },
+                    }, smallActionPending ? '部署中…' : '重新部署')
+                  )
+                );
+              })() : null,
+              extra: g.name === '高级' && presets ? h(
+                'details',
+                {
+                  className: 'pg-exp-details pg-sub-fold',
+                  open: presetEditorOpen,
+                  onToggle: function (e) {
+                    var isOpen = e.currentTarget.open;
+                    if (presetEditorOpen === isOpen) return;
+                    writeFoldState('sub:高级:套餐自定义', isOpen);
+                    setPresetEditorOpen(isOpen);
+                  },
+                },
+                h('summary', { className: 'pg-exp-sum' }, h('span', null, '套餐自定义')),
+                h(PresetEditor, {
+                  data: presets,
+                  busy: busy,
+                  onOverride: function (presetId, path, value) { applyPresetAction('/presets/override', { presetId: presetId, path: path, value: value }); },
+                  onReset: function (presetId) { applyPresetAction('/presets/reset', { presetId: presetId }); },
+                })
+              ) : null,
             });
           })) : null,
           h(

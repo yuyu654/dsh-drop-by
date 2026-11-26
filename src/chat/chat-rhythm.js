@@ -18,6 +18,18 @@ const THIRD_PERSON_RE = /(?:他|她|别人|同学|朋友|老师|老板|同事|�
 const EXPLICIT_CLOSE_RE = /(?:^|(?:我|那我?|好了|行那?)?(?:先)?)(?:去忙|忙去|先忙|先睡|去睡|睡觉去|睡觉了|准备睡|晚安|拜拜|先撤|先走|先这样|回头聊|回头再聊|下次聊|下次再聊|明天聊|改天聊|不聊了|先挂了|下线|上课去了|开会去了|吃饭去了|洗澡去了|洗漱去了|干活去了|学习去了)(?:[了啦呀啊哈哦嘛呢吧~！!。.\s]*$|[，,。！!~])/iu;
 const PLACEHOLDER_ONLY_RE = /^(?:\[[^\]]{1,12}\]|\s)+$/u;
 const MINIMAL_WORDS_RE = /^(?:嗯+|哦+|噢+|喔+|好+|好的|好呀|好啊|好哦|好哒|行|行吧|可以|中|对+|是的|确实|哈哈+|呵呵+|嘿嘿+|笑死|乐|草|牛|强|6+|ok+|okk+|收到|了解|懂了|知道了|是吗|真假|真的假的|原来如此|这样啊|哦这样|没了|没事|拜拜|晚安|早|早安)+$/iu;
+const ACK_AFFIRM_RE = /^(?:嗯+|好+|好的|好呀|好啊|好哦|好哒|好嘞|行|行吧|可以|中|对+|收到|了解|懂了|知道了|明白|ok+|okk+|没问题|来啦|来了|马上|这就来)+$/iu;
+const PROMPT_EXPECTING_ACK_RE = /(?:等我|等一下|等会儿|一会儿|马上到|在.{0,6}等|出来吧|下来吧|过来吧|进来吧|开门|我到了|到了[，,。！!\s]|出发|走吧|我去带|去买|去拿|请你|给你带|再跟你说|再给你|看完再|回头.{0,4}说|明天说给你听|回头发你|吱一声|记得|别忘了|套件厚的|多穿点|慢点走|慢点)/u;
+
+export function isExpectedAckForPrompt(prevMeText, userText) {
+  const prev = norm(prevMeText);
+  const reply = norm(userText);
+  if (!prev || !reply || hasQuestion(reply)) return false;
+  if (isExplicitClose(reply)) return false;
+  const clean = reply.replace(/\[[^\]]{1,12}\]/gu, '').replace(/[\p{P}\p{S}\s]+/gu, '');
+  if (!clean || clean.length > 6 || !ACK_AFFIRM_RE.test(clean)) return false;
+  return PROMPT_EXPECTING_ACK_RE.test(prev);
+}
 
 export const REPLY_PACING_RULE =
   '接话点只用在主动开场；进入日常对话后跟着对方节奏走：对方问就答，不追问新题，每条回复最多一个问句，不要硬把没讲完的探索知识点一次塞完。';
@@ -79,41 +91,44 @@ export function detectWindDownSignals(turns = []) {
 
   const lastMin = isMinimalReply(lastHer.text);
   const lastLen = contentLen(lastHer.text);
+  const lastIdx = list.lastIndexOf(lastHer);
+  const prevMe = list.slice(0, lastIdx).reverse().find((m) => m.who === 'me');
+  const expectedAck = !explicit && !busySpeech && Boolean(prevMe && isExpectedAckForPrompt(prevMe.text, lastHer.text));
 
-  // 1) 连续 2 条敷衍/极短回应
+  // 1) 连续 2 条敷衍/极短回应（若是在承接角色刚发出的约定/召唤/嘱咐，不判敷衍收尾）
   const prevHer = her.at(-2);
   const prev2Her = her.at(-3);
-  if (lastMin && prevHer && isMinimalReply(prevHer.text)) {
-    reasons.push('short_fade');
-  } else if (
-    // 2) 最近 3 条明显递减：长句 -> 变短 -> 极短无问号
-    prev2Her && prevHer && !hasQuestion(lastHer.text) &&
-    contentLen(prev2Her.text) >= 10 &&
-    contentLen(prevHer.text) < contentLen(prev2Her.text) &&
-    lastLen <= 4 && lastLen <= contentLen(prevHer.text) &&
-    (lastMin || lastLen <= 2)
-  ) {
-    reasons.push('short_fade');
-  } else if (lastMin && lastLen <= 4) {
-    // 3) 角色上一条刚问了问题，但用户只回极短敷衍词（没接问题）
-    const lastIdx = list.lastIndexOf(lastHer);
-    const prevMe = list.slice(0, lastIdx).reverse().find((m) => m.who === 'me');
-    if (prevMe && hasQuestion(prevMe.text)) reasons.push('unanswered_question');
-  }
+  if (!expectedAck) {
+    if (lastMin && prevHer && isMinimalReply(prevHer.text)) {
+      reasons.push('short_fade');
+    } else if (
+      // 2) 最近 3 条明显递减：长句 -> 变短 -> 极短无问号
+      prev2Her && prevHer && !hasQuestion(lastHer.text) &&
+      contentLen(prev2Her.text) >= 10 &&
+      contentLen(prevHer.text) < contentLen(prev2Her.text) &&
+      lastLen <= 4 && lastLen <= contentLen(prevHer.text) &&
+      (lastMin || lastLen <= 2)
+    ) {
+      reasons.push('short_fade');
+    } else if (lastMin && lastLen <= 4) {
+      // 3) 角色上一条刚问了问题，但用户只回极短敷衍词（没接问题）
+      if (prevMe && hasQuestion(prevMe.text)) reasons.push('unanswered_question');
+    }
 
-  // 4) 节奏明显变慢：前一次 <= 2 分钟，这次 >= 10 分钟，且最后一条短且无问号
-  if (
-    prev2Her && prevHer && !hasQuestion(lastHer.text) && lastLen <= 6 &&
-    prev2Her.ts > 0 && prevHer.ts > prev2Her.ts && lastHer.ts > prevHer.ts
-  ) {
-    const prevGap = prevHer.ts - prev2Her.ts;
-    const lastGap = lastHer.ts - prevHer.ts;
-    if (prevGap <= 2 * MIN && lastGap >= 10 * MIN) reasons.push('slowing_down');
+    // 4) 节奏明显变慢：前一次 <= 2 分钟，这次 >= 10 分钟，且最后一条短且无问号
+    if (
+      prev2Her && prevHer && !hasQuestion(lastHer.text) && lastLen <= 6 &&
+      prev2Her.ts > 0 && prevHer.ts > prev2Her.ts && lastHer.ts > prevHer.ts
+    ) {
+      const prevGap = prevHer.ts - prev2Her.ts;
+      const lastGap = lastHer.ts - prevHer.ts;
+      if (prevGap <= 2 * MIN && lastGap >= 10 * MIN) reasons.push('slowing_down');
+    }
   }
 
   const windingDown = reasons.length > 0;
   const hint = (explicit || busySpeech) ? CLOSING_EXPLICIT_HINT : windingDown ? CLOSING_SOFT_HINT : '';
-  return { windingDown, explicit: explicit || busySpeech, busySpeech, reasons, lastUserTs: lastHer.ts || 0, lastUserText: lastHer.text, hint };
+  return { windingDown, explicit: explicit || busySpeech, busySpeech, expectedAck, reasons, lastUserTs: lastHer.ts || 0, lastUserText: lastHer.text, hint };
 }
 
 /** 检测到收尾信号后，主动开口进入可配冷却期（只拦主动，不拦用户重新开口后的回复）。 */

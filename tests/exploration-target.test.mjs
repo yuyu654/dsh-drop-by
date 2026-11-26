@@ -124,3 +124,31 @@ test('updating a mapped source replaces just that title and preserves other line
   assert.equal(setExplorationWorkSource('', '三体', 'https://example.org/read'), '三体 | https://example.org/read');
   assert.equal(setExplorationWorkSource(sources, '三体', 'https://example.org/read\n三体2 | B漫'), sources);
 });
+
+test('named platform prefix still inherits matching saved workSources URL instead of dropping it', () => {
+  const workSources = '哆哆嗦嗦逃离你 | https://manga.bilibili.com/detail/mc38749?from=manga_search';
+  const sameHost = classifyExplorationTarget('哔哩哔哩漫画：“哆哆嗦嗦”逃离你', workSources);
+  assert.equal(sameHost.kind, 'work');
+  assert.deepEqual(sameHost.hosts, ['manga.bilibili.com']);
+  assert.equal(sameHost.url, 'https://manga.bilibili.com/detail/mc38749?from=manga_search');
+
+  const otherHost = classifyExplorationTarget('知乎：“哆哆嗦嗦”逃离你', workSources);
+  assert.equal(otherHost.kind, 'work');
+  assert.equal(otherHost.url, undefined);
+});
+
+test('built-in novel and manga platform prefixes map to their official domains', () => {
+  const cases = [
+    ['起点：诡秘之主', '诡秘之主', 'qidian.com'],
+    ['晋江：天官赐福', '天官赐福', 'jjwxc.net'],
+    ['番茄小说：十日终焉', '十日终焉', 'fanqienovel.com'],
+    ['腾讯动漫：狐妖小红娘', '狐妖小红娘', 'ac.qq.com'],
+    ['快看漫画：偷偷藏不住', '偷偷藏不住', 'kuaikanmanhua.com'],
+  ];
+  for (const [input, title, host] of cases) {
+    const res = classifyExplorationTarget(input);
+    assert.equal(res.kind, 'work', input);
+    assert.equal(res.title, title, input);
+    assert.deepEqual(res.hosts, [host], input);
+  }
+});

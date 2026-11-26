@@ -159,12 +159,13 @@ export function summarizeExplorationNotes(state, persona, target, now, tz) {
     (note.next ? '\n  接下来：' + brief(note.next, 60) : ''))].join('\n');
 }
 
-async function runPluginSmoke(cfg) {
+async function runPluginSmoke(cfg, signal) {
   const options = {
     windowsHide: true, cwd: fileURLToPath(new URL('../../', import.meta.url)),
     timeout: Number(cfg.rules?.qqCommands?.timeoutSec ?? 90) * 1000,
     maxBuffer: 256 * 1024,
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    ...(signal ? { signal } : {}),
   };
   const render = (out) => {
     const passed = /^# pass (\d+)/m.exec(out)?.[1];
@@ -175,6 +176,7 @@ async function runPluginSmoke(cfg) {
     const { stdout } = await exec(process.execPath, ['--test', '--test-reporter=tap', smokeFile], options);
     return render(stdout) || '陪伴快速测试结束了，但没读到统计。';
   } catch (error) {
+    if (signal?.aborted || error?.name === 'AbortError') return null;
     return render(error.stdout || '') || '陪伴快速测试没跑完，没拿到可确认的结果。';
   }
 }
@@ -265,14 +267,18 @@ function formatLocalQuery(scope, cfg, explorationState, now) {
   return lines.join('\n') || '没查到对应的本地记录。';
 }
 
-export async function executeQqCommand({ cmd, cfg, media, explore, state, persona, openUrl = openPublicUrlInBrowser, now = Date.now() }) {
+export async function executeQqCommand({ cmd, cfg, media, explore, state, persona, openUrl = openPublicUrlInBrowser, now = Date.now(), signal = null }) {
+  if (signal?.aborted) return { reason: 'CANCELLED' };
   switch (cmd.type) {
-    case 'explore_query':
-      return { text: media?.web ? formatSearchResult(await media.collect('web', cmd.params.query))
-        : '这会儿网页搜索工具用不了，没搜到资料。' };
+    case 'explore_query': {
+      if (!media?.web) return { text: '这会儿网页搜索工具用不了，没搜到资料。' };
+      const res = await media.collect('web', cmd.params.query);
+      if (signal?.aborted) return { reason: 'CANCELLED' };
+      return { text: formatSearchResult(res) };
+    }
     case 'explore_trigger': {
       const result = await explore(cmd.params);
-      if (result?.reason === 'CANCELLED') return result;
+      if (signal?.aborted || result?.reason === 'CANCELLED') return { reason: 'CANCELLED' };
       if (result?.reason === 'EXPLORATION_TIMEOUT') return { text: '本轮自主探索到时限，已经停止。' };
       if (!result?.ok) return { text: result?.reason === 'UNAVAILABLE' ? '手头那轮探索还在跑，这次没能再起一轮。'
         : '这轮探索没跑完，没拿到新进展。' };
@@ -285,8 +291,11 @@ export async function executeQqCommand({ cmd, cfg, media, explore, state, person
     }
     case 'summarize_notes':
       return { text: summarizeExplorationNotes(state(), persona(), cmd.params.target, now, cfg.timezone) };
-    case 'run_tests':
-      return { text: await runPluginSmoke(cfg) };
+    case 'run_tests': {
+      const text = await runPluginSmoke(cfg, signal);
+      if (signal?.aborted || text === null) return { reason: 'CANCELLED' };
+      return { text };
+    }
     case 'open_login_page': {
       const targetObj = publicExplorationUrl(cmd.params?.url || latestLoginContext(state?.(), cfg)?.url || '');
       const targetUrl = targetObj ? String(targetObj.href || targetObj) : '';
@@ -323,6 +332,7 @@ export async function executeQqCommand({ cmd, cfg, media, explore, state, person
       if (!safeUrl) return { text: '这个链接不是可访问的公开网址，后台没有打开。' };
       if (!media?.web) return { text: '这会儿探索网页工具没开或不可用，没法在后台读链接。' };
       const fetched = typeof media.fetch === 'function' ? await media.fetch(safeUrl) : await media.collect('web', safeUrl);
+      if (signal?.aborted) return { reason: 'CANCELLED' };
       if (typeof fetched === 'string' && fetched.trim()) {
         return { text: `后台读完这个链接了：\n${brief(fetched, 260)}` };
       }

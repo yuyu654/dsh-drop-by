@@ -83,6 +83,7 @@ import { checkHealth, healthLines } from './perception/health.js';
 import { writeDailyReport } from './decision/report.js';
 import { generate } from './decision/llm.js';
 import { tick } from './decision/engine.js';
+import { disposeFullscreenGuard } from './perception/fullscreen-guard.js';
 import { restFor, restLine, clockOf } from './decision/bedtime.js';
 import { chitchatGate, chitchatToday } from './decision/chitchat.js';
 import { applyChange, isKnownPath, saveSecret } from './settings/settings.js';
@@ -1647,8 +1648,12 @@ ${v.raw}`);
   }
 
   // 默认 --once
-  const r = await tick();
-  printSummary(r);
+  try {
+    const r = await tick();
+    printSummary(r);
+  } finally {
+    disposeFullscreenGuard();
+  }
 }
 
 main().catch((e) => {

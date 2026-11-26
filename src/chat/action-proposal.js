@@ -15,12 +15,61 @@ import { setTimeout as sleep } from 'node:timers/promises';
 const FILE = path.join(path.dirname(CONFIG_PATH), 'data', 'action-consent.json');
 let executor = null;
 let lastExplorationStop = null;
+let lastTaskStop = null;
+let activeTask = null;
+let taskSeq = 0;
+
+const TASK_LABELS = Object.freeze({
+  explore_query: '查网页',
+  browse_url: '读链接',
+  explore_trigger: '推进一轮探索',
+  resume_after_login: '登录后续读',
+  explore_retry: '换源找正文',
+  summarize_notes: '整理笔记',
+  run_tests: '跑自检',
+  open_login_page: '打开登录页',
+  query_local: '查本地记录',
+});
+
+function taskLabelFor(type) {
+  return TASK_LABELS[type] || '后台任务';
+}
+
+export function activeBackgroundTask() {
+  if (!activeTask) return null;
+  return {
+    id: activeTask.id,
+    type: activeTask.type,
+    label: activeTask.label,
+    startedAt: activeTask.startedAt,
+    channel: activeTask.channel,
+  };
+}
+
+export function stopBackgroundTask(taskId) {
+  if (!activeTask) return { ok: false, reason: 'NOT_RUNNING' };
+  if (taskId && activeTask.id !== taskId) {
+    return { ok: false, reason: 'STALE_TASK', task: activeBackgroundTask() };
+  }
+  const current = activeTask;
+  const summary = activeBackgroundTask();
+  activeTask = null;
+  runningCommand = false;
+  try { current.cancel(); } catch { /* ignore */ }
+  return { ok: true, reason: 'CANCELLED', task: summary };
+}
 
 /** The active DSH instance owns exploration, including its single-round lock. */
 export function bindActionExecutor(handler) {
   executor = handler;
   lastExplorationStop = null;
-  return () => { if (executor === handler) executor = null; };
+  lastTaskStop = null;
+  return () => {
+    if (executor === handler) {
+      stopBackgroundTask();
+      executor = null;
+    }
+  };
 }
 
 function callbackTransportReady(cfg) {
@@ -171,6 +220,26 @@ export function tryStopExplorationCommand({ peer, kind, text, bridgeText = text,
   return context;
 }
 
+export function tryStopBackgroundTaskCommand({ peer, kind, text, bridgeText = text, at, cfg, internalSession, now = Date.now() }) {
+  if (!/^(?:(?:中止|停止|取消)(?:当前)?(?:后台)?(?:任务|派活))[。！!]?$/.test(String(bridgeText || '').trim())) return '';
+  if (!executor || kind !== 'private' || !peer || String(peer) !== chatPeer(cfg) ||
+      cfg.enabled === false || !canReadChat(cfg) || chatChanging()) return '';
+  const { incoming } = chatDialogue(cfg);
+  const age = now - Number(at);
+  if (!(age >= 0 && age <= Number(cfg.rules?.qqCommands?.freshSec ?? 120) * 1000) ||
+      !incomingMatches({ peer, kind, text, bridgeText, at, incoming, cfg, internalSession })) return '';
+  const channel = activeChatChannel(cfg);
+  if (lastTaskStop?.channel === channel && lastTaskStop.peer === peer && lastTaskStop.at === at) {
+    return lastTaskStop.context;
+  }
+  const result = stopBackgroundTask();
+  const context = result.ok
+    ? `<qq_reply_context>中止指令已执行。自然告诉用户，后台任务「${result.task?.label || '后台任务'}」已中止。</qq_reply_context>`
+    : '<qq_reply_context>目前没有正在运行的后台任务。自然告诉用户当前状态。</qq_reply_context>';
+  lastTaskStop = { channel, peer, at, context };
+  return context;
+}
+
 function readPendingForMessage({ peer, kind, text, bridgeText, at, cfg, internalSession, now }) {
   const state = read();
   const pending = state.content?.pendingAction;
@@ -212,40 +281,74 @@ export function consumeQqAction({ peer, kind, text, bridgeText, at, cfg = loadCo
   if (!current || JSON.stringify(current) !== JSON.stringify(pending.action)) return 'stale';
   const handler = executor;
   const action = { ...current, params: { ...current.params, userGuidance: route.userGuidance || '' } };
-  startQqTask({ peer, cfg, now, handler,
+  startQqTask({ peer, cfg, now, handler, taskType: 'explore_retry',
+    onStop: () => handler.stopExploration?.(),
     run: (report) => handler.run(action, report),
     canReport: (fresh) => qqTaskPeerEnabled(fresh, peer),
   });
   return 'accepted';
 }
 
-function startQqTask({ peer, cfg, now, handler, run, canReport, command = false }) {
-  let reported = false;
+function startQqTask({ peer, cfg, now, handler, run, canReport, command = false, taskType = 'task', onStop = null }) {
+  let finished = false;
   let timer;
-  const reportOnce = (result) => {
-    if (reported) return;
-    reported = true;
-    clearTimeout(timer);
-    if (result?.reason === 'CANCELLED') return;
-    void (async () => {
+  let delivery = Promise.resolve();
+  const controller = new AbortController();
+  const id = `task:${now}:${++taskSeq}`;
+  const channel = activeChatChannel(cfg);
+  const clearTaskSlot = () => {
+    if (activeTask?.id === id) activeTask = null;
+    if (command && (!activeTask || activeTask.id === id)) runningCommand = false;
+  };
+  const queueReport = (result, interim = false) => {
+    delivery = delivery.then(async () => {
       await waitForOrdinaryReply({ peer, consumedAt: now, cfg, handler });
       const fresh = loadConfig();
-      if (executor !== handler) return;
-      const channel = activeChatChannel(cfg);
+      if (executor !== handler || controller.signal.aborted || (interim && finished)) return;
       if (channel !== activeChatChannel(fresh)) {
         await handler.deferReport?.({ peer, result, channel, command });
       } else if (callbackTransportReady(fresh) && canReport(fresh)) {
         await handler.report({ peer, result, cfg: fresh, command });
       }
-    })().catch(() => {});
+    }).catch(() => {});
+  };
+  const reportOnce = (result) => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(timer);
+    clearTaskSlot();
+    if (!controller.signal.aborted && result?.reason !== 'CANCELLED') queueReport(result);
+  };
+  const cancel = () => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(timer);
+    clearTaskSlot();
+    try { controller.abort('CANCELLED'); } catch { /* ignore */ }
+    try { onStop?.(); } catch { /* ignore */ }
+  };
+  activeTask = {
+    id,
+    type: taskType,
+    label: taskLabelFor(taskType),
+    startedAt: now,
+    channel,
+    peer: String(peer || ''),
+    controller,
+    cancel,
   };
   if (command) {
-    timer = setTimeout(() => reportOnce({ text: '这件事到时限还没跑完，先跟你说一声。' }),
+    timer = setTimeout(() => queueReport({ text: '这件事到时限还没跑完，先跟你说一声。' }, true),
       Number(cfg.rules?.qqCommands?.timeoutSec ?? 90) * 1000);
     timer.unref?.();
   }
-  void Promise.resolve().then(() => run(reportOnce))
-    .then(reportOnce, () => reportOnce(null));
+  const abortPromise = new Promise((resolve) => {
+    controller.signal.addEventListener('abort', () => resolve({ reason: 'CANCELLED' }), { once: true });
+  });
+  void Promise.race([
+    Promise.resolve().then(() => run(reportOnce, controller.signal)),
+    abortPromise,
+  ]).then(reportOnce, () => reportOnce(null));
 }
 
 let runningCommand = false;
@@ -278,11 +381,12 @@ export function queueQqCommand({ cmd, peer, kind, text, bridgeText, at, cfg, int
   content.handled = [...handled, { peer: String(peer), at, channel: activeChatChannel(cfg), commandKey: key }].slice(-50);
   save(state);
   runningCommand = true;
-  startQqTask({ peer, cfg, now, handler, command: true,
+  const stopsExploration = cmd.type === 'explore_trigger' || cmd.type === 'resume_after_login';
+  startQqTask({ peer, cfg, now, handler, command: true, taskType: cmd.type,
+    onStop: stopsExploration ? () => handler.stopExploration?.() : null,
     canReport: (fresh) => fresh.rules?.qqCommands?.enabled === true && qqTaskPeerEnabled(fresh, peer),
-    async run() {
-      try { return await handler.command(cmd, cfg); }
-      finally { runningCommand = false; }
+    async run(_report, signal) {
+      return await handler.command(cmd, cfg, { signal });
     },
   });
   return 'accepted';

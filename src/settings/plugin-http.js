@@ -20,8 +20,10 @@ import { loadPersona } from '../decision/persona.js';
 import { setFeedbackReceipt } from '../decision/feedback.js';
 import { mergeMemorySessions, restoreMemoryBackup } from '../decision/memorysource.js';
 import { repairEmotionConfig } from '../decision/emotion-sync.js';
+import { redeployFullscreenHelper } from '../perception/fullscreen-guard.js';
 import { dismissAgreement } from '../chat/agreements.js';
 import { dismissRollover, pendingRollovers } from '../chat/session-rollover.js';
+import { stopBackgroundTask } from '../chat/action-proposal.js';
 import { bridgeLastIn, bridgeLastOut } from '../chat/outbound.js';
 import { explorationStatus, loadExploration } from '../explore/explore.js';
 import { publicExplorationUrl, splitInterestItems } from '../explore/explore-media.js';
@@ -525,6 +527,22 @@ export function registerPluginHttpRoutes({
                 }
                 return json(200, { ...stopExploration(body.runId), state: snapshot() });
               }
+              if (route === '/task/stop' && req.method === 'POST') {
+                let body;
+                try { body = JSON.parse((await readBody(req)) || '{}'); }
+                catch { return json(400, { ok: false, error: '请求体不是 JSON' }); }
+                if (!body || typeof body !== 'object' || Array.isArray(body) ||
+                    (body.taskId !== undefined && typeof body.taskId !== 'string')) {
+                  return json(400, { ok: false, error: '任务编号无效' });
+                }
+                const result = stopBackgroundTask(body.taskId);
+                const note = result.ok
+                  ? `已中止后台任务：${result.task?.label || '后台任务'}`
+                  : result.reason === 'STALE_TASK'
+                    ? '当前后台任务已更换，请重新确认后再中止'
+                    : '当前没有正在运行的后台任务';
+                return json(200, { ...result, note, state: snapshot() });
+              }
               if (route === '/explore/topic' && req.method === 'POST') {
                 let body;
                 try { body = JSON.parse((await readBody(req)) || '{}'); }
@@ -739,6 +757,13 @@ export function registerPluginHttpRoutes({
               if (route === '/emotion/repair' && req.method === 'POST') {
                 const r = repairEmotionConfig({ cfg: loadConfig(), force: true });
                 return json(200, { ...r, state: snapshot() });
+              }
+              if (route === '/fullscreen-guard/redeploy' && req.method === 'POST') {
+                const r = await redeployFullscreenHelper();
+                const note = r.ok
+                  ? '全屏检测原生辅助进程已重新部署并就绪'
+                  : '原生编译不可用，已自动退回 PowerShell 兜底模式';
+                return json(200, { ok: true, result: r, note, state: snapshot() });
               }
               if (route === '/memory/merge' && req.method === 'POST') {
                 let body = {};

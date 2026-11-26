@@ -13,6 +13,8 @@ import { generate, llmAvailable } from './llm.js';
 import { SLOTS } from './topics.js';
 import { signalFacts } from '../perception/signals.js';
 import { memoryFacts } from './memorysource.js';
+import { proactiveBrushoffHint } from '../chat/brushoff-mood.js';
+import { chatPeer } from '../channels/external.js';
 import { explorationToneHint } from '../explore/explore.js';
 import { WIND_DOWN_HINT, WOKEN_HINT } from './character-rest.js';
 import { OPENING_SELF_CHECK } from '../chat/chat-rhythm.js';
@@ -732,6 +734,7 @@ export function buildChitchatPrompt({ ctx, topic, persona, cfg, feedback, st = {
     try { return Number(String(ctx.clock || '').slice(0, 2)) * 60 + Number(String(ctx.clock || '').slice(3, 5)); } catch { return 12 * 60; }
   })();
   const night = mins >= 22 * 60 || mins < 7 * 60;
+  const angryHint = proactiveBrushoffHint(cfg, chatPeer(cfg), nowTs);
 
   return [
     String(persona?.text || '').trim(),
@@ -741,6 +744,7 @@ export function buildChitchatPrompt({ ctx, topic, persona, cfg, feedback, st = {
     '以上是背景人格。下面是这一次真正要写的东西，只按下面的要求写。',
     ATTRIBUTION_RULE,
     PERSONA_FACT_RULE,
+    ...(angryHint ? ['', angryHint] : []),
     '',
     `现在是 ${ctx.clock || ''}。在 QQ 上给「她」发一条消息，纯文字：没有表情、没有语音、不带解释。`,
     '这一条**没有任何由头**：没有新闻、没有数据、没有她刚说的话。就是忽然想跟她说一句。',

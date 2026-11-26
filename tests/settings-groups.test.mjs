@@ -22,15 +22,49 @@ test('分组：日常在最前，高级在最后；高级折起来并写明「�
   assert.match(adv.summary, /平时不用动/);
 });
 
-test('首屏日常组保持精简清爽（其余组分类折叠）', () => {
+test('首屏日常组保持精简清爽（可折叠默认展开，其余组默认折叠）', () => {
   const groups = listForUi(cfg());
   const daily = groups.find((g) => g.name === '日常');
-  assert.ok(daily && !daily.foldable, '日常组常驻展开');
+  assert.ok(daily && daily.foldable && daily.defaultOpen, '日常组可折叠且默认展开');
+  assert.ok(daily.summary, '日常组折叠时带概括摘要');
+  for (const p of ['content.holidays', 'content.workdays', 'content.calendar.url']) {
+    const item = daily.items.find((i) => i.path === p);
+    assert.equal(item?.foldSection, '节假日与调休', `${p} 应归入默认折叠子区块`);
+  }
+  const rest = groups.find((g) => g.name === '角色作息');
+  for (const p of ['characterRest.windDownMin', 'content.topics.characterRestBeforeBedMin', 'content.topics.characterRestAfterWakeMin', 'content.topics.characterRestGreetSkipMin']) {
+    const item = rest.items.find((i) => i.path === p);
+    assert.equal(item?.foldSection, '作息细节与早晚安触发', `${p} 应归入角色作息默认折叠子区块`);
+  }
+  const sticky = groups.find((g) => g.name === '决定TA粘不粘人');
+  for (const p of ['rules.gapByTier.enabled', 'rules.naturalTriggers.enabled', 'rules.requirePcOnline']) {
+    const item = sticky.items.find((i) => i.path === p);
+    assert.equal(item?.foldSection, '分档间隔、事件触发与在场判断', `${p} 应归入决定TA粘不粘人默认折叠子区块`);
+  }
+  const timing = groups.find((g) => g.name === '时间间隔');
+  const timingTop = timing.items.filter((i) => !i.foldSection);
+  assert.ok(timingTop.length >= 6 && timingTop[0].path === 'logging.keepDays', '时间间隔常用项排在最前且不折叠');
+  assert.equal(timing.items.find((i) => i.path === 'content.topics.wellnessCooldownHours')?.foldSection, '提醒时段与冷却');
+  assert.equal(timing.items.find((i) => i.path === 'send.split.maxFirstMs')?.foldSection, '分开发送毫秒微调');
+  const adv = groups.find((g) => g.name === '高级');
+  const advTop = adv.items.filter((i) => !i.foldSection);
+  assert.ok(advTop.length >= 10 && advTop[0].path === 'perception.anticheat.fullscreenCooldownMin', '高级第一项应为退出全屏游戏后的缓冲期');
+  for (const p of ['exploration.builtinFeeds', 'exploration.rssUrls', 'exploration.extraTools', 'exploration.syncToSharedMemory', 'content.topics.followCasualSilence', 'rules.exposeMaintenanceTools']) {
+    const item = adv.items.find((i) => i.path === p);
+    if (item) assert.equal(item.foldSection, '扩展功能', `${p} 应归入扩展功能`);
+  }
+  for (const p of ['content.topics.agendaTomorrowHour', 'content.topics.agendaEarlyBeforeHour', 'content.topics.agendaSoonMin']) {
+    assert.equal(adv.items.find((i) => i.path === p)?.foldSection, '课表相关', `${p} 应归入课表相关`);
+  }
+  assert.equal(adv.items.find((i) => i.path === 'content.topics.catchupDays')?.label, '算长时间没说话');
+  for (const p of ['content.topics.sleepShortMin', 'content.topics.sleepLateBed', 'content.topics.stepsLowMax', 'content.topics.screenHeavyMin', 'content.topics.lateFromHour', 'content.topics.lateToHour']) {
+    assert.equal(adv.items.find((i) => i.path === p)?.foldSection, '手机端数据', `${p} 应归入手机端数据`);
+  }
   assert.ok(daily.items.length <= 15, `日常首屏 ${daily.items.length} 行，保持清爽`);
   for (const name of ['角色作息', '决定TA粘不粘人', '节奏', '说什么', '数据从哪来', '课表与考试', '高级']) {
     assert.ok(FOLDABLE_GROUPS.has(name), `${name} 组默认折叠`);
     const g = groups.find((x) => x.name === name);
-    assert.ok(g.foldable, `${name} 应该是折叠卡片`);
+    assert.ok(g.foldable && !g.defaultOpen, `${name} 应该是默认折叠卡片`);
     assert.ok(g.summary, `${name} 应该带概括人话摘要`);
   }
   const stickyPaths = groups.find((x) => x.name === '决定TA粘不粘人').items.map((i) => i.path);

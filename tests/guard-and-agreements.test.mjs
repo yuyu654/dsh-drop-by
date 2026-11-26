@@ -218,7 +218,7 @@ test('tickDueAgreement：到点提醒优先走轻量无思考模型按人设生�
   assert.equal(sent[2], '提醒一下，你说过的「关烤箱」。');
 });
 
-test('buildReplyContext：命中时间线索且小本本开启时注入防重复 DSH 定时器提示', async (t) => {
+test('buildReplyContext：仅在本轮提醒实际落盘后注入防重复 DSH 定时器提示', async (t) => {
   const { saveConfig } = await import('../src/settings/config.js');
   const { buildReplyContext } = await import('../src/chat/qq-reply.js');
   const now = Date.parse('2026-11-25T15:00:00+08:00');
@@ -234,8 +234,24 @@ test('buildReplyContext：命中时间线索且小本本开启时注入防重复
   saveConfig(baseCfg);
   const dummyCtx = { get: () => null };
 
-  // 命中时间词 + 小本本开启 → 注入防重复定时器提示
-  const withTime = await buildReplyContext(dummyCtx, { peer, kind: 'private', text: '十分钟后提醒我喝水', at: now, cfg: baseCfg, observed: true });
+  const text = '十分钟后提醒我喝水';
+  const input = { peer, kind: 'private', text, at: now, cfg: baseCfg };
+  assert.doesNotMatch(await buildReplyContext(dummyCtx, input), /【约定小本本已接管】/);
+  await observeAgreement({ ...input, now, channel: 'qq', generate: async () => ({ ok: false }) });
+  assert.doesNotMatch(await buildReplyContext(dummyCtx, input), /【约定小本本已接管】/);
+
+  const savedInput = { ...input, at: now - 1000 };
+  let finishExtraction;
+  const extraction = observeAgreement({ ...savedInput, now, channel: 'qq', generate: () =>
+    new Promise(resolve => { finishExtraction = resolve; }) });
+  const reply = buildReplyContext(dummyCtx, { ...savedInput, observed: true });
+  finishExtraction({ ok: true, text: JSON.stringify({
+    items: [{ index: 0, title: '喝水', anchor: '十分钟后', quote: text }],
+  }) });
+  await extraction;
+  const withTime = await reply;
+  assert.equal(listAgreements(baseCfg, now).filter(item => item.peer === peer).length, 1);
+  assert.doesNotMatch(await buildReplyContext(dummyCtx, { ...savedInput, text: '十分钟后提醒我交作业' }), /【约定小本本已接管】/);
   assert.match(withTime, /【约定小本本已接管】/);
   assert.match(withTime, /不要再额外创建一次性 DSH 定时器/);
 
@@ -248,4 +264,42 @@ test('buildReplyContext：命中时间线索且小本本开启时注入防重复
   saveConfig(disabledCfg);
   const off = await buildReplyContext(dummyCtx, { peer, kind: 'private', text: '十分钟后提醒我喝水', at: now, cfg: disabledCfg, observed: true });
   assert.doesNotMatch(off, /【约定小本本已接管】/);
+});
+
+test('取消指令遵循否定语境，并按创建时间选择刚才那条', async () => {
+  const now = Date.parse('2026-11-25T15:00:00+08:00');
+  const cfg = { timezone: 'Asia/Shanghai', agreements: { enabled: true } };
+  const peer = 'cancel-order';
+  const channel = 'qq';
+  for (const [index, anchor, title] of [[0, '十分钟后', '交作业'], [1, '五分钟后', '带钥匙']]) {
+    const at = now + index * 1000;
+    const text = anchor + '提醒我' + title;
+    await observeAgreement({ cfg, peer, channel, text, at, now: at,
+      generate: async () => ({ ok: true, text: JSON.stringify({ items: [{ index: 0, title, anchor, quote: text }] }) }),
+    });
+  }
+  const command = text => handleAgreementChatCommand({ cfg, peer, channel, text, now: now + 2000 });
+  const pending = () => listAgreements(cfg, now + 2000).filter(item => item.peer === peer);
+  for (const text of ['不要取消所有提醒', '千万别删除交作业的提醒', '不用清空全部提醒', '提醒不要全部取消', '别把提醒全部取消']) {
+    assert.equal(command(text), '', text);
+    assert.equal(pending().length, 2);
+  }
+  assert.match(command('取消刚才那个提醒'), /带钥匙/);
+  assert.deepEqual(pending().map(item => item.title), ['交作业']);
+  assert.match(command('取消所有提醒'), /已全部取消/);
+});
+
+test('缺少创建时间的旧提醒按到期时间回退', async () => {
+  const { readChatData, writeChatData } = await import('../src/channels/douyin-im.js');
+  const now = Date.parse('2026-11-25T15:00:00+08:00');
+  const cfg = { timezone: 'Asia/Shanghai', agreements: { enabled: true } };
+  const peer = 'legacy-cancel-order';
+  const channel = 'qq';
+  const { items } = readChatData('agreements');
+  writeChatData('agreements', { items: [...items, ...['先到期', '后到期'].map((title, index) => ({
+    id: 'legacy-' + index, title, dueAt: now + (index + 1) * 60_000, peer, channel, status: 'pending',
+  }))] });
+  const result = handleAgreementChatCommand({ text: '取消刚才那个提醒', peer, channel, cfg, now });
+  assert.match(result, /后到期/);
+  assert.deepEqual(listAgreements(cfg, now).filter(item => item.peer === peer).map(item => item.title), ['先到期']);
 });

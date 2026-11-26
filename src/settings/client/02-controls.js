@@ -241,6 +241,17 @@
         var g = props.group;
         var timing = g.name === '时间间隔';
         var [query, setQuery] = useState('');
+        var foldKey = 'group:' + g.name;
+        var [open, setOpen] = useState(function () { return readFoldState(foldKey, Boolean(g.defaultOpen)); });
+        var [subOpen, setSubOpen] = useState(function () {
+          var init = {};
+          (g.items || []).forEach(function (item) {
+            if (item && item.foldSection && !Object.prototype.hasOwnProperty.call(init, item.foldSection)) {
+              init[item.foldSection] = readFoldState('sub:' + g.name + ':' + item.foldSection, false);
+            }
+          });
+          return init;
+        });
         var keyword = query.trim().toLowerCase();
         var visible = timing && keyword ? g.items.filter(function (item) {
           return (item.label + ' ' + (item.hint || '')).toLowerCase().includes(keyword);
@@ -250,11 +261,62 @@
         var wrap = function (card) {
           return note ? h('div', { className: 'pg-group' }, note, card) : card;
         };
+        var mainItems = [];
+        var foldSections = [];
+        var foldSectionMap = {};
+        visible.forEach(function (item) {
+          if (item && item.foldSection) {
+            if (!foldSectionMap[item.foldSection]) {
+              foldSectionMap[item.foldSection] = { name: item.foldSection, items: [] };
+              foldSections.push(foldSectionMap[item.foldSection]);
+            }
+            foldSectionMap[item.foldSection].items.push(item);
+          } else {
+            mainItems.push(item);
+          }
+        });
+        var renderRows = function (list) {
+          return h(
+            'div',
+            { className: 'pg-rows' },
+            list.map(function (item) {
+              return h(Row, { key: item.path, item: item, busy: props.busy, onSave: props.onSave });
+            })
+          );
+        };
         var rows = h(
-          'div',
-          { className: 'pg-rows' },
-          visible.map(function (item) {
-            return h(Row, { key: item.path, item: item, busy: props.busy, onSave: props.onSave });
+          React.Fragment,
+          null,
+          props.topExtra || null,
+          mainItems.length ? renderRows(mainItems) : null,
+          props.extra || null,
+          foldSections.map(function (sec) {
+            var secOpen = Boolean(timing && keyword) || Boolean(subOpen[sec.name]);
+            return h(
+              'details',
+              {
+                key: 'sub-' + sec.name,
+                className: 'pg-exp-details pg-sub-fold',
+                open: secOpen,
+                onToggle: function (e) {
+                  var isOpen = e.currentTarget.open;
+                  if (Boolean(subOpen[sec.name]) === isOpen) return;
+                  writeFoldState('sub:' + g.name + ':' + sec.name, isOpen);
+                  setSubOpen(function (prev) {
+                    var next = Object.assign({}, prev);
+                    next[sec.name] = isOpen;
+                    return next;
+                  });
+                },
+              },
+              h(
+                'summary',
+                { className: 'pg-exp-sum' },
+                h('span', null, sec.name),
+                h('span', { className: 'pg-card-count', style: { marginLeft: 'auto' } }, sec.items.length + ' 项')
+              ),
+              renderRows(sec.items)
+            );
           })
         );
         var innerNote = g.innerNote ? h('div', { className: 'pg-note pg-card-inner-note' }, g.innerNote) : null;
@@ -277,7 +339,16 @@
         return wrap(
           h(
             'details',
-            { className: 'pg-card pg-card-fold' },
+            {
+              className: 'pg-card pg-card-fold',
+              open: open,
+              onToggle: function (e) {
+                var isOpen = e.currentTarget.open;
+                if (open === isOpen) return;
+                writeFoldState(foldKey, isOpen);
+                setOpen(isOpen);
+              },
+            },
             h(
               'summary',
               { className: 'pg-card-title pg-card-sum' },
@@ -294,7 +365,6 @@
               value: query,
               onChange: function (e) { setQuery(e.target.value); }
             }) : null,
-            props.extra || null,
             visible.length ? rows : h('div', { className: 'pg-note' }, '没有匹配的设置')
           )
         );

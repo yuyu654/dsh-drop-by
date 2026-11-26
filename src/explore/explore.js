@@ -21,9 +21,50 @@ const BIAS_CYCLES = {
 export function recentExploration(entry, now, timing) {
   return !!entry && now >= entry.at && now - entry.at < Number(timing?.recentDays ?? 3) * 86_400_000;
 }
-const personaKey = (p) => p?.ok && p.text
+const GENERIC_PERSONA_HEADING_RE = /^(?:说话方式|人格|全局人格|人设|默认人格|内置兜底|不喜欢|边界|角色与关系|说话风格|基本设定|规则|说明|注意事项)(?:（[^）]*）|\([^)]*\))?$/u;
+
+export function extractPersonaIdentity(text) {
+  const raw = String(text || '');
+  if (!raw.trim()) return '';
+  for (const rawLine of raw.split(/\r?\n/)) {
+    const cleaned = rawLine.trim();
+    if (!cleaned || /^##\s*(?:人格（|这个通道的细则（)/u.test(cleaned)) continue;
+    const explicit = cleaned.match(/^(?:[-*]\s*)?\*{0,2}\s*(?:我\s*[=＝]|(?:角色名?|名字|姓名|昵称)\s*[=＝:：])\s*([^\r\n，,。；;：:（(\*`]{1,24})/u);
+    if (explicit) {
+      const name = explicit[1].trim();
+      if (name && !GENERIC_PERSONA_HEADING_RE.test(name)) return name;
+    }
+  }
+  for (const rawLine of raw.split(/\r?\n/)) {
+    const heading = rawLine.trim().match(/^#\s+([^\r\n]{1,48})$/u);
+    if (!heading) continue;
+    const candidate = heading[1].split(/[·•\-—|｜/:：]/u)[0].replace(/\*+/g, '').trim();
+    if (candidate && candidate.length <= 24 && !GENERIC_PERSONA_HEADING_RE.test(candidate)) return candidate;
+  }
+  return '';
+}
+
+export const legacyPersonaKey = (p) => p?.ok && p.text
   ? createHash('sha256').update(p.text).digest('hex')
   : '';
+
+export const personaKey = (p) => {
+  if (!p?.ok || !p.text) return '';
+  const identity = extractPersonaIdentity(p.text);
+  return identity
+    ? createHash('sha256').update(`identity:${identity}`).digest('hex')
+    : legacyPersonaKey(p);
+};
+
+export function personaMatches(state, persona) {
+  const saved = state?.personaKey;
+  if (!saved) return false;
+  const key = personaKey(persona);
+  if (!key) return false;
+  if (saved === key) return true;
+  const legacy = legacyPersonaKey(persona);
+  return Boolean(legacy && saved === legacy);
+}
 const line = (v, n) => typeof v === 'string' ? v.replace(/[\r\n\t]+/g, ' ').trim().slice(0, n) : '';
 
 const NO_VIDEO_RE = /(?:不要|别看|别找|不看|不用|非)\s*视频/u;
@@ -150,8 +191,7 @@ export function saveExploration(state) {
 }
 
 export function explorationStatus(state, persona) {
-  const key = personaKey(persona);
-  if (!key || state?.personaKey !== key) return { lastAt: null, thread: null, candidate: null };
+  if (!personaMatches(state, persona)) return { lastAt: null, thread: null, candidate: null };
   return { lastAt: state.lastAt, thread: state.thread, candidate: state.candidate,
     ...(state.leisure ? { leisure: state.leisure } : {}),
     ...(state.light ? { light: state.light } : {}),
@@ -235,9 +275,8 @@ export function toneOf(text, max = 12) {
 }
 
 export function explorationMood(state, persona, now = Date.now(), timing) {
-  const key = personaKey(persona);
   const mood = state?.mood;
-  if (!key || state?.personaKey !== key || !mood?.text ||
+  if (!personaMatches(state, persona) || !mood?.text ||
       !(now >= mood.at && now - mood.at < Number(timing?.moodHours ?? 2) * 3_600_000)) return null;
   return mood;
 }
@@ -522,7 +561,7 @@ export async function exploreRound({ persona, previous, interest = '', focusTopi
   if (!key) return { ok: false, reason: 'NO_PERSONA' };
   const pinnedTopic = line(workTarget?.title || requestedResearch?.topic || focusTopic, 120);
   const old = explorationStatus(previous, persona);
-  const prior = previous?.personaKey === key ? previous : null;
+  const prior = personaMatches(previous, persona) ? previous : null;
   const completed = Number(prior?.roundCount) || 0;
   const cycle = Object.hasOwn(BIAS_CYCLES, bias) ? BIAS_CYCLES[bias] : null;
   const explicitResearch = Boolean(requestedResearch || pinnedTopic);

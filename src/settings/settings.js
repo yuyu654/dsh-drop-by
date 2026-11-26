@@ -14,7 +14,7 @@
 // 客户端代码不用动。
 
 import fs from 'node:fs';
-import { CHARACTER_REST_DEFAULTS, explorationBiasForUi, getPath, STATE_WRITE_WAIT_MAX_MS, usesLegacyExplorationCadence } from './config.js';
+import { BRUSHOFF_MOOD_DEFAULTS, ROLEPLAY_FOLLOWUP_DEFAULTS, CHARACTER_REST_DEFAULTS, explorationBiasForUi, getPath, STATE_WRITE_WAIT_MAX_MS, usesLegacyExplorationCadence } from './config.js';
 import { normalizeWindows, fmtWindows } from '../perception/schedule.js';
 import { SECRETS_PATH, loadSecrets, saveSecrets, hostFor } from '../perception/fishmail.js';
 import { detectSources, detectEmotionPortrait, douyinPluginPeer } from './detect.js';
@@ -168,8 +168,9 @@ export const GROUP_NOTES = {
   日常:
     '带反作弊的游戏中：看屏幕（OCR）、看窗口和网页、抖音功能会自动避让或建议关闭；键鼠空闲不受影响。',
 };
-/** 这一组默认折起来：除了日常主控展开，其余各组默认折叠并显示人话摘要。 */
-export const FOLDABLE_GROUPS = new Set(['角色作息', '决定TA粘不粘人', '节奏', '说什么', '数据从哪来', '课表与考试', '时间间隔', '高级']);
+/** 这一组可折叠；默认展开的组放 DEFAULT_OPEN_GROUPS，其余默认折叠并显示人话摘要。 */
+export const FOLDABLE_GROUPS = new Set(['日常', '角色作息', '决定TA粘不粘人', '节奏', '说什么', '数据从哪来', '课表与考试', '时间间隔', '高级']);
+export const DEFAULT_OPEN_GROUPS = new Set(['日常']);
 
 /**
  * 子项跟着父开关走：父开关关着，这一行就不显示（值还留在 config.json 里，开回来就恢复）。
@@ -189,6 +190,8 @@ const ON_PRESENCE_SIGNAL = dep('rules.presenceSignal.enabled', false);
 const ON_QQ_CMD = dep('rules.qqCommands.enabled', true);
 const ON_ACTION_GATE = dep('rules.actionGate.enabled', true);
 const ON_QQ_CONT = dep('rules.qqContinuation', false);
+const ON_BRUSHOFF_MOOD = dep('rules.brushoffMood.enabled', false);
+const ON_ROLEPLAY_FOLLOWUP = dep('rules.roleplayFollowup.enabled', true);
 const ON_PROJECT = dep('rules.askProjectOnce', false);
 const ON_PHONE = dep('sources.phone.enabled', true);
 const ON_MEMORY = dep('sources.memory.enabled', true);
@@ -299,7 +302,9 @@ export const SCHEMA = [
   { group: '时间间隔', path: 'exploration.moodHours', label: '探索心情保留多久', type: 'int', min: 0, max: 168, unit: '小时', dep: ON_EXP_MOOD, hint: '默认 2 小时。填 0 不引用探索心情。' },
   { group: '时间间隔', path: 'exploration.portraitHours', label: '聊天心情保留多久', type: 'int', min: 0, max: 168, unit: '小时', dep: ON_EXP_PORTRAIT, hint: '默认 2 小时，同时控制情绪回落速度。填 0 不引用。' },
   { group: '时间间隔', path: 'rules.qqTiming.debounceMs', label: '连发消息合并等待', type: 'int', min: 3000, max: 15000, unit: '毫秒', hint: '默认 3500 毫秒，最低 3000 毫秒。上限 15000 毫秒，为桥单次投递的 20000 毫秒超时留出余量。' },
-  { group: '时间间隔', path: 'rules.qqTiming.pollSec', label: '补话与约定检查间隔', type: 'int', min: 1, max: 60, unit: '秒', dep: { any: [ON_QQ_CONT, dep('agreements.enabled', false)] }, hint: '默认 2 秒。检查热聊补话、短时来信和到期约定；与普通拍间隔独立。' },
+  { group: '时间间隔', path: 'rules.roleplayFollowup.minMinutes', label: '剧情回话最短等待', type: 'int', min: 1, max: 120, unit: '分钟', dep: ON_ROLEPLAY_FOLLOWUP, hint: '默认 10 分钟。从她发出约定回来的消息时开始计时。' },
+  { group: '时间间隔', path: 'rules.roleplayFollowup.maxMinutes', label: '剧情回话最长等待', type: 'int', min: 1, max: 120, unit: '分钟', dep: ON_ROLEPLAY_FOLLOWUP, hint: '默认 20 分钟。每次在两个时长之间随机选定。' },
+  { group: '时间间隔', path: 'rules.qqTiming.pollSec', label: '补话、约定与剧情检查间隔', type: 'int', min: 1, max: 60, unit: '秒', dep: { any: [ON_QQ_CONT, ON_ROLEPLAY_FOLLOWUP, dep('agreements.enabled', false)] }, hint: '默认 2 秒。检查热聊补话、短时来信、到期约定和剧情回话。' },
   { group: '时间间隔', path: 'rules.qqTiming.windowSec', label: '热聊回看窗口', type: 'int', min: 1, max: 1800, unit: '秒', dep: ON_QQ_CONT, hint: '在这段时间里至少有两轮对话才算热聊。' },
   { group: '时间间隔', path: 'rules.qqTiming.pauseSec', label: '热聊补话先等多久', type: 'int', min: 0, max: 300, unit: '秒', dep: ON_QQ_CONT, hint: '从正常回复发送完成开始计时。' },
   { group: '时间间隔', path: 'rules.qqTiming.expireSec', label: '热聊补话超过多久作废', type: 'int', min: 1, max: 600, unit: '秒', dep: ON_QQ_CONT, hint: '从正常回复发送完成开始计时，须大于补话等待时间，并留出一次检查和生成的时间。' },
@@ -394,15 +399,15 @@ export const SCHEMA = [
   { group: '角色作息', path: 'characterRest.bed', label: '角色入睡基准', type: 'hm', unit: '时:分', hint: '按时:分填写（00:00–23:59），默认 22:00。角色睡着时暂停主动开口和自动探索，私聊照常回复。修改后会立即按新基准重算今日作息。' },
   { group: '角色作息', path: 'characterRest.wake', label: '角色醒来基准', type: 'hm', unit: '时:分', hint: '按时:分填写（00:00–23:59），默认 06:30；早于入睡时间表示次日醒来。修改后会立即按新基准重算今日作息。' },
   { group: '角色作息', path: 'characterRest.jitterMin', label: '角色作息每日浮动', type: 'int', min: 0, max: 120, unit: '分钟', hint: '默认 30 分钟，入睡和醒来各自前后浮动，同一晚固定。填 0 取消随机浮动。' },
-  { group: '角色作息', path: 'characterRest.windDownMin', label: '角色临睡前多久轻声说话', type: 'int', min: 0, max: 180, unit: '分钟', hint: '默认 30 分钟。主动消息变成一条更轻、更短的话。填 0 关闭临睡口吻。' },
-  { group: '角色作息', path: 'content.topics.characterRestBeforeBedMin', label: '入睡前多久触发作息由头', type: 'int', min: 0, max: 120, unit: '分钟', dep: onTopic('characterRest'), hint: '默认 10 分钟。角色实际入睡前这段时间内可顺口道一声准备睡了；填 0 关闭睡前由头。' },
-  { group: '角色作息', path: 'content.topics.characterRestAfterWakeMin', label: '醒来后多久触发作息由头', type: 'int', min: 0, max: 120, unit: '分钟', dep: onTopic('characterRest'), hint: '默认 10 分钟。角色实际醒来后这段时间内可顺口打个早安招呼；填 0 关闭醒后由头。' },
-  { group: '角色作息', path: 'content.topics.characterRestGreetSkipMin', label: '刚互道早晚安多久内不重复', type: 'int', min: 0, max: 360, unit: '分钟', dep: onTopic('characterRest'), hint: '默认 120 分钟。这段时间内若刚互相说过对应的晚安或早安，就跳过本次作息由头；填 0 关闭此去重。' },
+  { group: '角色作息', foldSection: '作息细节与早晚安触发', path: 'characterRest.windDownMin', label: '角色临睡前多久轻声说话', type: 'int', min: 0, max: 180, unit: '分钟', hint: '默认 30 分钟。主动消息变成一条更轻、更短的话。填 0 关闭临睡口吻。' },
+  { group: '角色作息', foldSection: '作息细节与早晚安触发', path: 'content.topics.characterRestBeforeBedMin', label: '入睡前多久触发作息由头', type: 'int', min: 0, max: 120, unit: '分钟', dep: onTopic('characterRest'), hint: '默认 10 分钟。角色实际入睡前这段时间内可顺口道一声准备睡了；填 0 关闭睡前由头。' },
+  { group: '角色作息', foldSection: '作息细节与早晚安触发', path: 'content.topics.characterRestAfterWakeMin', label: '醒来后多久触发作息由头', type: 'int', min: 0, max: 120, unit: '分钟', dep: onTopic('characterRest'), hint: '默认 10 分钟。角色实际醒来后这段时间内可顺口打个早安招呼；填 0 关闭醒后由头。' },
+  { group: '角色作息', foldSection: '作息细节与早晚安触发', path: 'content.topics.characterRestGreetSkipMin', label: '刚互道早晚安多久内不重复', type: 'int', min: 0, max: 360, unit: '分钟', dep: onTopic('characterRest'), hint: '默认 120 分钟。这段时间内若刚互相说过对应的晚安或早安，就跳过本次作息由头；填 0 关闭此去重。' },
   { group: '日常', path: 'quietHours', label: '全局静默', type: 'windows', hint: '这几段里什么都不读不发；多段用逗号隔开（支持全角逗号/冒号），留空 = 全天不限' },
   { group: '日常', path: 'busyHours', label: '忙碌时段', type: 'windows', hint: 'TA上课/上班/开会的那几段，这几段里我不主动开口（TA先说话还是照常回）。和静默不一样：静默连数据都不读，这里只是我先不打扰。多段、可跨零点，留空 = 不忙' },
-  { group: '日常', path: 'content.holidays', label: '额外放假的日子', type: 'text', max: 200, rows: 2, hint: '法定节假日（2026 全年）已经内置，节假日整天不按忙碌时段算，静默照旧。这里只补表里没有的，逗号分隔，如 2027-01-01,2027-01-02' },
-  { group: '日常', path: 'content.workdays', label: '调休上班的周末', type: 'text', max: 200, rows: 2, hint: '调休上班日即使在周末也按工作日算，忙碌时段照常生效。逗号分隔，如 2027-02-07' },
-  { group: '日常', path: 'content.calendar.url', label: '节假日日历接口', type: 'text', max: 300, rows: 2, hint: '填一个返回 JSON 的地址，{year} 会替换成4位年份；配好后让模型调 presence_holiday_calendar 刷新一次，缓存在 data/holidays-<年>.json。留空则只用内置表' },
+  { group: '日常', foldSection: '节假日与调休', path: 'content.holidays', label: '额外放假的日子', type: 'text', max: 200, rows: 2, hint: '法定节假日（2026 全年）已经内置，节假日整天不按忙碌时段算，静默照旧。这里只补表里没有的，逗号分隔，如 2027-01-01,2027-01-02' },
+  { group: '日常', foldSection: '节假日与调休', path: 'content.workdays', label: '调休上班的周末', type: 'text', max: 200, rows: 2, hint: '调休上班日即使在周末也按工作日算，忙碌时段照常生效。逗号分隔，如 2027-02-07' },
+  { group: '日常', foldSection: '节假日与调休', path: 'content.calendar.url', label: '节假日日历接口', type: 'text', max: 300, rows: 2, hint: '填一个返回 JSON 的地址，{year} 会替换成4位年份；配好后让模型调 presence_holiday_calendar 刷新一次，缓存在 data/holidays-<年>.json。留空则只用内置表' },
 
   // ================================================================ 决定TA粘不粘人
   { group: '决定TA粘不粘人', path: 'rules.dailyCap', label: '每天最多几条', type: 'int', min: 0, max: 20, unit: '条', hint: '0 = 今天一条都不主动发。默认 3 条' },
@@ -410,6 +415,7 @@ export const SCHEMA = [
   { group: '决定TA粘不粘人', path: 'content.topics.shareGapMin', label: '两条主动分享至少隔多久', type: 'int', min: 0, max: 43200, unit: '分钟', dep: onTopic('share'), hint: '单位：分钟（默认 1440 分钟，即 24 小时）。控制自主探索与个人判断类主动分享的最短间隔；填 0 不单独冷却。' },
   { group: '决定TA粘不粘人', path: 'rules.closingCooldownMin', label: '对方收尾后暂停主动多久', type: 'int', min: 0, max: 720, unit: '分钟', hint: '默认 120 分钟。检测到对方说去忙、晚安或连续简短收尾后，这段时间内不主动开口（对方先说话照常回）；填 0 关闭。' },
   { group: '决定TA粘不粘人', path: 'rules.adaptiveGap', label: '没人应时自己少说点', type: 'bool', hint: '开（默认）：连着两条没回，之后两条之间自动多等一会儿（最多拖成三倍）；关：永远按上面那个固定间隔' },
+  { group: '决定TA粘不粘人', path: 'rules.roleplayFollowup.enabled', label: '剧情回话', type: 'bool', hint: '用「剧情里，」开头。她说过会儿回来时会在剧情里补一句，静默时段结束后再判断是否接得上。' },
   { group: '决定TA粘不粘人', path: 'rules.qqContinuation', label: '热聊补一句', type: 'bool', hint: '刚来回聊了几轮，普通回复发完并等待设定时长后，可以顺着话题再补一句。有新消息就取消；没内容或没回应就停。遵守静默、忙碌时段和每日上限。' },
   { group: '决定TA粘不粘人', path: 'rules.feedback.enabled', label: '按TA的反应调由头', type: 'bool', hint: '开（默认）：记下哪一类发出去TA接住了、哪一类老没人应，老不接的先压几天；关：所有由头一视同仁' },
   { group: '决定TA粘不粘人', path: 'rules.judge.enabled', label: '让模型自己决定说不说', type: 'bool', hint: '关（默认）：规则挑到由头就写。开：模型从合格的由头里挑一条，或选择不说。草稿还会过长度、口吻和防重复检查。无合格由头时保持安静' },
@@ -419,15 +425,20 @@ export const SCHEMA = [
   { group: '决定TA粘不粘人', path: 'rules.chitchat.enabled', label: '没什么事也可以说一句', type: 'bool', hint: '关（默认）：没有由头就不说话。开：可在合适的时候加入一个「随口话」候选（没有具体话题时，按下面设置的次数放行「在吗」「在干嘛」这类轻招呼）——只走模型，写不出来就不发。一天最多几条在下面的「随口话一天最多几条」里自己设；不说时段跟着全局静默和TA睡着的那段走。要「让模型自己决定说不说」也开着才生效' },
   { group: '决定TA粘不粘人', path: 'rules.chitchat.perDay', label: '随口话一天最多几条', type: 'int', min: 1, max: 10, unit: '条', dep: dep('rules.chitchat.enabled', true), hint: '默认 3 条。近期不足 5 条样本或接住率低于 30% 时，最多 1 条。30%–70% 时最多 2 条，超过 70% 时放到这里设的上限。随口话也计入每天总上限。' },
   { group: '决定TA粘不粘人', path: 'rules.chitchat.barePerDay', label: '轻招呼一天最多几次', type: 'int', min: 0, max: 10, unit: '次', dep: dep('rules.chitchat.enabled', true), hint: '默认 1 次（填 0 禁止「在吗」「在干嘛」这类空招呼）。仍受上面的随口话条数和每天总上限约束' },
-  { group: '决定TA粘不粘人', path: 'rules.gapByTier.enabled', label: '间隔按由头分档', type: 'bool', hint: '关（默认）：所有由头共用 minGapMin 一刀切。开：回TA/接转发/追问 5 分钟，事件类（刚回来、深夜、久坐、self.md 新写入）60 分钟，其余闲聊 240 分钟——跨档至少隔回复档那么久' },
-  { group: '决定TA粘不粘人', path: 'rules.gapByTier.replyMin', label: '回复档间隔', type: 'int', min: 1, max: 240, unit: '分钟', dep: ON_TIER, hint: '只在分档开着时生效：回TA、接住TA转来的东西、追问之间至少隔这么久（默认 5 分钟）。它也是所有档的全局地板' },
-  { group: '决定TA粘不粘人', path: 'rules.gapByTier.eventMin', label: '事件档间隔', type: 'int', min: 1, max: 1440, unit: '分钟', dep: ON_TIER, hint: '只在分档开着时生效：刚回来、深夜、久坐、self.md 新写入这类事件由头之间至少隔这么久（默认 60 分钟）' },
-  { group: '决定TA粘不粘人', path: 'rules.gapByTier.chatMin', label: '闲聊档间隔', type: 'int', min: 1, max: 1440, unit: '分钟', dep: ON_TIER, hint: '只在分档开着时生效：睡眠、压力、步数、屏幕、课表、考试这类闲聊由头之间至少隔这么久（默认 240 分钟）' },
-  { group: '决定TA粘不粘人', path: 'rules.naturalTriggers.enabled', label: '事件也能挑开我', type: 'bool', hint: '关（默认）：只看时钟。开：一段活干完、刚下课、刚在 self.md 写一条，这几种时刻也算「可以开口」——静默、忙碌、离开、每日上限一概照旧拦着，间隔要不要让路看下面那条' },
-  { group: '决定TA粘不粘人', path: 'rules.naturalTriggers.takeGap', label: '事件拍可以让间隔让路', type: 'bool', dep: ON_NATURAL, hint: '关（默认）：事件只是把开口提前到发生的那一秒，两条之间仍隔满 minGap。开：事件拍可以越过 minGap，但仍要隔够「事件拍最短间隔」——不会因为下课就紧跟着再说一句' },
-  { group: '决定TA粘不粘人', path: 'rules.naturalTriggers.floorMin', label: '事件拍最短间隔', type: 'int', min: 1, max: 240, unit: '分钟', dep: ON_NATURAL, hint: '只在上面那条开着时生效：事件拍两次开口之间至少隔这么久（默认 20 分钟）。比 minGap 短，但仍是个地板' },
-  { group: '决定TA粘不粘人', path: 'rules.requirePcOnline', label: '只在电脑前才主动开口', type: 'bool', hint: '关（默认）：多端聊天模式，QQ/抖音手机随时能收到，离开电脑或锁屏也照常主动找TA。开：只在电脑前且未锁屏时才主动开口' },
-  { group: '决定TA粘不粘人', path: 'rules.presenceSignal.enabled', label: '人不在只当信号', type: 'bool', dep: ON_JUDGE, hint: '开启「只在电脑前才主动开口」后若同时打开此项：离开电脑不再硬拦截，改成把电脑状态写进快照让 judge 自己判断。只在 judge 也开着时生效' },
+  { group: '决定TA粘不粘人', path: 'rules.brushoffMood.enabled', label: '被敷衍或不回会闷闷与生气', type: 'bool', hint: '关（默认）。开：当 TA 认真说话或主动找你后，无理由不回（默认 90 分钟）或敷衍短回（随口话的敷衍不计、但随口话不回计入；答应「等我 / 出来吧」等约定、上课/忙碌/静默均免责）会累计情绪（默认 6 小时内自然衰减，需要高频聊天才容易触发）：同一段聊天（30 分钟内）只要认真回过一次就不计入并抵消之前攒的闷闷次数。第 1 次有点闷不追问；第 2 次更失落；第 3 次进入生气，当轮按人设说清原因，之后暂停主动分享、普通闲聊照常但语气偏冷淡且默认延迟 25–50 秒回复。补说在忙/上课理由或道歉可当轮立刻消气。' },
+  { group: '决定TA粘不粘人', path: 'rules.brushoffMood.noReplyMin', label: '不回多久算一次', type: 'int', min: 15, max: 360, unit: '分钟', dep: ON_BRUSHOFF_MOOD, hint: '默认 90 分钟。TA 主动发消息（含随口话）超过这么久仍未回复，且不在静默/上课/忙碌时段时计 1 次。' },
+  { group: '决定TA粘不粘人', path: 'rules.brushoffMood.decayHours', label: '情绪衰减时间', type: 'int', min: 1, max: 168, unit: '小时', dep: ON_BRUSHOFF_MOOD, hint: '默认 6 小时。每次敷衍或不回分别计时，生气从触发时起到期自动消退。' },
+  { group: '决定TA粘不粘人', path: 'rules.brushoffMood.angryDelayMinSec', label: '生气时最短等待', type: 'int', min: 0, max: 120, unit: '秒', dep: ON_BRUSHOFF_MOOD, hint: '默认 25 秒。生气时在最短和最长等待之间随机选一个时间再回复。' },
+  { group: '决定TA粘不粘人', path: 'rules.brushoffMood.angryDelayMaxSec', label: '生气时最长等待', type: 'int', min: 0, max: 120, unit: '秒', dep: ON_BRUSHOFF_MOOD, hint: '默认 50 秒。不能短于最短等待。' },
+  { group: '决定TA粘不粘人', foldSection: '分档间隔、事件触发与在场判断', path: 'rules.gapByTier.enabled', label: '间隔按由头分档', type: 'bool', hint: '关（默认）：所有由头共用 minGapMin 一刀切。开：回TA/接转发/追问 5 分钟，事件类（刚回来、深夜、久坐、self.md 新写入）60 分钟，其余闲聊 240 分钟——跨档至少隔回复档那么久' },
+  { group: '决定TA粘不粘人', foldSection: '分档间隔、事件触发与在场判断', path: 'rules.gapByTier.replyMin', label: '回复档间隔', type: 'int', min: 1, max: 240, unit: '分钟', dep: ON_TIER, hint: '只在分档开着时生效：回TA、接住TA转来的东西、追问之间至少隔这么久（默认 5 分钟）。它也是所有档的全局地板' },
+  { group: '决定TA粘不粘人', foldSection: '分档间隔、事件触发与在场判断', path: 'rules.gapByTier.eventMin', label: '事件档间隔', type: 'int', min: 1, max: 1440, unit: '分钟', dep: ON_TIER, hint: '只在分档开着时生效：刚回来、深夜、久坐、self.md 新写入这类事件由头之间至少隔这么久（默认 60 分钟）' },
+  { group: '决定TA粘不粘人', foldSection: '分档间隔、事件触发与在场判断', path: 'rules.gapByTier.chatMin', label: '闲聊档间隔', type: 'int', min: 1, max: 1440, unit: '分钟', dep: ON_TIER, hint: '只在分档开着时生效：睡眠、压力、步数、屏幕、课表、考试这类闲聊由头之间至少隔这么久（默认 240 分钟）' },
+  { group: '决定TA粘不粘人', foldSection: '分档间隔、事件触发与在场判断', path: 'rules.naturalTriggers.enabled', label: '事件也能挑开我', type: 'bool', hint: '关（默认）：只看时钟。开：一段活干完、刚下课、刚在 self.md 写一条，这几种时刻也算「可以开口」——静默、忙碌、离开、每日上限一概照旧拦着，间隔要不要让路看下面那条' },
+  { group: '决定TA粘不粘人', foldSection: '分档间隔、事件触发与在场判断', path: 'rules.naturalTriggers.takeGap', label: '事件拍可以让间隔让路', type: 'bool', dep: ON_NATURAL, hint: '关（默认）：事件只是把开口提前到发生的那一秒，两条之间仍隔满 minGap。开：事件拍可以越过 minGap，但仍要隔够「事件拍最短间隔」——不会因为下课就紧跟着再说一句' },
+  { group: '决定TA粘不粘人', foldSection: '分档间隔、事件触发与在场判断', path: 'rules.naturalTriggers.floorMin', label: '事件拍最短间隔', type: 'int', min: 1, max: 240, unit: '分钟', dep: ON_NATURAL, hint: '只在上面那条开着时生效：事件拍两次开口之间至少隔这么久（默认 20 分钟）。比 minGap 短，但仍是个地板' },
+  { group: '决定TA粘不粘人', foldSection: '分档间隔、事件触发与在场判断', path: 'rules.requirePcOnline', label: '只在电脑前才主动开口', type: 'bool', hint: '关（默认）：多端聊天模式，QQ/抖音手机随时能收到，离开电脑或锁屏也照常主动找TA。开：只在电脑前且未锁屏时才主动开口' },
+  { group: '决定TA粘不粘人', foldSection: '分档间隔、事件触发与在场判断', path: 'rules.presenceSignal.enabled', label: '人不在只当信号', type: 'bool', dep: ON_JUDGE, hint: '开启「只在电脑前才主动开口」后若同时打开此项：离开电脑不再硬拦截，改成把电脑状态写进快照让 judge 自己判断。只在 judge 也开着时生效' },
 
   // ================================================================ 节奏
   { group: '节奏', path: 'rules.replyCooldownMin', label: 'TA说完话先等几分钟', type: 'int', min: 0, max: 120, unit: '分钟', hint: '默认 5 分钟。TA刚说完你就回，等于抢话' },
@@ -539,6 +550,7 @@ export const SCHEMA = [
   { group: '高级', path: 'perception.signals.port', label: '浏览器调试端口', type: 'int', min: 1024, max: 65535, dep: ON_SIGNALS, hint: '默认 9223（start-edge-debug.ps1 开的那个）。改了要对应 Edge 的 --remote-debugging-port' },
   { group: '高级', path: 'perception.anticheat.skip', label: '反作弊保护（打游戏不读窗口/不截屏）', type: 'bool', hint: '开（默认）：检测到常见国服/外服反作弊进程（如 WeGame、EAC、BattlEye、Vanguard、FACEIT、5E 等）或全屏游戏时，只读键鼠空闲，绝不读窗口、标签或截屏。' },
   { group: '高级', path: 'perception.anticheat.skipFullscreen', label: '全屏游戏自动避让', type: 'bool', dep: dep('perception.anticheat.skip', true), hint: '开（默认）：任意未知全屏游戏（排除浏览器/编辑器/播放器）也会自动跳过读窗口与截屏。' },
+  { group: '高级', path: 'perception.anticheat.fullscreenCooldownMin', label: '退出全屏游戏后的缓冲期', type: 'int', min: 0, max: 120, unit: '分钟', dep: [dep('perception.anticheat.skip', true), dep('perception.anticheat.skipFullscreen', true)], hint: '默认 10 分钟。通过轻量系统通知状态位（SHQueryUserNotificationState）按需检测全屏游戏，避让截屏、读窗口、抖音轮询/看视频与自动自主探索；退出全屏后再缓冲这段时间才恢复。填 0 关闭缓冲。' },
   // 由头细节：所属那一类关着就不显示，免得一堆用不上的阈值挡路。
   { group: '高级', path: 'content.topics.sleepShortMin', label: '算「睡少了」低于', type: 'int', min: 240, max: 600, unit: '分钟', dep: [ON_PHONE, onTopic('sleep')], hint: '默认 420 分钟（7 小时）。读得到深睡时要和「深睡少」同时满足才算；深睡没读到就只看这一条' },
   { group: '高级', path: 'content.topics.sleepDeepShortMin', label: '深睡低于', type: 'int', min: 30, max: 240, unit: '分钟', dep: [ON_PHONE, onTopic('sleep')], hint: '默认 120 分钟（2 小时）。深睡是拓展项——应用不报这个数时只按时长判；报的时候要和「睡少了」同时满足才算' },
@@ -550,7 +562,7 @@ export const SCHEMA = [
   { group: '高级', path: 'content.topics.stepsHighMin', label: '算「活动量好」高于', type: 'int', min: 0, max: 50000, unit: '步', dep: [ON_PHONE, onTopic('steps')], hint: '最少采用 16000 步。两个门槛之间不发' },
   { group: '高级', path: 'content.topics.stepsFromHour', label: '步数从几点开始看', type: 'int', min: 0, max: 23, unit: '点', dep: [ON_PHONE, onTopic('steps')], hint: '默认 18 点。白天的步数还没走完，说得太早容易翻车' },
   { group: '高级', path: 'content.topics.screenHeavyMin', label: '屏幕用多久才考虑提醒', type: 'int', min: 1, max: 1440, unit: '分钟', dep: [ON_PHONE, onTopic('screen')], hint: '默认 720 分钟（12 小时）。和步数、久坐共享冷却。' },
-  { group: '高级', path: 'content.topics.catchupDays', label: '算「几天没说话」', type: 'int', min: 1, max: 7, unit: '天', dep: onTopic('catchup'), hint: '默认 2 天' },
+  { group: '高级', path: 'content.topics.catchupDays', label: '算长时间没说话', type: 'int', min: 1, max: 7, unit: '天', dep: onTopic('catchup'), hint: '默认 2 天' },
   { group: '高级', path: 'content.topics.lateFromHour', label: '深夜从几点算', type: 'int', min: 0, max: 23, unit: '点', dep: onTopic('lateUp'), hint: '默认 23 点是最早的一头' },
   { group: '高级', path: 'content.topics.lateToHour', label: '深夜到几点为止', type: 'int', min: 0, max: 23, unit: '点', dep: onTopic('lateUp'), hint: '默认 2 点。可以跨零点；跟「从几点算」相同则这一类失效' },
   { group: '高级', path: 'content.topics.longSitHours', label: '电脑连续活跃多久才考虑提醒', type: 'num', min: 0.25, max: 24, unit: '小时', dep: onTopic('longSit'), hint: '默认 5 小时。离开超过空闲判定时长会重新计时。' },
@@ -788,8 +800,160 @@ export function courseItems(cfg) {
   });
 }
 
+const TIMING_TOP_PATHS = [
+  // 日志与视频
+  'logging.keepDays',
+  'logging.reportDays',
+  'content.forward.timeoutMs',
+  // 回复体感
+  'rules.qqTiming.debounceMs',
+  'rules.qqTiming.pauseSec',
+  'rules.roleplayFollowup.minMinutes',
+  'rules.roleplayFollowup.maxMinutes',
+  // 探索与小本本
+  'exploration.roundBudgetMs',
+  'exploration.recentDays',
+  'exploration.moodHours',
+  'exploration.portraitHours',
+  'agreements.aheadMin',
+  'agreements.followUpMin',
+  'agreements.dateTime',
+];
+const TIMING_TOP_INDEX = new Map(TIMING_TOP_PATHS.map((p, i) => [p, i]));
+const TIMING_FOLD_ORDER = [
+  '提醒时段与冷却',
+  '分开发送毫秒微调',
+  '模型与功能超时',
+  '视频与本地服务轮询',
+  '互动统计、闲聊与在场窗口',
+  '私聊指令、小本本与通道时段',
+];
+const TIMING_FOLD_INDEX = new Map(TIMING_FOLD_ORDER.map((k, i) => [k, i]));
+
+function timingFoldSection(p) {
+  if (TIMING_TOP_INDEX.has(p)) return '';
+  if (p.startsWith('send.split.')) return '分开发送毫秒微调';
+  if (p.startsWith('content.topics.sleep') || p.startsWith('content.topics.stress') ||
+      p.startsWith('content.topics.steps') || p.startsWith('content.topics.screen') ||
+      p === 'content.topics.wellnessCooldownHours' || p.startsWith('content.topics.back') ||
+      p.startsWith('content.topics.agenda') || p === 'content.topics.replyMaxAgeMin' ||
+      p === 'logging.dayStartHour') return '提醒时段与冷却';
+  if (p.startsWith('content.forward.') || p === 'exploration.storyboardSeconds' ||
+      p === 'sources.douyin.detectCacheMin') return '视频与本地服务轮询';
+  if (/(?:TimeoutMs|TimeoutSec)$/i.test(p) || p === 'send.timeoutMs' || p === 'mail.timeoutMs' ||
+      p.startsWith('perception.probe') || p === 'perception.signals.timeoutMs') return '模型与功能超时';
+  if (p.startsWith('rules.qqCommands.') || p.startsWith('rules.actionGate.') ||
+      p.startsWith('agreements.') || p.endsWith('.activeHours') ||
+      p === 'startupDelaySec' || p === 'tickJitterSec') return '私聊指令、小本本与通道时段';
+  return '互动统计、闲聊与在场窗口';
+}
+
+const ADVANCED_TOP_PATHS = [
+  // 全屏游戏避让缓冲
+  'perception.anticheat.fullscreenCooldownMin',
+  // 续聊与会话控制
+  'rules.qqRollover.enabled',
+  'rules.qqRollover.thresholdPercent',
+  'rules.qqRollover.carryMessages',
+  'rules.qqRollover.prepareBindingFile',
+  'rules.compactChatTools',
+  'rules.qqCommands.extended',
+  'rules.chatSession.maxToolCallsPerTurn',
+  'rules.chatSession.notifyOnToolLimit',
+  // 核心能力开关
+  'agreements.enabled',
+  'agreements.maxItems',
+  'agreements.model',
+  'exploration.mood',
+  'exploration.web',
+  'exploration.video',
+  'exploration.feedback.enabled',
+  'exploration.feedback.maxCandidates',
+  'perception.l3.enabled',
+  'perception.l3.everyMin',
+  'rules.askProjectOnce',
+  // 基础接入与记忆
+  'mail.user',
+  'mail.authCode',
+  'sources.phone.staleHours',
+  'sources.memory.max',
+  'sources.memory.session',
+  // 个人习惯阈值
+  'content.topics.longSitHours',
+  'content.topics.catchupDays',
+  'content.topics.noReplyMin',
+];
+const ADVANCED_TOP_INDEX = new Map(ADVANCED_TOP_PATHS.map((p, i) => [p, i]));
+const ADVANCED_PHONE_DATA_PATHS = new Set([
+  'content.topics.sleepShortMin',
+  'content.topics.sleepLongMin',
+  'content.topics.sleepDeepShortMin',
+  'content.topics.sleepLateBed',
+  'content.topics.stressHighMin',
+  'content.topics.stressDailyMax',
+  'content.topics.stepsLowMax',
+  'content.topics.stepsHighMin',
+  'content.topics.stepsFromHour',
+  'content.topics.screenHeavyMin',
+  'content.topics.lateFromHour',
+  'content.topics.lateToHour',
+]);
+const ADVANCED_AGENDA_PATHS = new Set([
+  'content.topics.agendaTomorrowHour',
+  'content.topics.agendaEarlyBeforeHour',
+  'content.topics.agendaSoonMin',
+]);
+const ADVANCED_UNUSED_EXT_PATHS = new Set([
+  'exploration.builtinFeeds',
+  'exploration.rssUrls',
+  'exploration.extraTools',
+  'exploration.syncToSharedMemory',
+  'content.topics.followCasualSilence',
+  'rules.exposeMaintenanceTools',
+]);
+const ADVANCED_DEBUG_PATHS = new Set([
+  'rules.feedback.testMode',
+  'rules.judge.shadow',
+  'rules.judge.shadowSampleRate',
+  'rules.judge.attempts',
+  'content.llm.attempts',
+  'rules.stateWriteWaitMs',
+]);
+const ADVANCED_SYSTEM_PATHS = new Set([
+  'mail.host',
+  'mail.intervalMinutes',
+  'perception.l2.enabled',
+  'perception.signals.enabled',
+  'perception.signals.browser',
+  'perception.signals.port',
+  'perception.anticheat.skip',
+  'perception.anticheat.skipFullscreen',
+  'idle.onlineSec',
+  'idle.awaySec',
+  'sources.phone.staleGuard',
+]);
+const ADVANCED_FOLD_ORDER = [
+  '扩展功能',
+  '手机端数据',
+  '课表相关',
+  '调试与容错',
+  '系统感知、反作弊与基础连接',
+  '内部策略与细节参数',
+];
+const ADVANCED_FOLD_INDEX = new Map(ADVANCED_FOLD_ORDER.map((k, i) => [k, i]));
+
+function advancedFoldSection(p) {
+  if (ADVANCED_TOP_INDEX.has(p)) return '';
+  if (ADVANCED_UNUSED_EXT_PATHS.has(p)) return '扩展功能';
+  if (ADVANCED_PHONE_DATA_PATHS.has(p)) return '手机端数据';
+  if (ADVANCED_AGENDA_PATHS.has(p)) return '课表相关';
+  if (ADVANCED_DEBUG_PATHS.has(p)) return '调试与容错';
+  if (ADVANCED_SYSTEM_PATHS.has(p)) return '系统感知、反作弊与基础连接';
+  return '内部策略与细节参数';
+}
+
 function groupItemsForUi(cfg, name, detCache = { value: null }) {
-  return SCHEMA.filter((s) => s.group === name && !s.hidden && depVisible(cfg, s.dep)).map((s) => {
+  const list = SCHEMA.filter((s) => s.group === name && !s.hidden && depVisible(cfg, s.dep)).map((s) => {
     const secret = s.type === 'secret';
     const value = s.path === 'exploration.bias' ? explorationBiasForUi(cfg.exploration) : secret ? '' : getPath(cfg, s.path, s.default);
     // scale 把存储单位换成界面单位（毫秒 → 秒），读出来和显示都要换。
@@ -843,10 +1007,13 @@ function groupItemsForUi(cfg, name, detCache = { value: null }) {
           ? buildExplorationModelOptions(cfg)
           : s.options;
     hint = ensureTimeUnitHint(s, hint);
+    const foldSection = s.foldSection ||
+      (name === '时间间隔' ? timingFoldSection(s.path) : name === '高级' ? advancedFoldSection(s.path) : '');
     return {
       path: s.path,
       label: s.label,
       group: s.group,
+      ...(foldSection ? { foldSection } : {}),
       tags: tagsForSpec(s),
       type: s.type,
       ...(s.min !== undefined ? { min: s.min } : {}),
@@ -864,6 +1031,20 @@ function groupItemsForUi(cfg, name, detCache = { value: null }) {
           : display(s, s.type === 'windows' ? value : shown),
     };
   });
+  if (name === '时间间隔') {
+    list.sort((a, b) => {
+      const ia = TIMING_TOP_INDEX.has(a.path) ? TIMING_TOP_INDEX.get(a.path) : 1000 + (TIMING_FOLD_INDEX.get(a.foldSection) ?? 99);
+      const ib = TIMING_TOP_INDEX.has(b.path) ? TIMING_TOP_INDEX.get(b.path) : 1000 + (TIMING_FOLD_INDEX.get(b.foldSection) ?? 99);
+      return ia - ib;
+    });
+  } else if (name === '高级') {
+    list.sort((a, b) => {
+      const ia = ADVANCED_TOP_INDEX.has(a.path) ? ADVANCED_TOP_INDEX.get(a.path) : 1000 + (ADVANCED_FOLD_INDEX.get(a.foldSection) ?? 99);
+      const ib = ADVANCED_TOP_INDEX.has(b.path) ? ADVANCED_TOP_INDEX.get(b.path) : 1000 + (ADVANCED_FOLD_INDEX.get(b.foldSection) ?? 99);
+      return ia - ib;
+    });
+  }
+  return list;
 }
 
 function depLabelsOf(d) {
@@ -917,6 +1098,7 @@ export function listForUi(cfg) {
       if (GROUP_NOTES[name]) group.note = GROUP_NOTES[name];
       if (FOLDABLE_GROUPS.has(name)) {
         group.foldable = true;
+        if (DEFAULT_OPEN_GROUPS.has(name)) group.defaultOpen = true;
         group.summary = groupSummary(cfg, name, items);
       }
       const innerNote = groupInnerNote(cfg, name);
@@ -949,6 +1131,12 @@ function groupInnerNote(cfg, name) {
 
 /** 折起来的标题旁边那一句概括人话：节奏、由头、数据源、课表与考试、高级。 */
 function groupSummary(cfg, name, items = []) {
+  if (name === '日常') {
+    const on = cfg.enabled !== false ? '总开关开' : '总开关关';
+    const mode = cfg.dryRun ? '演练模式' : (cfg.send?.enabled ? '真实发送' : '仅记录不发');
+    const tick = Number(cfg.tickMinutes) || 10;
+    return `${on} · ${mode} · 每 ${tick} 分钟一拍`;
+  }
   if (name === '角色作息') {
     const st = characterRestStatus(cfg);
     return `今日实际 ${st.bedHm}–${st.wakeHm} · 基准 ${st.baseBedHm}–${st.baseWakeHm}`;
@@ -1050,6 +1238,14 @@ export function applyChange(cfg, path, raw) {
     const { bed, wake } = { ...CHARACTER_REST_DEFAULTS, ...next.characterRest };
     if (bed === '24:00' || wake === '24:00') return { ok: false, error: '请填写 00:00–23:59 之间的时间' };
     if (normalizeHm(bed) === normalizeHm(wake)) return { ok: false, error: '入睡和醒来时间不能相同' };
+  }
+  if (r.path === 'rules.brushoffMood.angryDelayMinSec' || r.path === 'rules.brushoffMood.angryDelayMaxSec') {
+    const { angryDelayMinSec, angryDelayMaxSec } = { ...BRUSHOFF_MOOD_DEFAULTS, ...next.rules.brushoffMood };
+    if (angryDelayMinSec > angryDelayMaxSec) return { ok: false, error: '最短等待不能超过最长等待' };
+  }
+  if (r.path === 'rules.roleplayFollowup.minMinutes' || r.path === 'rules.roleplayFollowup.maxMinutes') {
+    const { minMinutes, maxMinutes } = { ...ROLEPLAY_FOLLOWUP_DEFAULTS, ...next.rules.roleplayFollowup };
+    if (minMinutes > maxMinutes) return { ok: false, error: '最短等待不能超过最长等待' };
   }
   if (r.path === 'rules.qqTiming.pauseSec' || r.path === 'rules.qqTiming.expireSec') {
     const { pauseSec = 15, expireSec = 55 } = next.rules.qqTiming;

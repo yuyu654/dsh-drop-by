@@ -15,10 +15,15 @@
         var [actionBusy, setBusy] = useState(false);
         var [explorePending, setExplorePending] = useState(false);
         var [exploreStopPending, setExploreStopPending] = useState(false);
+        var [taskStopPending, setTaskStopPending] = useState(false);
         var [exploreTopicPending, setExploreTopicPending] = useState(false);
         var [smallActionPending, setSmallActionPending] = useState(false);
         var [exploreResult, setExploreResult] = useState(null);
         var [showExplorationDetails, setShowExplorationDetails] = useState(false);
+        var [memoryCardOpen, setMemoryCardOpen] = useState(function () { return readFoldState('card:memory', true); });
+        var [explorationCardOpen, setExplorationCardOpen] = useState(function () { return readFoldState('card:exploration', true); });
+        var [channelCardOpen, setChannelCardOpen] = useState(function () { return readFoldState('card:channels', true); });
+        var [presetEditorOpen, setPresetEditorOpen] = useState(function () { return readFoldState('sub:高级:套餐自定义', false); });
         var [liveBridge, setLiveBridge] = useState({});
         var [rebindId, setRebindId] = useState('');
         var [hostSessions, setHostSessions] = useState([]);
@@ -43,6 +48,7 @@
         var guideAnchor = useRef(null);
         var diagnosticRequest = useRef(0);
         var stateRequest = useRef(0);
+        var stateRequestsInFlight = useRef(0);
         var manualExploreRequest = useRef(null);
         var mounted = useRef(true);
         var toastTimer = useRef(null);
@@ -58,6 +64,7 @@
         var load = useCallback(
           function (silent) {
             var request = ++stateRequest.current;
+            stateRequestsInFlight.current += 1;
             if (!silent) setRefreshing(true);
             return Promise.all([apiGet('/state'), apiGet('/config')])
               .then(function (r) {
@@ -75,7 +82,8 @@
                 if (!mounted.current || request !== stateRequest.current) return;
                 setError(e && e.message ? e.message : String(e));
               })
-              .then(function () {
+              .finally(function () {
+                stateRequestsInFlight.current -= 1;
                 if (!mounted.current || request !== stateRequest.current) return;
                 setRefreshing(false);
                 setLoading(false);
@@ -103,11 +111,22 @@
           load(false);
           // 状态每 15 秒刷一次就够（判定本身是 10 分钟一拍）
           var t = setInterval(function () {
-            if (mounted.current) load(true);
+            if (mounted.current && !stateRequestsInFlight.current) load(true);
           }, 15000);
+          var onVisible = function () {
+            if (mounted.current && !stateRequestsInFlight.current && typeof document !== 'undefined' && document.visibilityState === 'visible') {
+              load(true);
+            }
+          };
+          if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+            document.addEventListener('visibilitychange', onVisible);
+          }
           return function () {
             mounted.current = false;
             clearInterval(t);
+            if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
+              document.removeEventListener('visibilitychange', onVisible);
+            }
             if (toastTimer.current) clearTimeout(toastTimer.current);
           };
         }, [load]);
@@ -352,6 +371,24 @@
             load(true);
           }).finally(function () {
             if (mounted.current) setExploreStopPending(false);
+          });
+        }
+
+        function onTaskStop() {
+          var activeTask = state && state.activeTask;
+          if (!activeTask || taskStopPending) return;
+          setTaskStopPending(true);
+          apiPost('/task/stop', activeTask.id ? { taskId: activeTask.id } : {}).then(function (r) {
+            if (!mounted.current) return;
+            if (r.state) setState(r.state);
+            flash(r.note || (r.ok ? '后台任务已中止' : '当前没有正在运行的后台任务'), r.ok || r.reason === 'NOT_RUNNING' ? 'ok' : 'err');
+            load(true);
+          }).catch(function (e) {
+            if (!mounted.current) return;
+            flash(e.message || '中止后台任务失败，请重试', 'err');
+            load(true);
+          }).finally(function () {
+            if (mounted.current) setTaskStopPending(false);
           });
         }
 

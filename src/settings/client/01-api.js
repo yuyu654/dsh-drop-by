@@ -87,3 +87,27 @@
 
       var DECISION_TEXT = { send: '发了', skip: '没发' };
 
+      var FOLD_STORAGE_KEY = 'dsh-drop-by:folds:v1';
+
+      function readFoldState(key, fallback) {
+        try {
+          var raw = window.localStorage.getItem(FOLD_STORAGE_KEY);
+          if (!raw) return fallback;
+          var map = JSON.parse(raw);
+          if (map && typeof map === 'object' && Object.prototype.hasOwnProperty.call(map, key)) {
+            return Boolean(map[key]);
+          }
+        } catch (_) {}
+        return fallback;
+      }
+
+      function writeFoldState(key, isOpen) {
+        try {
+          var raw = window.localStorage.getItem(FOLD_STORAGE_KEY);
+          var map = raw ? JSON.parse(raw) : {};
+          if (!map || typeof map !== 'object') map = {};
+          map[key] = Boolean(isOpen);
+          window.localStorage.setItem(FOLD_STORAGE_KEY, JSON.stringify(map));
+        } catch (_) {}
+      }
+

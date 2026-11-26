@@ -13,6 +13,8 @@
 // 判不准、模型没开、解析失败，一律当「不是忙」——宁可早问一句，不要凭空替她编一个理由。
 
 import { douyinLastOutbound } from './outbound.js';
+import { isBrushoffFollowUpSuppressed } from './brushoff-mood.js';
+import { chatPeer } from '../channels/external.js';
 import { hhmm, hmToMin, minutesOfDayOf } from '../settings/time.js';
 import { lastBusyEnd, isHoliday } from '../perception/holidays.js';
 
@@ -53,7 +55,9 @@ export function pendingFromFeedback(st, cfg, now, herTs = null) {
   // expect === false 的是「回她 / 接转发」：我回完一句、她看完就走，不叫「没回」，
   // 更不能拿它当追问的由头——不然最后一句是我也要追一句。
   const cutoff = Math.max(Number(herTs) || 0, lastFollowUpTime(st));
+  const brushoffSuppressed = isBrushoffFollowUpSuppressed(cfg, chatPeer(cfg), now);
   const p = pend.filter((entry) => entry?.expect !== false && entry?.slot && entry.slot !== 'noReply' && !BACKGROUND_SLOTS.has(entry.slot) &&
+    !(brushoffSuppressed && CASUAL_SLOTS.has(entry.slot)) &&
     (cfg?.content?.topics?.followCasualSilence === true || !CASUAL_SLOTS.has(entry.slot)) &&
     (!cfg?.channels?.primary || (entry.channel || 'qq') === cfg.channels.primary) &&
     Number(entry.ts) > cutoff && now - Number(entry.ts) >= thresholdMin(cfg) * MIN)

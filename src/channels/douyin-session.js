@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { inWindows } from '../perception/schedule.js';
+import { isFullscreenBlocked } from '../perception/fullscreen-guard.js';
 import { readyDouyinBinding } from './chat-switch.js';
 import { collectIncoming, douyinPeer, douyinPrimary, markDouyinSessionSynced, pollDelayMs, readDouyinIm, readDouyinState, originalWatcherDisabled, sendDouyinText, unsyncedDouyinContext, updateDouyinState } from './douyin-im.js';
 
@@ -78,6 +79,7 @@ export function createDouyinSession({ getConfig, controller, prepare, log, onSen
     try {
       if (!douyinPrimary(cfg) || cfg.enabled === false || !readyDouyinBinding() || settings.read === false) return;
       if (!inWindows(Date.now(), settings.activeHours, cfg.timezone)) return;
+      if ((await isFullscreenBlocked(cfg)).blocked) return;
       const peer = douyinPeer(cfg);
       if (!peer) return;
       if (!watcherDisabled()) throw new Error('抖音原聊天盯梢还在开启，请在抖音插件中关闭');

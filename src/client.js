@@ -120,6 +120,30 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
 
       var DECISION_TEXT = { send: '发了', skip: '没发' };
 
+      var FOLD_STORAGE_KEY = 'dsh-drop-by:folds:v1';
+
+      function readFoldState(key, fallback) {
+        try {
+          var raw = window.localStorage.getItem(FOLD_STORAGE_KEY);
+          if (!raw) return fallback;
+          var map = JSON.parse(raw);
+          if (map && typeof map === 'object' && Object.prototype.hasOwnProperty.call(map, key)) {
+            return Boolean(map[key]);
+          }
+        } catch (_) {}
+        return fallback;
+      }
+
+      function writeFoldState(key, isOpen) {
+        try {
+          var raw = window.localStorage.getItem(FOLD_STORAGE_KEY);
+          var map = raw ? JSON.parse(raw) : {};
+          if (!map || typeof map !== 'object') map = {};
+          map[key] = Boolean(isOpen);
+          window.localStorage.setItem(FOLD_STORAGE_KEY, JSON.stringify(map));
+        } catch (_) {}
+      }
+
       // ------------------------------------------------------------ 控件
 
       /** 数字/文本输入：本地草稿，失焦或回车才提交（别每敲一个字就写一次盘）。 */
@@ -363,6 +387,17 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         var g = props.group;
         var timing = g.name === '时间间隔';
         var [query, setQuery] = useState('');
+        var foldKey = 'group:' + g.name;
+        var [open, setOpen] = useState(function () { return readFoldState(foldKey, Boolean(g.defaultOpen)); });
+        var [subOpen, setSubOpen] = useState(function () {
+          var init = {};
+          (g.items || []).forEach(function (item) {
+            if (item && item.foldSection && !Object.prototype.hasOwnProperty.call(init, item.foldSection)) {
+              init[item.foldSection] = readFoldState('sub:' + g.name + ':' + item.foldSection, false);
+            }
+          });
+          return init;
+        });
         var keyword = query.trim().toLowerCase();
         var visible = timing && keyword ? g.items.filter(function (item) {
           return (item.label + ' ' + (item.hint || '')).toLowerCase().includes(keyword);
@@ -372,11 +407,62 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         var wrap = function (card) {
           return note ? h('div', { className: 'pg-group' }, note, card) : card;
         };
+        var mainItems = [];
+        var foldSections = [];
+        var foldSectionMap = {};
+        visible.forEach(function (item) {
+          if (item && item.foldSection) {
+            if (!foldSectionMap[item.foldSection]) {
+              foldSectionMap[item.foldSection] = { name: item.foldSection, items: [] };
+              foldSections.push(foldSectionMap[item.foldSection]);
+            }
+            foldSectionMap[item.foldSection].items.push(item);
+          } else {
+            mainItems.push(item);
+          }
+        });
+        var renderRows = function (list) {
+          return h(
+            'div',
+            { className: 'pg-rows' },
+            list.map(function (item) {
+              return h(Row, { key: item.path, item: item, busy: props.busy, onSave: props.onSave });
+            })
+          );
+        };
         var rows = h(
-          'div',
-          { className: 'pg-rows' },
-          visible.map(function (item) {
-            return h(Row, { key: item.path, item: item, busy: props.busy, onSave: props.onSave });
+          React.Fragment,
+          null,
+          props.topExtra || null,
+          mainItems.length ? renderRows(mainItems) : null,
+          props.extra || null,
+          foldSections.map(function (sec) {
+            var secOpen = Boolean(timing && keyword) || Boolean(subOpen[sec.name]);
+            return h(
+              'details',
+              {
+                key: 'sub-' + sec.name,
+                className: 'pg-exp-details pg-sub-fold',
+                open: secOpen,
+                onToggle: function (e) {
+                  var isOpen = e.currentTarget.open;
+                  if (Boolean(subOpen[sec.name]) === isOpen) return;
+                  writeFoldState('sub:' + g.name + ':' + sec.name, isOpen);
+                  setSubOpen(function (prev) {
+                    var next = Object.assign({}, prev);
+                    next[sec.name] = isOpen;
+                    return next;
+                  });
+                },
+              },
+              h(
+                'summary',
+                { className: 'pg-exp-sum' },
+                h('span', null, sec.name),
+                h('span', { className: 'pg-card-count', style: { marginLeft: 'auto' } }, sec.items.length + ' 项')
+              ),
+              renderRows(sec.items)
+            );
           })
         );
         var innerNote = g.innerNote ? h('div', { className: 'pg-note pg-card-inner-note' }, g.innerNote) : null;
@@ -399,7 +485,16 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         return wrap(
           h(
             'details',
-            { className: 'pg-card pg-card-fold' },
+            {
+              className: 'pg-card pg-card-fold',
+              open: open,
+              onToggle: function (e) {
+                var isOpen = e.currentTarget.open;
+                if (open === isOpen) return;
+                writeFoldState(foldKey, isOpen);
+                setOpen(isOpen);
+              },
+            },
             h(
               'summary',
               { className: 'pg-card-title pg-card-sum' },
@@ -416,7 +511,6 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
               value: query,
               onChange: function (e) { setQuery(e.target.value); }
             }) : null,
-            props.extra || null,
             visible.length ? rows : h('div', { className: 'pg-note' }, '没有匹配的设置')
           )
         );
@@ -519,7 +613,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
 
         return h(
           'div',
-          { style: { borderBottom: '1px solid var(--pg-line)', padding: '10px 0 12px', marginBottom: '6px' } },
+          { style: { padding: '8px 2px 4px', marginTop: '6px', borderTop: '1px solid var(--pg-line-soft)' } },
           h('div', { className: 'pg-row-label', style: { marginBottom: '6px' } }, '自定义各套餐参数'),
           h('div', { className: 'pg-row-hint', style: { marginBottom: '8px' } }, '先选要修改的套餐，再选子参数进行调整。若修改的正是当前激活套餐，保存后会立即同步生效到当前配置。'),
           h(
@@ -648,6 +742,14 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         var tone = !st.enabled ? 'off' : canSend ? 'live' : 'dry';
         var toneText = !st.enabled ? '停着' : canSend ? '会真的发' : '演练中';
 
+        var activeTask = st.activeTask || null;
+        var taskElapsed = activeTask && activeTask.startedAt
+          ? Math.max(0, Math.round((Date.now() - Number(activeTask.startedAt)) / 1000))
+          : 0;
+        var taskTitle = activeTask
+          ? '当前后台任务：' + (activeTask.label || '后台任务') + (taskElapsed > 0 ? '（已运行 ' + taskElapsed + ' 秒）' : '') + '，点击中止'
+          : '';
+
         return h(
           'header',
           { className: 'pg-head' },
@@ -671,6 +773,17 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           h(
             'div',
             { className: 'pg-head-actions' },
+            activeTask ? h(
+              'button',
+              {
+                className: 'pg-btn pg-btn-warn',
+                type: 'button',
+                disabled: props.taskStopPending,
+                onClick: props.onTaskStop,
+                title: taskTitle,
+              },
+              props.taskStopPending ? '正在中止…' : '中止后台任务'
+            ) : null,
             h(
               'button',
               { className: 'pg-btn', type: 'button', disabled: props.busy, onClick: props.onRefresh },
@@ -917,7 +1030,9 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
 
       var EXPLORE_NOTICE = {
         CANCELLED: '探索已停止，本轮结果未保存',
-        EXPLORATION_TIMEOUT: '探索超时，本轮结果未保存'
+        EXPLORATION_TIMEOUT: '探索超时，本轮结果未保存',
+        FULLSCREEN_GAME: '检测到进入全屏游戏，已中止本轮探索并保留已有进度',
+        FULLSCREEN_COOLDOWN: '退出全屏游戏缓冲期内，暂不启动自动探索'
       };
 
       function ExplorationTopicIssue(props) {
@@ -974,10 +1089,15 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         var [actionBusy, setBusy] = useState(false);
         var [explorePending, setExplorePending] = useState(false);
         var [exploreStopPending, setExploreStopPending] = useState(false);
+        var [taskStopPending, setTaskStopPending] = useState(false);
         var [exploreTopicPending, setExploreTopicPending] = useState(false);
         var [smallActionPending, setSmallActionPending] = useState(false);
         var [exploreResult, setExploreResult] = useState(null);
         var [showExplorationDetails, setShowExplorationDetails] = useState(false);
+        var [memoryCardOpen, setMemoryCardOpen] = useState(function () { return readFoldState('card:memory', true); });
+        var [explorationCardOpen, setExplorationCardOpen] = useState(function () { return readFoldState('card:exploration', true); });
+        var [channelCardOpen, setChannelCardOpen] = useState(function () { return readFoldState('card:channels', true); });
+        var [presetEditorOpen, setPresetEditorOpen] = useState(function () { return readFoldState('sub:高级:套餐自定义', false); });
         var [liveBridge, setLiveBridge] = useState({});
         var [rebindId, setRebindId] = useState('');
         var [hostSessions, setHostSessions] = useState([]);
@@ -1002,6 +1122,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         var guideAnchor = useRef(null);
         var diagnosticRequest = useRef(0);
         var stateRequest = useRef(0);
+        var stateRequestsInFlight = useRef(0);
         var manualExploreRequest = useRef(null);
         var mounted = useRef(true);
         var toastTimer = useRef(null);
@@ -1017,6 +1138,7 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         var load = useCallback(
           function (silent) {
             var request = ++stateRequest.current;
+            stateRequestsInFlight.current += 1;
             if (!silent) setRefreshing(true);
             return Promise.all([apiGet('/state'), apiGet('/config')])
               .then(function (r) {
@@ -1034,7 +1156,8 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
                 if (!mounted.current || request !== stateRequest.current) return;
                 setError(e && e.message ? e.message : String(e));
               })
-              .then(function () {
+              .finally(function () {
+                stateRequestsInFlight.current -= 1;
                 if (!mounted.current || request !== stateRequest.current) return;
                 setRefreshing(false);
                 setLoading(false);
@@ -1062,11 +1185,22 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
           load(false);
           // 状态每 15 秒刷一次就够（判定本身是 10 分钟一拍）
           var t = setInterval(function () {
-            if (mounted.current) load(true);
+            if (mounted.current && !stateRequestsInFlight.current) load(true);
           }, 15000);
+          var onVisible = function () {
+            if (mounted.current && !stateRequestsInFlight.current && typeof document !== 'undefined' && document.visibilityState === 'visible') {
+              load(true);
+            }
+          };
+          if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+            document.addEventListener('visibilitychange', onVisible);
+          }
           return function () {
             mounted.current = false;
             clearInterval(t);
+            if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
+              document.removeEventListener('visibilitychange', onVisible);
+            }
             if (toastTimer.current) clearTimeout(toastTimer.current);
           };
         }, [load]);
@@ -1311,6 +1445,24 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
             load(true);
           }).finally(function () {
             if (mounted.current) setExploreStopPending(false);
+          });
+        }
+
+        function onTaskStop() {
+          var activeTask = state && state.activeTask;
+          if (!activeTask || taskStopPending) return;
+          setTaskStopPending(true);
+          apiPost('/task/stop', activeTask.id ? { taskId: activeTask.id } : {}).then(function (r) {
+            if (!mounted.current) return;
+            if (r.state) setState(r.state);
+            flash(r.note || (r.ok ? '后台任务已中止' : '当前没有正在运行的后台任务'), r.ok || r.reason === 'NOT_RUNNING' ? 'ok' : 'err');
+            load(true);
+          }).catch(function (e) {
+            if (!mounted.current) return;
+            flash(e.message || '中止后台任务失败，请重试', 'err');
+            load(true);
+          }).finally(function () {
+            if (mounted.current) setTaskStopPending(false);
           });
         }
 
@@ -1706,7 +1858,8 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         return h(
           'div',
           { className: 'pg-root' },
-          state ? h(Head, { state: state, busy: busy || guidePending === 'preview', tickPending: tickPending, onGuide: openGuide,
+          state ? h(Head, { state: state, busy: busy || guidePending === 'preview', tickPending: tickPending,
+            taskStopPending: taskStopPending, onTaskStop: onTaskStop, onGuide: openGuide,
             onRefresh: function () { load(false); loadDiagnostics(); }, onTick: onTick }) : null,
           h(AlertBar, { items: diagnostic && diagnostic.alerts || [] }),
           toast
@@ -1938,10 +2091,19 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
             };
             var readBadge = sVal === 'all' ? '全部只读汇总' : sVal ? '指定文件' : '自动';
             var memTitleName = memory.label || memory.resolvedPlugin || memory.plugin || 'fish-memory';
-            return h('div', { className: 'pg-card' },
-              h('div', { className: 'pg-card-head' },
-                h('div', { className: 'pg-card-title' }, '长期记忆（' + memTitleName + ' · 共 ' + memFiles.length + ' 份）'),
-                h('span', { className: 'pg-badge ' + (sVal && sVal !== 'all' ? 'pg-badge-dry' : 'pg-badge-live') }, readBadge)
+            return h('details', {
+              className: 'pg-card pg-card-fold',
+              open: memoryCardOpen,
+              onToggle: function (e) {
+                var isOpen = e.currentTarget.open;
+                if (memoryCardOpen === isOpen) return;
+                writeFoldState('card:memory', isOpen);
+                setMemoryCardOpen(isOpen);
+              },
+            },
+              h('summary', { className: 'pg-card-title pg-card-sum' },
+                h('span', { className: 'pg-card-sum-name' }, '长期记忆（' + memTitleName + ' · 共 ' + memFiles.length + ' 份）'),
+                h('span', { className: 'pg-badge ' + (sVal && sVal !== 'all' ? 'pg-badge-dry' : 'pg-badge-live'), style: { marginLeft: 'auto' } }, readBadge)
               ),
               h('div', { className: 'pg-rows' },
                 h('div', { className: 'pg-row' },
@@ -2128,10 +2290,19 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
               );
             }))
           ) : null,
-          exploration ? h('div', { className: 'pg-card pg-exp-card' },
-            h('div', { className: 'pg-card-head' },
-              h('div', { className: 'pg-card-title' }, '自主探索'),
-              h('div', { className: 'pg-card-badges' },
+          exploration ? h('details', {
+            className: 'pg-card pg-card-fold pg-exp-card',
+            open: explorationCardOpen,
+            onToggle: function (e) {
+              var isOpen = e.currentTarget.open;
+              if (explorationCardOpen === isOpen) return;
+              writeFoldState('card:exploration', isOpen);
+              setExplorationCardOpen(isOpen);
+            },
+          },
+            h('summary', { className: 'pg-card-title pg-card-sum' },
+              h('span', { className: 'pg-card-sum-name' }, '自主探索'),
+              h('div', { className: 'pg-card-badges', style: { marginLeft: 'auto' } },
                 exploration.peakStatus ? h('span', {
                   className: 'pg-badge ' + (exploration.peakStatus.offPeak ? 'pg-badge-live' : 'pg-badge-dry'),
                   title: '按 DeepSeek 官方峰谷说明（北京时间）与日历判定'
@@ -2236,10 +2407,19 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
             var boundLabel = ec.sessionId
               ? (ec.sessionTitle ? '「' + ec.sessionTitle + '」' : '') + ec.sessionId.slice(0, 8)
               : '';
-            return h('div', { className: 'pg-card' },
-              h('div', { className: 'pg-card-head' },
-                h('div', { className: 'pg-card-title' }, '主聊天接口与通道开关'),
-                h('div', { className: 'pg-card-badges' },
+            return h('details', {
+              className: 'pg-card pg-card-fold',
+              open: channelCardOpen,
+              onToggle: function (e) {
+                var isOpen = e.currentTarget.open;
+                if (channelCardOpen === isOpen) return;
+                writeFoldState('card:channels', isOpen);
+                setChannelCardOpen(isOpen);
+              },
+            },
+              h('summary', { className: 'pg-card-title pg-card-sum' },
+                h('span', { className: 'pg-card-sum-name' }, '主聊天接口与通道开关'),
+                h('div', { className: 'pg-card-badges', style: { marginLeft: 'auto' } },
                   h('span', { className: 'pg-badge ' + badgeCls }, badgeText)
                 )
               ),
@@ -2327,12 +2507,65 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
               group: g,
               busy: busy,
               onSave: onSave,
-              extra: g.name === '高级' && presets ? h(PresetEditor, {
-                data: presets,
-                busy: busy,
-                onOverride: function (presetId, path, value) { applyPresetAction('/presets/override', { presetId: presetId, path: path, value: value }); },
-                onReset: function (presetId) { applyPresetAction('/presets/reset', { presetId: presetId }); },
-              }) : null,
+              topExtra: g.name === '高级' && state && state.fullscreenGuard ? (function () {
+                var fg = state.fullscreenGuard;
+                var badgeText = !fg.enabled
+                  ? '已关闭'
+                  : fg.mode === 'native'
+                    ? (fg.ready ? '轻量原生模式 · 已就绪' : '轻量原生模式')
+                    : fg.mode === 'powershell'
+                      ? 'PowerShell 兜底'
+                      : '按需待命（首次触发自动编译）';
+                var badgeCls = !fg.enabled
+                  ? 'pg-badge-off'
+                  : fg.mode === 'native' && fg.ready
+                    ? 'pg-badge-live'
+                    : 'pg-badge-dry';
+                var hintText = !fg.enabled
+                  ? '全屏避让已关闭；可在下方「系统感知、反作弊与基础连接」中开启。'
+                  : fg.inFullscreen
+                    ? '当前检测到全屏游戏，敏感动作已自动避让。'
+                    : fg.inCooldown && fg.remainingMs > 0
+                      ? '退出全屏缓冲中，剩余约 ' + Math.max(1, Math.ceil(fg.remainingMs / 60000)) + ' 分钟后恢复。'
+                      : '基于 Windows 原生通知状态位（SHQueryUserNotificationState），零进程枚举、打游戏期间 0 新进程创建。';
+                return h('div', { className: 'pg-row' },
+                  h('div', { className: 'pg-row-text' },
+                    h('div', { className: 'pg-row-label' },
+                      '全屏游戏检测 ',
+                      h('span', { className: 'pg-badge ' + badgeCls, style: { marginLeft: '6px' } }, badgeText)
+                    ),
+                    h('div', { className: 'pg-row-hint' }, hintText)
+                  ),
+                  h('div', { className: 'pg-row-ctl' },
+                    h('button', {
+                      type: 'button',
+                      className: 'pg-btn',
+                      disabled: busy || smallActionPending,
+                      onClick: function () { applySmallAction('/fullscreen-guard/redeploy', {}); },
+                    }, smallActionPending ? '部署中…' : '重新部署')
+                  )
+                );
+              })() : null,
+              extra: g.name === '高级' && presets ? h(
+                'details',
+                {
+                  className: 'pg-exp-details pg-sub-fold',
+                  open: presetEditorOpen,
+                  onToggle: function (e) {
+                    var isOpen = e.currentTarget.open;
+                    if (presetEditorOpen === isOpen) return;
+                    writeFoldState('sub:高级:套餐自定义', isOpen);
+                    setPresetEditorOpen(isOpen);
+                  },
+                },
+                h('summary', { className: 'pg-exp-sum' }, h('span', null, '套餐自定义')),
+                h(PresetEditor, {
+                  data: presets,
+                  busy: busy,
+                  onOverride: function (presetId, path, value) { applyPresetAction('/presets/override', { presetId: presetId, path: path, value: value }); },
+                  onReset: function (presetId) { applyPresetAction('/presets/reset', { presetId: presetId }); },
+                })
+              ) : null,
             });
           })) : null,
           h(
@@ -2400,6 +2633,8 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         '.pg-btn:disabled{opacity:.5;cursor:default;}',
         '.pg-btn-primary{background:var(--pg-brand);color:var(--pg-brand-fg);border-color:transparent;}',
         '.pg-btn-primary:hover:not(:disabled){background:var(--pg-brand);opacity:.9;border-color:transparent;}',
+        '.pg-btn-warn{color:var(--pg-err);border-color:color-mix(in srgb,var(--pg-err) 40%,var(--pg-line));background:color-mix(in srgb,var(--pg-err) 9%,var(--pg-bar));}',
+        '.pg-btn-warn:hover:not(:disabled){background:color-mix(in srgb,var(--pg-err) 16%,var(--pg-bar));border-color:color-mix(in srgb,var(--pg-err) 55%,var(--pg-line));}',
         '.pg-badge{font-size:11px;font-weight:550;padding:2px 8px;border-radius:999px;border:1px solid var(--pg-line);background:var(--pg-bar);color:var(--pg-muted);line-height:1.45;white-space:nowrap;}',
         '.pg-badge-live{color:var(--pg-ok);border-color:color-mix(in srgb,var(--pg-ok) 38%,transparent);background:color-mix(in srgb,var(--pg-ok) 11%,transparent);}',
         '.pg-badge-dry{color:var(--pg-warn);border-color:color-mix(in srgb,var(--pg-warn) 38%,transparent);background:color-mix(in srgb,var(--pg-warn) 11%,transparent);}',
@@ -2501,6 +2736,8 @@ if (typeof window !== 'undefined' && window.__ModuleLoader__) {
         '.pg-exp-sum::-webkit-details-marker{display:none;}',
         '.pg-exp-sum::before{content:"▸";font-size:10px;opacity:.75;}',
         '.pg-exp-details[open] .pg-exp-sum::before{content:"▾";}',
+        '.pg-sub-fold{margin:8px 0 4px;}',
+        '.pg-sub-fold .pg-rows{margin-top:6px;padding-top:4px;border-top:1px solid var(--pg-line-soft);}',
         '.pg-exp-list{display:flex;flex-direction:column;gap:5px;padding-top:8px;margin-top:6px;border-top:1px solid var(--pg-line-soft);}',
         '.pg-exp-item{font-size:11.5px;color:var(--pg-muted);line-height:1.55;overflow-wrap:anywhere;}',
         '.pg-exp-highlight{font-size:12.5px;color:var(--pg-fg);line-height:1.6;padding:4px 8px;background:var(--pg-card);border-radius:7px;border:1px solid var(--pg-line-soft);}',

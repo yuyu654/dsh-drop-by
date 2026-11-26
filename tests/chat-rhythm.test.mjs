@@ -225,3 +225,24 @@ test('探索开场接话点轮换避免重复，限制你猜与卖关子频次�
   assert.match(freshHook.prompt, /禁止套用.*你站哪派/);
   assert.match(freshHook.prompt, /你猜…随便猜一个/);
 });
+
+test('承接角色约定/召唤的短确认（如「等我」「我到了，出来吧」后的「嗯嗯」「收到」「好的」）不误判成敷衍收尾', async () => {
+  const { isExpectedAckForPrompt } = await import('../src/chat/chat-rhythm.js');
+  assert.equal(isExpectedAckForPrompt('行，那我挑两个不重样的。等我。', '嗯嗯'), true);
+  assert.equal(isExpectedAckForPrompt('我到了，出来吧。', '收到'), true);
+  assert.equal(isExpectedAckForPrompt('看完再跟你对答案嘛~', '好'), true);
+  assert.equal(isExpectedAckForPrompt('今天天气不错', '嗯嗯'), false);
+  assert.equal(isExpectedAckForPrompt('我到了，出来吧。', '哦'), false);
+
+  const turns = [
+    { who: 'her', text: '吃米线怎么样？我马上下课了，咱们一块出去', ts: BASE_TS },
+    { who: 'me', text: '米线行，那就这个。下课在门口等我，我请你。', ts: BASE_TS + 10_000 },
+    { who: 'her', text: '走吧', ts: BASE_TS + 960_000 },
+    { who: 'me', text: '我到了，出来吧。', ts: BASE_TS + 970_000 },
+    { who: 'her', text: '嗯嗯', ts: BASE_TS + 980_000 },
+  ];
+  const sig = detectWindDownSignals(turns);
+  assert.equal(sig.expectedAck, true);
+  assert.equal(sig.windingDown, false);
+  assert.equal(sig.hint, '');
+});

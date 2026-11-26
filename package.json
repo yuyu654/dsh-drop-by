@@ -1,6 +1,6 @@
 {
   "name": "@joshin/dsh-drop-by",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": false,
   "type": "module",
   "description": "主动陪伴插件：沿用你的人设，挑合适时机主动来聊；有独立作息、会自己搜网页看视频，也能识别收尾信号不硬聊。新装默认 DSH 内部会话开箱即用，可随时切到 QQ 或抖音私信并共用同一会话，支持私聊派任务与约定提醒。QQ/抖音入口需分别配合 dsh-plugin-qq-bridge / dsh-douyin-scroll。",

@@ -10,9 +10,10 @@ const CHAPTER = /第\s*[0-9零〇一二三四五六七八九十百千万两]+\s*
 const READ = /^(?:(?:请|想|先|要|继续|接着|帮我|给我)\s*)*(?:看一看|看看|读一读|阅读|追更|追|读|看)\s*/u;
 const RESEARCH_REQUEST = /^(?:(?:我|请|想|最近|今天|先|继续|帮我|关于|只看|只找)\s*)*(?:研究|探讨|学习|分析|了解|比较|调查|科普|只查|找资料|找教程|查资料|查询|怎么|怎样|如何|为什么)/u;
 const RESEARCH_SUBJECT = /(?:教程|原理|方法|设计|方案|代码|插件|架构|文档|分布式事务|对比|分析|调研|研究|话题|的题|研究题|望远镜[^，。]*观测|插排[^，。]*负载|兴趣|评测|评价|叙事手法|怎么|怎样|如何|为什么|是什么)(?:[？?。！!]|\s|$)|^(?:漫画|小说|视频|动画|番剧|独立游戏|乐器|气象|编程)(?:[，,。！!；;、\s]|$)/u;
-const READING_PLATFORM = /^(?:哔哩哔哩漫画|bilibili漫画|B\s*站漫画|B\s*漫)$/iu;
+const MANGA_PLATFORM = /^(?:哔哩哔哩漫画|bilibili漫画|B\s*站漫画|B\s*漫)$/iu;
+const READING_PLATFORM = /^(?:哔哩哔哩漫画|bilibili漫画|B\s*站漫画|B\s*漫|起点中文网|起点读书|起点|晋江文学城|晋江|番茄免费小说|番茄小说|番茄|腾讯动漫|腾讯漫画|快看漫画|快看)$/iu;
 const SOURCE_REFERENCE = /(?:\bsite|来源)\s*[:：]\s*([^\s(),，。；;、《》〈〉（）]+)|[a-z][a-z0-9+.-]*:\/\/[^\s(),，。；;、《》〈〉（）]+|(?<![\w@./:-])(?:[a-z0-9-]+\.)+(?:com|net|org|cn|edu|gov|io|co|dev|info|me|tv|app|wiki|xyz|uk|de|jp)\b(?:\/[^\s(),，。；;、《》〈〉（）]*)?(?![@./:-])/giu;
-const NAMED_SOURCE = /哔哩哔哩漫画|bilibili漫画|B\s*站漫画|B\s*漫|知乎|\b(?:CSDN|GitHub|GitLab)\b|掘金|博客园/giu;
+const NAMED_SOURCE = /哔哩哔哩漫画|bilibili漫画|B\s*站漫画|B\s*漫|起点中文网|起点读书|起点|晋江文学城|晋江|番茄免费小说|番茄小说|番茄|腾讯动漫|腾讯漫画|快看漫画|快看|知乎|\b(?:CSDN|GitHub|GitLab)\b|掘金|博客园/giu;
 
 function cleanTitle(value) {
   return String(value || '').normalize('NFKC')
@@ -26,7 +27,7 @@ const metadataHost = (host) => METADATA_HOSTS.includes(host.replace(/^www\./u, '
 function workSource(value) {
   const text = String(value || '').trim();
   if (!text || /[\r\n]/u.test(text)) return null;
-  if (READING_PLATFORM.test(text)) return { hosts: [MANGA_HOST] };
+  if (MANGA_PLATFORM.test(text)) return { hosts: [MANGA_HOST] };
   const url = publicExplorationUrl(text.includes('://') ? text : 'https://' + text);
   if (url) {
     if (metadataHost(url.hostname)) return null;
@@ -106,8 +107,8 @@ export function classifyExplorationTarget(raw, workSources = '') {
     .replace(/^(?:[：:\s，,]+|(?:在|从|上)\s+)/u, '')
     .replace(/[：:\s，,。（）()]+$/u, '');
   const title = bracketTitles.join(' / ') || cleanTitle(chapter || source.namedPlatform ? subject.replace(READ, '') : subject);
-  const saved = source.specified ? null : configuredWorkSource(workSources, title);
-  const exactSavedTitle = saved && titleKey(input) === titleKey(title);
+  const saved = configuredWorkSource(workSources, title);
+  const exactSavedTitle = !source.specified && saved && titleKey(input) === titleKey(title);
   const topic = !explicitWork && !exactSavedTitle && (RESEARCH_REQUEST.test(input) || RESEARCH_REQUEST.test(rest)
     || (!chapter && RESEARCH_SUBJECT.test(bracketTitles.length ? rest : input)));
   if (topic) return { input, title: input, kind: 'topic', hosts: [] };
@@ -116,8 +117,11 @@ export function classifyExplorationTarget(raw, workSources = '') {
   if (bracketTitles.length > 1 || source.candidates) {
     return { ...target, kind: 'ambiguous', reason: 'TOPIC_AMBIGUOUS', candidates: source.candidates || [] };
   }
+  const savedMatchesHost = Boolean(
+    saved?.url && (!source.hosts.length || saved.hosts?.some((h) => source.hosts.includes(h)))
+  );
   const approved = source.specified
-    ? { hosts: source.hosts, ...(source.url ? { url: source.url } : {}) }
+    ? { hosts: source.hosts, ...(source.url ? { url: source.url } : (savedMatchesHost ? { url: saved.url } : {})) }
     : saved;
   if (approved?.hosts.length) return { ...target, ...approved, kind: 'work' };
   if (explicitWork || bracketTitles.length || chapter || source.namedPlatform) {

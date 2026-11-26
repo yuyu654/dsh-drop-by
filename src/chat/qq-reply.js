@@ -5,7 +5,7 @@ import { extractMemoryTerms, recallExplorationMemories } from '../explore/explor
 import { publicExplorationUrl } from '../explore/explore-media.js';
 import { ATTRIBUTION_RULE } from '../decision/attribution.js';
 import { characterRestAt, WOKEN_HINT } from '../decision/character-rest.js';
-import { consumeQqAction, pendingQqProposal, qqCommandPreflight, queueQqCommand, tryStopExplorationCommand } from './action-proposal.js';
+import { consumeQqAction, pendingQqProposal, qqCommandPreflight, queueQqCommand, tryStopBackgroundTaskCommand, tryStopExplorationCommand } from './action-proposal.js';
 import { COMMAND_ACK, looksLikeExplorationDirection, matchUserCommand } from './command-matcher.js';
 import { applyExplorationDirection, applyTopicPreference, explorationDirectionContext, latestLoginContext, verifiedExplorationInput, verifiedPreferenceMessage } from './qq-command.js';
 import { makeHostLlm } from '../decision/hostllm.js';
@@ -16,15 +16,17 @@ import { qqMergeAvailable, waitForQqBurst, QQ_CHANNEL_PAUSED } from './qq-deboun
 import { chatBinding, chatChanging } from '../channels/chat-switch.js';
 import { douyinPrimary, readDouyinState } from '../channels/douyin-im.js';
 import { internalPrimary, readInternalState } from '../channels/internal.js';
-import { canReadChat, chatPeer, emotionPeer, activeChatChannel } from '../channels/external.js';
+import { canReadChat, chatDialogue, chatPeer, emotionPeer, activeChatChannel } from '../channels/external.js';
 import { consumeCompanionQqOutbound } from './send.js';
 import { recentTurns } from './outbound.js';
-import { REPLY_PACING_RULE, detectWindDownSignals, isExplicitClose, isMinimalReply } from './chat-rhythm.js';
-import { agreementAnchor, handleAgreementChatCommand, isAgreementReminderRequest, observeAgreement } from './agreements.js';
+import { REPLY_PACING_RULE, detectWindDownSignals, isExpectedAckForPrompt, isExplicitClose, isMinimalReply } from './chat-rhythm.js';
+import { brushoffMoodEnabled, evaluateBrushoffTurnWithLlm } from './brushoff-mood.js';
+import { agreementAnchor, handleAgreementChatCommandWithLlm, hasRecordedReminder, isAgreementReminderRequest, observeAgreement } from './agreements.js';
+import { requestsRoleplay } from './roleplay-followup.js';
 import { forwardCuriosity, observeCuriosity, explorationFeedbackHints, topicInExplorationFeedback } from '../explore/exploration-feedback.js';
 import { inQuiet } from '../perception/schedule.js';
 
-const ACTION_PROMPT_RULE = '换源确认由陪伴插件发出和处理；普通聊天不要自行提出需要确认的换源请求。';
+const ACTION_PROMPT_RULE = '换源确认由陪伴插件发出和处理；普通聊天不要自行提出需要确认的换源请求。只有已接单且会回传结果的后台任务才可承诺稍后反馈。能当场查证的资料就在本轮回答。日常对话里的活动和见闻要有依据，双方明确进入角色剧情时可以演绎虚构活动。';
 const EXPLORATION_ASK_RE = /(?:链接|网址|地址|原帖|出处|来源|发我|发一下|推给我|这一话|上一话|下一话|第[一二三四五六七八九十0-9]+[话集章]|讲了[啥什]|进展|后来呢|结果怎么样|(?:最近|刚才|之前|刚刚).{0,6}(?:在看|看过|研究|探索|关注|追|翻|查|发现))/u;
 const EXPLORATION_WARM_WINDOW_MS = 30 * 60_000;
 
@@ -61,7 +63,7 @@ export function shouldExpandExplorationContext({ text = '', now = Date.now(), st
 
 // Context belongs only to the configured private contact and the current persona.
 export function qqReplyContext({ peer, kind, cfg = loadConfig(), now = Date.now(),
-  state = loadExploration(), persona = loadPersona({ cfg }), text = '', minimal = false } = {}) {
+  state = loadExploration(), persona = loadPersona({ cfg }), text = '', minimal = false, prevMe = '' } = {}) {
   if (kind !== 'private' || !peer || String(peer) !== chatPeer(cfg) || cfg.enabled === false || !canReadChat(cfg)) return '';
   const status = explorationStatus(state, persona);
   const { thread, leisure, light, candidate, memories } = status;
@@ -80,7 +82,8 @@ export function qqReplyContext({ peer, kind, cfg = loadConfig(), now = Date.now(
     } : {}),
   });
   const isLightMode = cfg.exploration?.mode === 'light';
-  const lowSignal = Boolean(minimal || isMinimalReply(text) || isExplicitClose(text));
+  const expectedAck = Boolean(prevMe && isExpectedAckForPrompt(prevMe, text));
+  const lowSignal = Boolean(!expectedAck && (minimal || isMinimalReply(text) || isExplicitClose(text)));
   const visibleThread = !isLightMode && visible(thread) ? thread : null;
   const visibleLeisure = !isLightMode && visible(leisure) ? leisure : null;
   const visibleLight = visible(light) ? light : null;
@@ -152,6 +155,14 @@ export function qqReplyContext({ peer, kind, cfg = loadConfig(), now = Date.now(
     ...(portraitLine ? { 私聊延续的心情: portraitLine } : {}),
   };
   if (!Object.keys(context).length) return '';
+  if (expectedAck) {
+    return [
+      '<qq_reply_context>',
+      '【dsh-drop-by 角色背景】' + JSON.stringify(context),
+      '对方是在应和/确认你上一句的约定、召唤或嘱咐（并非敷衍或要结束对话）；按刚才的语境和人设自然接一句即可，不要当成告别或冷淡收尾，也不要硬转探索话题、不复述标记。',
+      '</qq_reply_context>',
+    ].join('\n');
+  }
   if (lowSignal) {
     return [
       '<qq_reply_context>',
@@ -268,7 +279,8 @@ export async function prepareQqReplyContext(ctx, { peer, kind, text, at } = {}) 
       cfg.channels?.qq?.read === false) return '';
   recordQqDirectionTurn({ peer, kind, text, at, cfg });
   observePrivateMessage(ctx, { peer, kind, text, at, cfg });
-  const stopContext = tryStopExplorationCommand({ peer, kind, text, at, cfg });
+  const stopContext = tryStopExplorationCommand({ peer, kind, text, at, cfg })
+    || tryStopBackgroundTaskCommand({ peer, kind, text, at, cfg });
   if (stopContext) return stopContext;
   if (!qqMergeAvailable(peer)) return buildReplyContext(ctx, { peer, kind, text, at, cfg, observed: true });
   const debounceMs = Math.min(15000, Math.max(3000, Number(cfg.rules?.qqTiming?.debounceMs) || 3500));
@@ -281,7 +293,7 @@ export async function prepareQqReplyContext(ctx, { peer, kind, text, at } = {}) 
   let context;
   try {
     context = await buildReplyContext(ctx, { peer, kind, text: mergedText, bridgeText: text, at, cfg,
-      messageTimes: ordered.map(item => item.at), observed: true });
+      messageTimes: ordered.map(item => item.at), burstMessages: ordered, observed: true });
   } catch {
     context = [ATTRIBUTION_RULE, ACTION_PROMPT_RULE].join('\n');
   }
@@ -290,40 +302,84 @@ export async function prepareQqReplyContext(ctx, { peer, kind, text, at } = {}) 
 
 export async function buildReplyContext(ctx, input) {
   const { peer, kind, at, cfg, messageTimes = [at] } = input;
-  const stopContext = tryStopExplorationCommand(input);
+  const stopContext = tryStopExplorationCommand(input) || tryStopBackgroundTaskCommand(input);
   if (stopContext) return stopContext;
   if (!input.observed) observePrivateMessage(ctx, input);
   let woken = false;
   let windDownHint = '';
+  let prevMe = '';
+  let brushoff = { level: 'normal', count: 0, hint: '', delayMs: 0, recovered: null, triggered: false };
   try {
     if (kind === 'private' && peer && String(peer) === chatPeer(cfg) && cfg.enabled !== false && canReadChat(cfg)) {
       woken = messageTimes.some(time => Number.isFinite(time) && time > 0 && characterRestAt(cfg, time).asleep);
       const history = recentTurns({ limit: 4, cfg });
+      prevMe = [...history].reverse().find((m) => m.who === 'me')?.text || '';
       const curText = String(input.text || '').trim();
       const curAt = Number(at) || Date.now();
       const alreadyIn = history.some((m) => m.who === 'her' && Math.abs((Number(m.ts) || 0) - curAt) <= 2000 && m.text === curText.slice(0, 80));
       const merged = curText && !alreadyIn ? [...history, { who: 'her', text: curText, ts: curAt }] : history;
       windDownHint = detectWindDownSignals(merged).hint;
+      brushoff = await evaluateBrushoffTurnWithLlm({
+        cfg,
+        peer,
+        prevMeText: prevMe,
+        channel: activeChatChannel(cfg),
+        outgoing: brushoffMoodEnabled(cfg) ? chatDialogue(cfg).outgoing : null,
+        userText: curText,
+        at: curAt,
+        now: Date.now(),
+        generate: brushoffMoodEnabled(cfg) ? agreementExtractor(ctx, cfg) : null,
+      });
     }
   } catch { /* An optional tone hint must never prevent replying or routing a task. */ }
-  const context = await buildReplyContextBase(ctx, input);
+  if (brushoff.delayMs > 0 && !input.skipAngryDelay) {
+    const endAt = Date.now() + brushoff.delayMs;
+    const msgAt = Number(at) || 0;
+    while (Date.now() < endAt) {
+      if (chatChanging()) break;
+      try {
+        const latestIn = recentTurns({ limit: 1, cfg: loadConfig() }).at(-1);
+        if (latestIn?.who === 'her' && Number(latestIn.ts) > msgAt) break;
+      } catch { /* ignore */ }
+      await new Promise((resolve) => setTimeout(resolve, Math.min(500, Math.max(0, endAt - Date.now()))));
+    }
+  }
+  const context = await buildReplyContextBase(ctx, { ...input, prevMe });
   let agreementHint = '';
+  const reminderEntries = Array.isArray(input.burstMessages) && input.burstMessages.length
+    ? input.burstMessages
+    : [{ text: input.bridgeText || input.text, at }];
   try {
     if (
       kind === 'private' && peer && String(peer) === chatPeer(cfg) &&
       cfg.enabled !== false && cfg.agreements?.enabled === true &&
       !chatChanging() && !inQuiet(Date.now(), cfg.quietHours, cfg.timezone) && canReadChat(cfg) &&
-      typeof input.text === 'string' && !/【约定小本本/.test(String(context || '')) &&
-      isAgreementReminderRequest(input.text, Number(at) || Date.now(), cfg)
+      !/【约定小本本/.test(String(context || ''))
     ) {
-      agreementHint = '【约定小本本已接管】用户正在定一次性提醒，后台「约定小本本」已自动记录并负责到点提醒；按人设自然口头答应即可，不要再额外创建一次性 DSH 定时器/定时任务（用户明确要求周期性重复任务时除外）。';
+      for (const entry of reminderEntries) {
+        if (
+          typeof entry?.text === 'string' &&
+          isAgreementReminderRequest(entry.text, entry.at, cfg) &&
+          await hasRecordedReminder({ cfg, text: entry.text, at: entry.at, peer, channel: activeChatChannel(cfg) })
+        ) {
+          agreementHint = '【约定小本本已接管】用户正在定一次性提醒，后台「约定小本本」已自动记录并负责到点提醒；按人设自然口头答应即可，不要再额外创建一次性 DSH 定时器/定时任务（用户明确要求周期性重复任务时除外）。';
+          break;
+        }
+      }
     }
   } catch { /* Never block replying if agreement hint check fails. */ }
   const toolCap = Math.max(0, Math.trunc(Number(cfg?.rules?.chatSession?.maxToolCallsPerTurn) || 0));
   const toolHint = toolCap > 0
     ? `【工具调用上限】本轮最多调用 ${toolCap} 次工具；接近上限时请先停手汇报当前进展，等用户确认再继续。`
     : '';
-  const hints = [woken ? WOKEN_HINT : '', windDownHint, agreementHint, toolHint].filter(Boolean);
+  const sceneHint = cfg.enabled !== false && cfg.rules?.proactive !== false && cfg.rules?.roleplayFollowup?.enabled === true &&
+    cfg.dryRun === false && cfg.send?.enabled === true && kind === 'private' && chatPeer(cfg) === String(peer) &&
+    canReadChat(cfg) && !chatChanging() && requestsRoleplay(input.bridgeText || input.text) &&
+    !/【陪伴(?:任务|动作)已接单】/u.test(context || '')
+    ? '【角色剧情】用户明确在聊剧情。只有剧情里自然需要离场并约好回来时，可以简短说「我先去……，过会儿回来。」发出后由陪伴安排剧情回话，直接用对话口吻，无需工具。'
+    : '';
+  const effectiveWindDown = brushoff.hint ? '' : windDownHint;
+  const hints = [woken ? WOKEN_HINT : '', brushoff.hint, effectiveWindDown, agreementHint, toolHint, sceneHint].filter(Boolean);
   return hints.length && context ? context + '\n\n<qq_reply_context>\n' + hints.join('\n') + '\n</qq_reply_context>' : context;
 }
 
@@ -342,12 +398,13 @@ async function buildReplyContextBase(ctx, input) {
   notifyExternalMoodMessage({ peer: emotionPeer(cfg), role: 'user', text, at, channel: activeChatChannel(cfg), cfg });
 
   if (kind === 'private' && peer && chatPeer(cfg) === String(peer) && cfg.enabled !== false) {
-    const agreementReply = handleAgreementChatCommand({
+    const agreementReply = await handleAgreementChatCommandWithLlm({
       text,
       peer,
       channel: activeChatChannel(cfg),
       cfg,
       now: Date.now(),
+      generate: agreementExtractor(ctx, cfg),
     });
     if (agreementReply) return agreementReply;
   }
@@ -401,7 +458,7 @@ async function buildReplyContextBase(ctx, input) {
     if (host.ready) await updatePortraitMood({ cfg, persona, peer: emotionPeer(cfg), text, at, generate: host.generate,
       exploration: cfg.exploration.mood === true ? explorationMood(state, persona, at, cfg.exploration)?.text : '' });
   }
-  const base = qqReplyContext({ peer, kind, cfg, persona, state, text }) || [ATTRIBUTION_RULE, ACTION_PROMPT_RULE].join('\n');
+  const base = qqReplyContext({ peer, kind, cfg, persona, state, text, prevMe: input.prevMe || '' }) || [ATTRIBUTION_RULE, ACTION_PROMPT_RULE].join('\n');
   if (activeChatChannel(cfg) === 'qq' && kind === 'private') {
     const unsynced = consumeCompanionQqOutbound(peer);
     if (unsynced) {

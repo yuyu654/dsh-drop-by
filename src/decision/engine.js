@@ -12,6 +12,7 @@
 //   · llmReady —— 由调用方告诉 compose「这套环境能不能用 llm」，省得它自己探测。
 import { loadConfig, loadState, saveState } from "../settings/config.js";
 import { probe, classifyActivity, anticheatRunning } from "../perception/probe.js";
+import { isFullscreenBlocked } from "../perception/fullscreen-guard.js";
 import { readChannels } from "../channels/index.js";
 import { decide, presenceOf, checkTierGap, REASONS } from "./decide.js";
 import { append, appendOnce } from "../settings/logger.js";
@@ -33,6 +34,7 @@ import { chitchatGate, chitchatTopic, noteChitchatSent, bareRemainingToday, chit
 import { restFor } from "./bedtime.js";
 import { characterRestAt, WIND_DOWN_HINT, WOKEN_HINT } from "./character-rest.js";
 import { closingCooldownActive, isHotChat } from "../chat/chat-rhythm.js";
+import { evaluateBrushoffNoReply, noteProactiveForBrushoff } from "../chat/brushoff-mood.js";
 import { contextFeatures, detectBusySpeech, scoreReceptivity } from "./receptivity.js";
 import { pickSeed, conversationLine } from "./seeds.js";
 import { detectTriggers } from "./triggers.js";
@@ -201,7 +203,28 @@ export async function tick({
   // 幂等，跑多少遍结果一样，删的是整文件，不会把正在写的那个删掉（它属于今天）。
   const pruned = preview ? null : pruneOldRecords(cfg, now, { tz });
 
-  const sys = await probeSystem(false, cfg, { readOnly: preview });
+  let sys;
+  if (probeSystem === probe) {
+    const fsGuard = await isFullscreenBlocked(cfg, { now });
+    if (fsGuard.blocked) {
+      sys = {
+        ok: true,
+        idle_ms: -1,
+        locked: false,
+        fg_title: '',
+        fg_name: '',
+        fg_pid: 0,
+        audio_peak: -1,
+        procs: [],
+        fullscreen: true,
+        fullscreenReason: fsGuard.reason,
+      };
+    } else {
+      sys = await probeSystem(false, cfg, { readOnly: preview });
+    }
+  } else {
+    sys = await probeSystem(false, cfg, { readOnly: preview });
+  }
   const idleSec = typeof sys.idle_ms === 'number' && sys.idle_ms >= 0 ? Math.round(sys.idle_ms / 1000) : -1;
   const quiet = inQuiet(now, cfg.quietHours, tz);
   // 忙碌时段：只压「我先开口」，不压回复（她先说话就该回）
@@ -259,6 +282,11 @@ export async function tick({
     captureProjectAnswer(cfg, st, chatDialogue(cfg).incoming, now);
   }
   // 窗口已过、她一句话都没有的：每拍补判一次。盲着的时段（静默/全断）不判，dryRun 不写。
+  if (!useSim && !quiet) {
+    try {
+      evaluateBrushoffNoReply({ cfg, peer: chatPeer(cfg), now, lastHerTs: ch.lastUserTs, lastHerText: herSay || herLine?.text || '' });
+    } catch { /* ignore */ }
+  }
   if (!useSim) sweep(st, now, {
     tz,
     cfg,
@@ -872,6 +900,9 @@ export async function tick({
       }
       if (!r.dryRun && (delivered || r.parts > 0) && d.track === 'proactive') {
         noteProactive(st, topic, { channel, peer: to, at: r.sentAt || Date.now() });
+        try {
+          noteProactiveForBrushoff({ cfg, peer: to, slot: topic?.slot, text: content.text, at: r.sentAt || Date.now() });
+        } catch { /* ignore */ }
       }
       if (delivered && topic?.slot === 'share' && ctx?.self?.exploration && !ctx.self.actionRetry && !ctx.self.loginSite) {
         try { rememberExplorationShare({ cfg, peer: to, channel, id: topic.evidence?.discoveryId,

@@ -310,9 +310,11 @@ export function recallExplorationMemories(existing = [], {
 export function formatMemoryHint(memories = [], activeEntry = null) {
   const lines = [];
   if (activeEntry?.topic && (activeEntry.progress || activeEntry.next || activeEntry.checkpoint)) {
+    const lastUrl = String(activeEntry.progressSource?.url || '').trim();
     const parts = [
       `上次进度（${activeEntry.topic}）：${activeEntry.progress || ''}`,
       activeEntry.checkpoint ? `已看到：${activeEntry.checkpoint}` : '',
+      lastUrl && /^https?:\/\//i.test(lastUrl) ? `上次页面：${lastUrl}` : '',
       activeEntry.next ? `计划接着看：${activeEntry.next}` : '',
     ].filter(Boolean);
     lines.push(parts.join('；'));
@@ -321,5 +323,5 @@ export function formatMemoryHint(memories = [], activeEntry = null) {
     const text = [m.topic, m.text, m.next ? `下一步：${m.next}` : ''].filter(Boolean).join(' — ');
     if (text && !lines.some((l) => l.includes(m.text.slice(0, 24)))) lines.push(text);
   }
-  return lines.join('\n').slice(0, 600);
+  return lines.join('\n').slice(0, 720);
 }

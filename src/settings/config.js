@@ -29,6 +29,8 @@ export const AGREEMENT_DEFAULTS = Object.freeze({
   enabled: false, maxItems: 8, aheadMin: 10, followUpMin: 60, expireHours: 24,
   shortWithinMin: 180, slowIntervalMin: 15, extractTimeoutMs: 5000, soonMin: 10, fewHoursMin: 120, dateTime: '18:00', model: '',
 });
+export const ROLEPLAY_FOLLOWUP_DEFAULTS = Object.freeze({ enabled: true, minMinutes: 10, maxMinutes: 20 });
+export const BRUSHOFF_MOOD_DEFAULTS = Object.freeze({ enabled: false, decayHours: 6, noReplyMin: 90, angryDelayMinSec: 25, angryDelayMaxSec: 50 });
 export const CURIOSITY_DEFAULTS = Object.freeze({ enabled: true, maxCandidates: 6, keepDays: 7, warmMin: 30 });
 export const RECEPTIVITY_DEFAULTS = Object.freeze({ mode: 'shadow', threshold: 0.28, minSamples: 12 });
 
@@ -79,6 +81,7 @@ const DEFAULTS = {
     receptivity: { ...RECEPTIVITY_DEFAULTS },
     askProjectOnce: false,
     qqContinuation: false,
+    roleplayFollowup: { ...ROLEPLAY_FOLLOWUP_DEFAULTS },
     actionGate: { enabled: true, expiresMinutes: 15, ackWaitSec: 30 },
     qqCommands: { enabled: true, extended: false, intentTimeoutSec: 5, timeoutSec: 90, freshSec: 120 },
     chatSession: { maxToolCallsPerTurn: 0, notifyOnToolLimit: true },
@@ -113,6 +116,10 @@ const DEFAULTS = {
       // 默认跳过——瞒着她的事不能反过来拿去当搭话的素材。
       seedSkipPrivate: true,
     },
+    // 被敷衍或无理由不回引发的闷闷与生气状态机（默认关闭）：
+    // 默认 6 小时滑动衰减内，不回（默认 90 分钟）或敷衍（随口话敷衍不计、随口话不回计入）第 1 次有点闷不追问、
+    // 第 2 次更失落、第 3 次生气（暂停分享、闲聊带情绪、慢回 25–50s）。同一段聊天（30 分钟内）认真回过一次不计入并抵消之前攒的次数。
+    brushoffMood: { ...BRUSHOFF_MOOD_DEFAULTS },
     // 阶段 3：自然触发时刻（默认关）。关着 = 只看时钟；开着 = 一段活干完、一段课上完、
     // self.md 刚写一条，这几种时刻也算「可以开口」。静默/忙碌/离开/每日上限一概不动。
     // takeGap：事件拍能不能越过 minGap。默认 false（间隔地板照旧，事件只是提前到那一秒）；
@@ -166,6 +173,7 @@ const DEFAULTS = {
     anticheat: {
       skip: true,
       skipFullscreen: true,
+      fullscreenCooldownMin: 10,
       procs: [
         'wegame', 'tencentdl', 'tcls', 'crossproxy', 'leagueclient', 'lolex',
         'dnf', 'cf', 'valorant', 'vgtray', 'vgc', 'gamecoach',

@@ -95,7 +95,7 @@
 
         return h(
           'div',
-          { style: { borderBottom: '1px solid var(--pg-line)', padding: '10px 0 12px', marginBottom: '6px' } },
+          { style: { padding: '8px 2px 4px', marginTop: '6px', borderTop: '1px solid var(--pg-line-soft)' } },
           h('div', { className: 'pg-row-label', style: { marginBottom: '6px' } }, '自定义各套餐参数'),
           h('div', { className: 'pg-row-hint', style: { marginBottom: '8px' } }, '先选要修改的套餐，再选子参数进行调整。若修改的正是当前激活套餐，保存后会立即同步生效到当前配置。'),
           h(

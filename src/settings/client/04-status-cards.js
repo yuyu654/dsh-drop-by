@@ -12,6 +12,14 @@
         var tone = !st.enabled ? 'off' : canSend ? 'live' : 'dry';
         var toneText = !st.enabled ? '停着' : canSend ? '会真的发' : '演练中';
 
+        var activeTask = st.activeTask || null;
+        var taskElapsed = activeTask && activeTask.startedAt
+          ? Math.max(0, Math.round((Date.now() - Number(activeTask.startedAt)) / 1000))
+          : 0;
+        var taskTitle = activeTask
+          ? '当前后台任务：' + (activeTask.label || '后台任务') + (taskElapsed > 0 ? '（已运行 ' + taskElapsed + ' 秒）' : '') + '，点击中止'
+          : '';
+
         return h(
           'header',
           { className: 'pg-head' },
@@ -35,6 +43,17 @@
           h(
             'div',
             { className: 'pg-head-actions' },
+            activeTask ? h(
+              'button',
+              {
+                className: 'pg-btn pg-btn-warn',
+                type: 'button',
+                disabled: props.taskStopPending,
+                onClick: props.onTaskStop,
+                title: taskTitle,
+              },
+              props.taskStopPending ? '正在中止…' : '中止后台任务'
+            ) : null,
             h(
               'button',
               { className: 'pg-btn', type: 'button', disabled: props.busy, onClick: props.onRefresh },
@@ -281,7 +300,9 @@
 
       var EXPLORE_NOTICE = {
         CANCELLED: '探索已停止，本轮结果未保存',
-        EXPLORATION_TIMEOUT: '探索超时，本轮结果未保存'
+        EXPLORATION_TIMEOUT: '探索超时，本轮结果未保存',
+        FULLSCREEN_GAME: '检测到进入全屏游戏，已中止本轮探索并保留已有进度',
+        FULLSCREEN_COOLDOWN: '退出全屏游戏缓冲期内，暂不启动自动探索'
       };
 
       function ExplorationTopicIssue(props) {

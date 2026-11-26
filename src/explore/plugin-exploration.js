@@ -3,6 +3,7 @@ import { loadConfig, saveConfig } from '../settings/config.js';
 import { minutesOfDayOf } from '../settings/time.js';
 import { inQuiet } from '../perception/schedule.js';
 import { busyNow, offPeakNow } from '../perception/holidays.js';
+import { fullscreenGuardStatus, isFullscreenBlocked } from '../perception/fullscreen-guard.js';
 import { watchVideo } from '../perception/video-host.js';
 import { loadPersona } from '../decision/persona.js';
 import { characterRestAt } from '../decision/character-rest.js';
@@ -14,6 +15,7 @@ import {
   exploreRound,
   explorationStatus,
   loadExploration,
+  personaKey,
   saveExploration,
 } from './explore.js';
 import { createExplorationMedia, pickInterestItem, publicExplorationUrl, splitInterestItems } from './explore-media.js';
@@ -74,6 +76,10 @@ export function createExplorationRunner({
     if (!manual && !retry && !requestedResearch && cfg.exploration?.offPeakOnly === true && !offPeakNow(now, cfg)) {
       return { ok: false, reason: 'PEAK_HOURS' };
     }
+    if (!manual) {
+      const fg = await isFullscreenBlocked(cfg, { now });
+      if (fg.blocked) return { ok: false, reason: fg.reason || 'FULLSCREEN_GAME' };
+    }
     const persona = loadPersona({ cfg });
     if (!persona.ok) return { ok: false, reason: 'NO_PERSONA' };
     const previous = loadExploration();
@@ -93,6 +99,24 @@ export function createExplorationRunner({
     const { signal } = job.controller;
     const budget = Math.max(10_000, Math.min(1_800_000, Number(cfg.exploration.roundBudgetMs) || 300_000));
     job.timer = setTimeout(() => stopExploration(job.id, 'EXPLORATION_TIMEOUT'), budget);
+    if (!manual && fullscreenGuardStatus(cfg).enabled) {
+      let checkingFs = false;
+      job.fsTimer = setInterval(() => {
+        if (checkingFs || signal.aborted || explorationRun !== job) return;
+        if (fullscreenGuardStatus(cfg).mode === 'powershell') return;
+        checkingFs = true;
+        void isFullscreenBlocked(cfg, { maxCacheMs: 4000 })
+          .then((fg) => {
+            if (fg.blocked && !signal.aborted && explorationRun === job) {
+              log.info('检测到进入全屏游戏，已中止本轮自主探索并保留已有进度');
+              stopExploration(job.id, 'FULLSCREEN_GAME');
+            }
+          })
+          .catch(() => {})
+          .finally(() => { checkingFs = false; });
+      }, 5000);
+      job.fsTimer.unref?.();
+    }
     explorationRun = job;
     explorationRunNotice = null;
     lastExploreAttempt = now;
@@ -161,7 +185,7 @@ export function createExplorationRunner({
       if (isDisposed() || fresh.enabled === false || (!manual && fresh.exploration.auto !== true) ||
           (retry && (fresh.rules?.actionGate?.enabled !== true || fresh.exploration.web !== true)) ||
           (requestedResearch && fresh.rules?.qqCommands?.enabled !== true) ||
-          loadPersona({ cfg: fresh }).text !== persona.text) return { ok: false, reason: 'CANCELLED' };
+          personaKey(loadPersona({ cfg: fresh })) !== personaKey(persona)) return { ok: false, reason: 'CANCELLED' };
       if (workTarget?.field !== undefined && (fresh.exploration.workSources !== cfg.exploration.workSources ||
           fresh.exploration[workTarget.field] !== cfg.exploration[workTarget.field])) return { ok: false, reason: 'CANCELLED' };
       if (!r.ok) {
@@ -212,6 +236,7 @@ export function createExplorationRunner({
       return { ok: false, reason: 'EXPLORATION_ERROR' };
     } finally {
       clearTimeout(job.timer);
+      if (job.fsTimer) clearInterval(job.fsTimer);
       if (explorationRun === job) explorationRun = null;
     }
   }

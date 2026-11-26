@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pg-explore-round-'));
 const env = {
@@ -19,7 +20,7 @@ test.after(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-const { exploreRound, explorationProgress, explorationShare, explorationMood, explorationToneHint, styleApprovedDraft } =
+const { exploreRound, explorationProgress, explorationShare, explorationMood, explorationStatus, explorationToneHint, styleApprovedDraft, personaKey } =
   await import('../src/explore/explore.js');
 
 const persona = { ok: true, text: '喜欢推理小说，常留意不可靠叙述者。' };
@@ -626,4 +627,48 @@ test('deep continuation with grounded progress (without explicit discovery field
   assert.equal(round.ok, true);
   assert.ok(round.state.candidate?.discoveryId, '应由有依据的新 progress 生成 discoveryId，避免被同主题冷却误拦');
   assert.match(round.state.candidate.discovery, /第一话画面/);
+});
+
+test('editing persona wording for the same character preserves exploration progress while switching character isolates it', async () => {
+  const v1 = { ok: true, text: '## 人格（全局 · AGENT.md）\n# 江小澪 · 全局人格\n- **我 = 江小澪**：喜欢百合、二次元和电气。' };
+  const v2 = { ok: true, text: '## 人格（全局 · AGENT.md）\n# 江小澪 · 全局人格\n- **我 = 江小澪**：精简版人设，爱猫系撒娇。' };
+  const other = { ok: true, text: '## 人格（全局 · AGENT.md）\n# 林晚 · 全局人格\n- **我 = 林晚**：完全不同的另一个角色。' };
+
+  assert.equal(personaKey(v1), personaKey(v2));
+  assert.notEqual(personaKey(v1), personaKey(other));
+
+  const first = await exploreRound({
+    persona: v1,
+    now: 100,
+    generate: async () => result({ action: 'start', topic: '哆哆嗦嗦逃离你', progress: '看到第二话 17p', next: '接着看第二话后半' }),
+  });
+  assert.equal(first.state.roundCount, 1);
+
+  const second = await exploreRound({
+    persona: v2,
+    previous: first.state,
+    now: 200,
+    generate: async ({ prompt }) => {
+      assert.match(prompt, /第二话 17p/);
+      return result({ action: 'continue', progress: '看完了第二话', next: '开第三话' });
+    },
+  });
+  assert.equal(second.state.roundCount, 2);
+  assert.equal(second.state.thread.topic, '哆哆嗦嗦逃离你');
+  assert.equal(explorationStatus(second.state, other).thread, null);
+
+  // Legacy full-text SHA-256 personaKey saved before upgrade should still match and migrate seamlessly.
+  const legacyState = {
+    ...first.state,
+    personaKey: createHash('sha256').update(v2.text).digest('hex'),
+  };
+  assert.equal(explorationStatus(legacyState, v2).thread?.topic, '哆哆嗦嗦逃离你');
+  const migrated = await exploreRound({
+    persona: v2,
+    previous: legacyState,
+    now: 300,
+    generate: async () => result({ action: 'continue', progress: '兼容迁移后继续推进', next: '继续' }),
+  });
+  assert.equal(migrated.state.personaKey, personaKey(v2));
+  assert.equal(migrated.state.roundCount, 2);
 });

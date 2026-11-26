@@ -33,6 +33,7 @@ import { characterRestAt } from './decision/character-rest.js';
 import { inQuiet } from './perception/schedule.js';
 import { busyNow, builtinYears, deepseekPeakStatus } from './perception/holidays.js';
 import { refreshCalendar } from './perception/calendar.js';
+import { disposeFullscreenGuard, fullscreenGuardStatus } from './perception/fullscreen-guard.js';
 import { loadPersona } from './decision/persona.js';
 import { explorationStatus, explorationMood, loadExploration } from './explore/explore.js';
 import { makeHostLlm, setHostLlmContext, setHostLlmTrace } from './decision/hostllm.js';
@@ -40,7 +41,8 @@ import { detectSources, detectEmotionPortrait } from './settings/detect.js';
 import { inspectEmotionPlugin, appendEmotionInbox } from './decision/emotion-sync.js';
 import { inspectMemory } from './decision/memorysource.js';
 import { watchVideo } from './perception/video-host.js';
-import { bindActionExecutor, isHandledActionMessage, tryStopExplorationCommand } from './chat/action-proposal.js';
+import { activeBackgroundTask, bindActionExecutor, isHandledActionMessage, stopBackgroundTask, tryStopBackgroundTaskCommand, tryStopExplorationCommand } from './chat/action-proposal.js';
+import { tickRoleplayFollowup } from './chat/roleplay-followup.js';
 import { sendQqText } from './chat/qq-send.js';
 import { pendingRollovers } from './chat/session-rollover.js';
 import { qqRolloverAdapter } from './chat/qq-rollover-adapter.js';
@@ -62,7 +64,7 @@ import {
   observeBoundSessionModel, readInternalState, sendInternalMessage, sharedSessionId, syncInternalHistory,
 } from './channels/internal.js';
 import { createDouyinSession } from './channels/douyin-session.js';
-import { activeChatChannel, canReadChat, chatDialogue, chatPeer, emotionPeer } from './channels/external.js';
+import { activeChatChannel, canReadChat, chatDialogue, chatPeer, emotionPeer, sendChatRound } from './channels/external.js';
 import { agreementLlm, buildReplyContext, observePrivateMessage } from './chat/qq-reply.js';
 import { topicLabel } from './decision/explain.js';
 
@@ -209,6 +211,7 @@ export function apply(ctx, config = {}) {
   const sessionPersistence = () => persistenceService || serviceOf(ctx, 'sessionPersistence');
   const sessionProjections = () => projectionsService || serviceOf(ctx, 'sessionProjections');
 
+  const startedAt = Date.now();
   let disposed = false;
   let running = false;
   let previewRunning = false;
@@ -266,6 +269,7 @@ export function apply(ctx, config = {}) {
     onIncoming({ cfg, peer, text, ts, item, title }) {
       if (disposed || opt.enabled === false) return;
       tryStopExplorationCommand({ cfg, peer, kind: 'private', text, at: ts });
+      tryStopBackgroundTaskCommand({ cfg, peer, kind: 'private', text, at: ts });
       observePrivateMessage(ctx, { cfg, peer, text, at: ts, item, title });
     },
     async prepare({ cfg, peer, text, at, items }) {
@@ -397,12 +401,12 @@ export function apply(ctx, config = {}) {
   const actionExecutor = {
     stopExploration,
     run: ({ params }, onRetryEvidence) => runExploration(true, params, onRetryEvidence),
-    command: (cmd, cfg) => executeQqCommand({
-      cmd, cfg,
+    command: (cmd, cfg, { signal } = {}) => executeQqCommand({
+      cmd, cfg, signal,
       media: (cmd.type === 'explore_query' || cmd.type === 'browse_url') ? createExplorationMedia({
         tools: serviceOf(explorationToolsCtx || ctx, 'tools'),
         webService: serviceOf(explorationWebCtx || explorationToolsCtx || ctx, 'web'),
-        web: cfg.exploration.web === true, timing: cfg.exploration,
+        web: cfg.exploration.web === true, timing: cfg.exploration, signal,
       }) : null,
       explore: (request) => runExploration(true, null, null, request),
       state: loadExploration, persona: () => loadPersona({ cfg }),
@@ -490,7 +494,7 @@ export function apply(ctx, config = {}) {
     }
   }
 
-  // 秒级检查热聊补话、短时来信和到期约定，不重复跑邮件、感知和普通主动消息。
+  // 秒级检查剧情回话、热聊补话和到期约定，不重复跑邮件、感知和普通主动消息。
   function scheduleContinuation() {
     if (disposed) return;
     continuationTimer = setTimeout(async () => {
@@ -498,6 +502,14 @@ export function apply(ctx, config = {}) {
         const cfg = loadConfig();
         const now = Date.now();
         if (await processAgreements(cfg, now)) return;
+        if (await tickRoleplayFollowup({ cfg, startedAt, active: () => !disposed && opt.enabled !== false,
+          canSend: () => !running,
+          async send(options) {
+            running = true;
+            try { return await sendChatRound(options); }
+            finally { running = false; }
+          },
+        }).catch(error => { log.warn('剧情回话出错：' + String(error?.message || error).slice(0, 160)); return false; })) return;
         if (opt.enabled !== false && cfg.enabled !== false && !running &&
             (!douyinPrimary(cfg) || !!readyDouyinBinding())) await flushTaskResults(cfg);
         if (opt.enabled === false || !qqContinuationEnabled(cfg) ||
@@ -644,6 +656,8 @@ export function apply(ctx, config = {}) {
       emotion: inspectActiveMood({ cfg, peer: emotionPeer(cfg), baseEmotion: { ...detectEmotionPortrait(), ...inspectEmotionPlugin({ cfg }) } }),
       memory: inspectMemory({ cfg }),
       extensions: listExtensions(),
+      fullscreenGuard: fullscreenGuardStatus(cfg),
+      activeTask: activeBackgroundTask(),
       rollovers: pendingRollovers(rolloverFile, rolloverAdapter),
     };
   }
@@ -746,12 +760,14 @@ export function apply(ctx, config = {}) {
     listExtensions,
     stop() {
       disposed = true;
+      stopBackgroundTask();
       stopExploration();
       sessionHooks?.stop();
       compactChatTools.stop();
       releaseActionExecutor();
       releaseInternalDispatcher();
       douyin.stop();
+      disposeFullscreenGuard();
       if (timer) clearTimeout(timer);
       if (continuationTimer) clearTimeout(continuationTimer);
       timer = null;

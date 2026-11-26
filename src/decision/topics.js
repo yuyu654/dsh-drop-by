@@ -13,6 +13,8 @@ import { noReplyDue } from '../chat/noreply.js';
 import { wellnessCooldown } from './decide.js';
 import { characterRestCue, characterRestGreeted } from './character-rest.js';
 import { collectExternalTopics, getTopicProviderMeta } from '../settings/extensions.js';
+import { isSharePausedByMood } from '../chat/brushoff-mood.js';
+import { chatPeer } from '../channels/external.js';
 
 // tier：阶段 1 的间隔分档（显式常量，不在运行时猜）。
 //   reply = 回她/接转发/追问（默认 5 分钟）
@@ -363,7 +365,7 @@ function* topicOptions(ctx, cfg, now, st = {}, misses) {
   }
 
   // 有可核对的新发现时优先分享，先让她的话和紧急日程。
-  const share = on('share') && when('share', !unanswered, 'reply_pending') && shareTopic(ctx, t, used, now, when);
+  const share = on('share') && when('share', !unanswered, 'reply_pending') && shareTopic(ctx, cfg, t, used, now, when);
   const earlyShare = share && (ctx.self.discoveryId || ctx.self.actionRetry);
   if (earlyShare) yield share;
 
@@ -691,7 +693,7 @@ function* topicOptions(ctx, cfg, now, st = {}, misses) {
 
 /** 她 2026-11-10："话题都太集中在我看电脑这件事上"。同一类由头别连着来，
  *  「屏幕/久坐/硬撑」这类一天也别连着占四条。 */
-function shareTopic(ctx, t, used, now, when) {
+function shareTopic(ctx, cfg, t, used, now, when) {
   if (!ctx.self) {
     if (ctx.selfMiss) when('share', false, ctx.selfMiss);
     return null;
@@ -702,6 +704,7 @@ function shareTopic(ctx, t, used, now, when) {
     : (t.shareGapH != null ? Number(t.shareGapH) * 60 : 1440);
   if (
     ctx.self &&
+    when('share', !isSharePausedByMood(cfg, chatPeer(cfg), now), 'angry_mood') &&
     String(ctx.self.line || '').length >= (ctx.self.exploration ? 8 : Number(t.shareMinChars ?? 40)) &&
     when('share', !used.lastShareAt || now - used.lastShareAt >= shareGapMin * 60_000, 'cooldown') &&
     when('share', ctx.self.actionRetry ? used.lastRetryProposalAt !== ctx.self.at : (!used.lastShareLine || used.lastShareLine !== ctx.self.line.slice(0, 80)) && !used.recentShareLines?.includes(ctx.self.line.slice(0, 80)), 'already_used')

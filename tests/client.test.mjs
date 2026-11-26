@@ -71,8 +71,14 @@ function load() {
       appendChild: (el) => styles.push(el),
     },
   };
+  const store = new Map();
+  const localStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => { store.set(k, String(v)); },
+    removeItem: (k) => { store.delete(k); },
+  };
   const sandbox = {
-    window: { __ModuleLoader__: { load: (spec) => loaded.push(spec) } },
+    window: { __ModuleLoader__: { load: (spec) => loaded.push(spec) }, localStorage },
     document: document,
     fetch: () => Promise.reject(new Error('测试不该发请求')),
     console: console,
@@ -672,8 +678,10 @@ test('最近的探索进展按模式过滤并优先展示最新一条，再次�
   let tree = draw();
   const txt = textOf(tree);
   assert.match(txt, /最近路径（共 3 步）/);
-  const pathDetails = elements(tree, el => el.type === 'details' && /最近路径（共 3 步）/.test(textOf(el)))[0];
+  const pathDetails = elements(tree, el => el.type === 'details' && el.props.className === 'pg-exp-details' && /最近路径（共 3 步）/.test(textOf(el)))[0];
   assert.ok(pathDetails && !pathDetails.props.open, '最近路径默认应折叠');
+  const expCard = elements(tree, el => el.type === 'details' && /pg-exp-card/.test(el.props.className || ''))[0];
+  assert.ok(expCard && expCard.props.open === true, '自主探索卡片应可折叠且默认展开');
   assert.match(txt, /休闲 · 最新休闲漫画：刚翻了第一话/);
   assert.match(txt, /查看较早的另一条记录（研究）/);
   assert.doesNotMatch(txt, /过期的随手看看/);
@@ -691,4 +699,43 @@ test('最近的探索进展按模式过滤并优先展示最新一条，再次�
     ['/exploration/feedback', { id: 'leisure-id', action: 'change' }],
     ['/exploration/feedback', { id: 'leisure-id', action: 'clear' }],
   ]);
+
+  // 手动折叠自主探索后，重新挂载设置页应保持折叠状态
+  expCard.props.onToggle({ currentTarget: { open: false } });
+  const draw2 = mountPanel(loaded);
+  draw2();
+  await flush();
+  draw2();
+  await flush();
+  const tree2 = draw2();
+  const expCard2 = elements(tree2, el => el.type === 'details' && /pg-exp-card/.test(el.props.className || ''))[0];
+  assert.equal(expCard2?.props.open, false, '手动折叠后重新打开设置页应保持折叠');
+});
+
+test('慢速首屏请求期间跳过定时刷新，结束后允许下一次刷新', async () => {
+  const { loaded, sandbox } = load();
+  let poll;
+  sandbox.setInterval = callback => { poll = callback; return 1; };
+  const waiting = [];
+  let reads = 0;
+  sandbox.fetch = url => {
+    if (url.endsWith('/diagnostics')) return Promise.resolve({ ok: true, text: async () => '{}' });
+    reads++;
+    return new Promise(resolve => waiting.push(() => resolve({
+      ok: true,
+      text: async () => url.endsWith('/config') ? '{"groups":[]}' : '{"enabled":true,"today":{},"send":{}}',
+    })));
+  };
+  const draw = mountPanel(loaded);
+  assert.match(textOf(draw()), /读状态/);
+  poll();
+  poll();
+  assert.equal(reads, 2);
+  waiting.splice(0).forEach(resolve => resolve());
+  await new Promise(setImmediate);
+  assert.doesNotMatch(textOf(draw()), /读状态/);
+  poll();
+  assert.equal(reads, 4);
+  waiting.splice(0).forEach(resolve => resolve());
+  await new Promise(setImmediate);
 });

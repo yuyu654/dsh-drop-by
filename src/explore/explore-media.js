@@ -11,7 +11,13 @@ export function publicExplorationUrl(value) {
 }
 
 const PUBLIC_SITE_NAMES = [
-  ['哔哩哔哩漫画', 'manga.bilibili.com'], ['B漫', 'manga.bilibili.com'],
+  ['哔哩哔哩漫画', 'manga.bilibili.com'], ['bilibili漫画', 'manga.bilibili.com'],
+  ['B站漫画', 'manga.bilibili.com'], ['B漫', 'manga.bilibili.com'],
+  ['起点中文网', 'qidian.com'], ['起点读书', 'qidian.com'], ['起点', 'qidian.com'],
+  ['晋江文学城', 'jjwxc.net'], ['晋江', 'jjwxc.net'],
+  ['番茄免费小说', 'fanqienovel.com'], ['番茄小说', 'fanqienovel.com'], ['番茄', 'fanqienovel.com'],
+  ['腾讯动漫', 'ac.qq.com'], ['腾讯漫画', 'ac.qq.com'],
+  ['快看漫画', 'kuaikanmanhua.com'], ['快看', 'kuaikanmanhua.com'],
   ['知乎', 'zhihu.com'], ['CSDN', 'csdn.net'], ['GitHub', 'github.com'],
   ['GitLab', 'gitlab.com'], ['掘金', 'juejin.cn'], ['博客园', 'cnblogs.com'],
 ];
