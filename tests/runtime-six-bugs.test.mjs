@@ -183,7 +183,7 @@ test('运行问题 4 & 5：探针失败 idle_ms=-1 不发提醒；明确发送�
   assert.equal(pendingAfter[0].title, '提交实验报告');
 });
 
-test('运行问题 6：winprobe 使用版本化 DLL（winprobe-v2.dll），不会因旧 DLL 锁定而反复内存编译', async () => {
+test('运行问题 6：winprobe 使用版本化 DLL（winprobe-v2.dll），不会因旧 DLL 锁定而反复内存编译', { skip: process.platform !== 'win32' }, async () => {
   const res = await probe(true, { perception: { anticheat: { skip: false }, probeTimeoutMs: 8000 } }, { readOnly: false });
   assert.equal(res.ok, true);
   assert.ok(fs.existsSync(path.join(process.cwd(), 'tools', 'winprobe-v2.dll')));

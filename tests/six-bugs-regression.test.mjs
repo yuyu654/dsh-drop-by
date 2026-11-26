@@ -10,7 +10,7 @@ import { connectivity } from '../src/settings/diagnostics.js';
 import { windowOverlapsBusyOrClass, scoreReceptivity, updateReceptivity } from '../src/decision/receptivity.js';
 import { courseKey, parseAgenda } from '../src/perception/agenda.js';
 
-test('Bug 1：反作弊进程命中时 winprobe 不读取前台窗口标题与音频峰值', async () => {
+test('Bug 1：反作弊进程命中时 winprobe 不读取前台窗口标题与音频峰值', { skip: process.platform !== 'win32' }, async () => {
   const res = await probe(
     true,
     { perception: { anticheat: { skip: true, procs: ['powershell'] }, probeTimeoutMs: 8000 } },
